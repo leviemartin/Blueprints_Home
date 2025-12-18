@@ -1,7 +1,7 @@
 blueprint:
-  name: "Toddler Sleep Trainer & Nightlight v1.0.1"
+  name: "Toddler Sleep Trainer & Nightlight v1.0.2"
   description: >
-    **Version: 1.0.1**
+    **Version: 1.0.2**
     
     An advanced nightlight automation designed for toddlers, adhering to sleep research.
     
@@ -243,9 +243,8 @@ action:
           - choose:
               # 2a. Motion Boost
               - conditions:
-                  - condition: state
-                    entity_id: !input motion_entity
-                    state: "on"
+                  - condition: template
+                    value_template: "{{ is_motion_active }}"
                 sequence:
                   - service: light.turn_on
                     target:
