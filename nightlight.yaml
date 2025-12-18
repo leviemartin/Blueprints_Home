@@ -1,0 +1,269 @@
+blueprint:
+  name: "Toddler Sleep Trainer & Nightlight (Expert)"
+  description: >
+    An advanced nightlight automation designed for toddlers, adhering to sleep research.
+    
+    **Features:**
+    - **Sleep-Safe Colors:** Defaults to Red/Amber for night to protect melatonin.
+    - **Smart Scheduling:** Configurable wakeup times for every day of the week.
+    - **Motion Logic:** "Boost" brightness when toddler moves, dims when settled.
+    - **Wakeup Indicator:** Changes color (e.g., Green) when it's okay to get up.
+    - **Hardware:** Optimized for ThirdReality Smart Color Night Light (supports any RGB light).
+    
+    **Logic:**
+    - **Starts:** 18:00 (Night Mode).
+    - **Ends:** 1 hour after the scheduled wakeup time.
+    
+  domain: automation
+  input:
+    light_entity:
+      name: Night Light
+      description: The RGB light to control (e.g., ThirdReality Night Light).
+      selector:
+        entity:
+          domain: light
+    motion_entity:
+      name: Motion Sensor
+      description: The motion sensor to trigger brightness boost.
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: motion
+          
+    # --- Scheduling ---
+    wakeup_time_mon:
+      name: Monday Wakeup Time
+      default: "07:00:00"
+      selector:
+        time:
+    wakeup_time_tue:
+      name: Tuesday Wakeup Time
+      default: "07:00:00"
+      selector:
+        time:
+    wakeup_time_wed:
+      name: Wednesday Wakeup Time
+      default: "07:00:00"
+      selector:
+        time:
+    wakeup_time_thu:
+      name: Thursday Wakeup Time
+      default: "07:00:00"
+      selector:
+        time:
+    wakeup_time_fri:
+      name: Friday Wakeup Time
+      default: "07:00:00"
+      selector:
+        time:
+    wakeup_time_sat:
+      name: Saturday Wakeup Time
+      default: "07:30:00"
+      selector:
+        time:
+    wakeup_time_sun:
+      name: Sunday Wakeup Time
+      default: "07:30:00"
+      selector:
+        time:
+
+    # --- Colors & Brightness ---
+    night_color:
+      name: Night Color (Sleep)
+      description: "Research suggests Red/Amber. Default: Red (255, 67, 0)."
+      default: [255, 67, 0]
+      selector:
+        color_rgb:
+    wakeup_color:
+      name: Wakeup Color
+      description: "Color to indicate it is okay to wake up. Default: Green (0, 255, 0)."
+      default: [0, 255, 0]
+      selector:
+        color_rgb:
+    
+    night_brightness:
+      name: Night Brightness (Sleep)
+      description: Brightness while toddler is sleeping.
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+    boost_brightness:
+      name: Night Brightness (Motion Boost)
+      description: Brightness when motion is detected during the night.
+      default: 20
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+    wakeup_brightness:
+      name: Wakeup Brightness
+      description: Brightness for the wakeup phase.
+      default: 50
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+
+    # --- Timing ---
+    transition_time:
+      name: Transition Time
+      description: Seconds to fade between states.
+      default: 2
+      selector:
+        number:
+          min: 0
+          max: 30
+          unit_of_measurement: "s"
+    motion_clear_delay:
+      name: Motion Clear Delay
+      description: How long to stay bright after motion stops before dimming.
+      default: 30
+      selector:
+        number:
+          min: 0
+          max: 300
+          unit_of_measurement: "s"
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  # 1. Start of Routine (Night Mode)
+  - platform: time
+    at: "18:00:00"
+    id: "night_start"
+  
+  # 2. Motion Detected
+  - platform: state
+    entity_id: !input motion_entity
+    to: "on"
+    id: "motion_detected"
+    
+  # 3. Motion Cleared
+  - platform: state
+    entity_id: !input motion_entity
+    to: "off"
+    for: !input motion_clear_delay
+    id: "motion_cleared"
+
+  # 4. Wakeup Time (Trigger every minute to check schedule)
+  - platform: time_pattern
+    minutes: "/1"
+    id: "schedule_check"
+    
+  # 5. Home Assistant Start / Reload (to ensure correct state)
+  - platform: homeassistant
+    event: start
+    id: "init"
+
+variables:
+  # Inputs
+  light_target: !input light_entity
+  color_night: !input night_color
+  color_wakeup: !input wakeup_color
+  bri_night: !input night_brightness
+  bri_boost: !input boost_brightness
+  bri_wakeup: !input wakeup_brightness
+  transition_s: !input transition_time
+  
+  # Schedule Inputs
+  t_mon: !input wakeup_time_mon
+  t_tue: !input wakeup_time_tue
+  t_wed: !input wakeup_time_wed
+  t_thu: !input wakeup_time_thu
+  t_fri: !input wakeup_time_fri
+  t_sat: !input wakeup_time_sat
+  t_sun: !input wakeup_time_sun
+
+  # Logic for "Today's" wakeup time
+  # We create a list and select by weekday index (0=Mon, 6=Sun)
+  wakeup_times: "[t_mon, t_tue, t_wed, t_thu, t_fri, t_sat, t_sun]"
+  # Resolve the actual time string for today
+  wakeup_time_today: >
+    {{ [t_mon, t_tue, t_wed, t_thu, t_fri, t_sat, t_sun][now().weekday()] }}
+  
+  # Determine current "Phase"
+  # Logic:
+  #   - If time is 18:00 to 23:59: We are in "Night (Evening)" -> Target is Tomorrow's wakeup? No, simplistic view:
+  #     Actually, the requirements are: 18:00 ON -> Wakeup Time -> Wakeup+1hr OFF.
+  #     We need to know if we are currently in that window.
+  
+  # Construct datetime objects for comparison
+  current_time: "{{ now() }}"
+  today_wakeup_dt: "{{ today_at(wakeup_time_today) }}"
+  today_end_dt: "{{ today_at(wakeup_time_today) + timedelta(hours=1) }}"
+  
+  is_wakeup_window: >
+    {{ today_wakeup_dt <= current_time < today_end_dt }}
+    
+  is_night_window: >
+    {% set t_now = now().strftime('%H:%M:%S') %}
+    {# Night is from 18:00 today UNTIL wakeup tomorrow? OR 00:00 to wakeup today. #}
+    {# Simplification: Night is active if (Hour >= 18) OR (Now < Wakeup Time Today) #}
+    {{ current_time.hour >= 18 or current_time < today_wakeup_dt }}
+
+  # Motion check
+  is_motion_active: "{{ is_state(trigger.entity_id, 'on') if trigger.platform == 'state' else is_state('!input motion_entity', 'on') }}"
+
+action:
+  - choose:
+      # --- SCENARIO 1: WAKEUP TIME ---
+      # Triggered by schedule check matching wakeup time, OR motion during wakeup window
+      - conditions:
+          - condition: template
+            value_template: "{{ is_wakeup_window }}"
+        sequence:
+          - service: light.turn_on
+            target:
+              entity_id: !input light_entity
+            data:
+              rgb_color: !input wakeup_color
+              brightness_pct: !input wakeup_brightness
+              transition: !input transition_time
+
+      # --- SCENARIO 2: NIGHT TIME (SLEEP) ---
+      # Triggered by time 18:00, or motion/init during night window
+      - conditions:
+          - condition: template
+            value_template: "{{ is_night_window }}"
+        sequence:
+          - choose:
+              # 2a. Motion Boost
+              - conditions:
+                  - condition: state
+                    entity_id: !input motion_entity
+                    state: "on"
+                sequence:
+                  - service: light.turn_on
+                    target:
+                      entity_id: !input light_entity
+                    data:
+                      rgb_color: !input night_color
+                      brightness_pct: !input boost_brightness
+                      transition: !input transition_time
+            # 2b. Standard Sleep Light (No motion or cleared)
+            default:
+              - service: light.turn_on
+                target:
+                  entity_id: !input light_entity
+                data:
+                  rgb_color: !input night_color
+                  brightness_pct: !input night_brightness
+                  transition: !input transition_time
+
+      # --- SCENARIO 3: TURN OFF (End of Routine) ---
+      # Triggered if we are past the wakeup window (and not in night window)
+      - conditions:
+          - condition: template
+            value_template: "{{ not is_wakeup_window and not is_night_window }}"
+        sequence:
+          - service: light.turn_off
+            target:
+              entity_id: !input light_entity
+            data:
+              transition: !input transition_time
