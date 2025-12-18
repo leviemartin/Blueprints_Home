@@ -16,8 +16,12 @@ This Home Assistant blueprint is an expert-level automation designed to help tod
 *   **🔋 Power-Loss Safe:** Automatically restores the correct state (Night, Wakeup, or Off) after a power outage or Home Assistant restart.
 
 ## Installation
-1.  Click the "Import Blueprint" button in Home Assistant or copy the URL of `nightlight.yaml` into your Blueprints configuration.
-2.  Create a new automation using this blueprint.
+1. Click the button below to import this blueprint into your Home Assistant instance:
+
+[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fleviemartin%2FBlueprints_Home%2Fblob%2Fmain%2Fnightlight.yaml)
+
+2. Or manually copy this URL into the Blueprints configuration:
+`https://github.com/leviemartin/Blueprints_Home/blob/main/nightlight.yaml`
 
 ## Configuration Options
 
