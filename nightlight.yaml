@@ -164,6 +164,7 @@ trigger:
 variables:
   # Inputs
   light_target: !input light_entity
+  sensor_motion: !input motion_entity
   color_night: !input night_color
   color_wakeup: !input wakeup_color
   bri_night: !input night_brightness
@@ -207,8 +208,13 @@ variables:
     {# Simplification: Night is active if (Hour >= 18) OR (Now < Wakeup Time Today) #}
     {{ current_time.hour >= 18 or current_time < today_wakeup_dt }}
 
-  # Motion check
-  is_motion_active: "{{ is_state(trigger.entity_id, 'on') if trigger.platform == 'state' else is_state('!input motion_entity', 'on') }}"
+  # Motion check (Safe for manual triggering and correct variable usage)
+  is_motion_active: >
+    {% if trigger is defined and trigger.platform == 'state' and trigger.entity_id == sensor_motion %}
+      {{ trigger.to_state.state == 'on' }}
+    {% else %}
+      {{ is_state(sensor_motion, 'on') }}
+    {% endif %}
 
 action:
   - choose:
