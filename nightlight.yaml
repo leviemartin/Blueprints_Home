@@ -1,7 +1,9 @@
 blueprint:
-  name: "Toddler Sleep Trainer & Nightlight v1.0.4"
+  name: "Toddler Sleep Trainer & Nightlight v1.1.0"
   description: >
-    **Version: 1.0.4**
+    **Version: 1.1.0 (Expert)**
+    
+    **IMPORTANT:** After importing or updating this blueprint, you **MUST** Restart Home Assistant to ensure the new triggers are loaded correctly.
     
     An advanced nightlight automation designed for toddlers, adhering to sleep research.
     
@@ -141,21 +143,28 @@ trigger:
     for: !input motion_clear_delay
     id: "motion_cleared"
 
-  # 3. Dynamic Wakeup Triggers
+  # 3. Dynamic Wakeup Triggers (Explicit IDs for debugging)
   - platform: time
     at: !input wakeup_time_mon
+    id: "wakeup_schedule"
   - platform: time
     at: !input wakeup_time_tue
+    id: "wakeup_schedule"
   - platform: time
     at: !input wakeup_time_wed
+    id: "wakeup_schedule"
   - platform: time
     at: !input wakeup_time_thu
+    id: "wakeup_schedule"
   - platform: time
     at: !input wakeup_time_fri
+    id: "wakeup_schedule"
   - platform: time
     at: !input wakeup_time_sat
+    id: "wakeup_schedule"
   - platform: time
     at: !input wakeup_time_sun
+    id: "wakeup_schedule"
 
   # 4. Init
   - platform: homeassistant
@@ -163,6 +172,7 @@ trigger:
     id: "init"
 
 variables:
+  # Map Inputs to Variables (Crucial for Templates)
   sensor_motion: !input motion_entity
   bri_night: !input night_brightness
   bri_boost: !input boost_brightness
@@ -176,10 +186,11 @@ variables:
   t_sat: !input wakeup_time_sat
   t_sun: !input wakeup_time_sun
   
+  # Determine "Today's" Wakeup Time dynamically
   wakeup_time_today: >
     {{ [t_mon, t_tue, t_wed, t_thu, t_fri, t_sat, t_sun][now().weekday()] }}
   
-  # Window Logic
+  # Logic Windows
   current_time: "{{ now() }}"
   today_wakeup_dt: "{{ today_at(wakeup_time_today) }}"
   today_end_dt: "{{ today_at(wakeup_time_today) + timedelta(hours=1) }}"
@@ -193,6 +204,7 @@ variables:
 action:
   - choose:
       # SCENARIO 1: WAKEUP
+      # Triggered by time "wakeup_schedule", or motion inside the window
       - conditions:
           - condition: template
             value_template: "{{ is_wakeup_window }}"
@@ -205,7 +217,8 @@ action:
               brightness_pct: !input wakeup_brightness
               transition: !input transition_time
 
-      # SCENARIO 2: NIGHT
+      # SCENARIO 2: NIGHT (SLEEP)
+      # Triggered by time 18:00, or motion inside the night window
       - conditions:
           - condition: template
             value_template: "{{ is_night_window }}"
@@ -215,10 +228,11 @@ action:
               entity_id: !input light_entity
             data:
               rgb_color: !input night_color
+              # Use mapped variables, not !input, inside the template
               brightness_pct: "{{ bri_boost if is_motion_active else bri_night }}"
               transition: !input transition_time
 
-    # DEFAULT: OFF (During day)
+    # DEFAULT: OFF (Daytime / Out of Routine)
     default:
       - service: light.turn_off
         target:
