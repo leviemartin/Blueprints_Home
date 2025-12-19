@@ -1,9 +1,9 @@
 blueprint:
-  name: "Toddler Sleep Trainer & Nightlight v1.1.1 (Debug)"
+  name: "Toddler Sleep Trainer & Nightlight v1.1.2"
   description: >
-    **Version: 1.1.1 (Debug Edition)**
+    **Version: 1.1.2**
     
-    **DEBUGGING MODE:** This version includes a Persistent Notification action to confirm it is running.
+    **Fixes:** Resolved type error where time objects were converting to strings.
     
     **IMPORTANT:** Restart Home Assistant after importing.
     
@@ -185,17 +185,21 @@ action:
       title: "NightLight Debug"
       message: "Automation Triggered! Checking Logic..."
 
-  # 2. Calculate Logic Variables (Inside Action -> generates Trace on error)
+  # 2. Calculate Logic Variables (Fixed type casting issue)
   - variables:
       wakeup_time_today: >
         {{ [t_mon, t_tue, t_wed, t_thu, t_fri, t_sat, t_sun][now().weekday()] }}
-      current_time: "{{ now() }}"
-      today_wakeup_dt: "{{ today_at(wakeup_time_today) }}"
-      today_end_dt: "{{ today_at(wakeup_time_today) + timedelta(hours=1) }}"
+      
+      # Compute logic directly in boolean variables to avoid 'str' errors
       is_wakeup_window: >
-        {{ today_wakeup_dt <= current_time < today_end_dt }}
+        {% set t_wake = today_at(wakeup_time_today) %}
+        {% set t_end = t_wake + timedelta(hours=1) %}
+        {{ t_wake <= now() < t_end }}
+        
       is_night_window: >
-        {{ current_time.hour >= 18 or current_time < today_wakeup_dt }}
+        {% set t_wake = today_at(wakeup_time_today) %}
+        {{ now().hour >= 18 or now() < t_wake }}
+        
       is_motion_active: "{{ is_state(sensor_motion, 'on') }}"
 
   # 3. Execute Logic
