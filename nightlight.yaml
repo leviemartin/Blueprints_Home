@@ -1,9 +1,9 @@
 blueprint:
-  name: "Toddler Sleep Trainer & Nightlight v1.1.2"
+  name: "Toddler Sleep Trainer & Nightlight v1.1.3"
   description: >
-    **Version: 1.1.2**
+    **Version: 1.1.3**
     
-    **Fixes:** Resolved type error where time objects were converting to strings.
+    **Fixes:** Added "Keep Alive" logic. If the light turns off unexpectedly during the night (e.g., due to device timeout), this automation will force it back on.
     
     **IMPORTANT:** Restart Home Assistant after importing.
     
@@ -158,18 +158,24 @@ trigger:
     at: !input wakeup_time_sun
     id: "wakeup_schedule"
 
-  # 4. Init
+  # 4. Watchdog: Light turns off unexpectedly
+  - platform: state
+    entity_id: !input light_entity
+    to: "off"
+    id: "light_off_watchdog"
+
+  # 5. Init
   - platform: homeassistant
     event: start
     id: "init"
 
 variables:
-  # Simple Input Mapping (Safe Global Variables)
+  # Simple Input Mapping
   sensor_motion: !input motion_entity
   bri_night: !input night_brightness
   bri_boost: !input boost_brightness
   
-  # Map Time Inputs to Variables
+  # Map Time Inputs
   t_mon: !input wakeup_time_mon
   t_tue: !input wakeup_time_tue
   t_wed: !input wakeup_time_wed
@@ -179,18 +185,11 @@ variables:
   t_sun: !input wakeup_time_sun
 
 action:
-  # 1. DEBUG NOTIFICATION (Confirm Run)
-  - service: persistent_notification.create
-    data:
-      title: "NightLight Debug"
-      message: "Automation Triggered! Checking Logic..."
-
-  # 2. Calculate Logic Variables (Fixed type casting issue)
+  # 1. Calculate Logic Variables
   - variables:
       wakeup_time_today: >
         {{ [t_mon, t_tue, t_wed, t_thu, t_fri, t_sat, t_sun][now().weekday()] }}
       
-      # Compute logic directly in boolean variables to avoid 'str' errors
       is_wakeup_window: >
         {% set t_wake = today_at(wakeup_time_today) %}
         {% set t_end = t_wake + timedelta(hours=1) %}
@@ -202,7 +201,7 @@ action:
         
       is_motion_active: "{{ is_state(sensor_motion, 'on') }}"
 
-  # 3. Execute Logic
+  # 2. Execute Logic
   - choose:
       # SCENARIO 1: WAKEUP
       - conditions:
@@ -232,6 +231,8 @@ action:
 
     # DEFAULT: OFF
     default:
+      # Only turn off if we are NOT in the wakeup window AND NOT in the night window
+      # This prevents the watchdog from turning the light off again instantly if logic fails
       - service: light.turn_off
         target:
           entity_id: !input light_entity
