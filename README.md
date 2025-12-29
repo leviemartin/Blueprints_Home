@@ -1,12 +1,14 @@
-# Toddler Sleep Trainer & Nightlight Blueprint
+# Home Assistant Blueprints Collection
 
-## Overview
+## Toddler Sleep Trainer & Nightlight Blueprint
+
+### Overview
 This Home Assistant blueprint is an expert-level automation designed to help toddlers sleep better. Based on sleep research, it manages light color and brightness to minimize sleep disruption while providing clear visual cues for when it is okay to wake up.
 
 **Primary Device Support:** ThirdReality Smart Color Night Light (Type F).  
 *Also compatible with any standard RGB Light and Motion Sensor in Home Assistant.*
 
-## Features
+### Features
 *   **🔬 Research-Backed Colors:** Defaults to **Red/Amber** (warm hues) during the night to protect melatonin production and circadian rhythms.
 *   **📅 Smart Scheduling:** Configurable "Wakeup Time" for **every day of the week** (Mon-Sun).
 *   **🏃 Motion-Responsive:** 
@@ -15,7 +17,7 @@ This Home Assistant blueprint is an expert-level automation designed to help tod
 *   **⏰ Wakeup Indicator:** Automatically changes color (e.g., Green) and brightness at the scheduled time to signal "It's okay to get up".
 *   **🔋 Power-Loss Safe:** Automatically restores the correct state (Night, Wakeup, or Off) after a power outage or Home Assistant restart.
 
-## Installation
+### Installation
 1. Click the button below to import this blueprint into your Home Assistant instance:
 
 [![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fleviemartin%2FBlueprints_Home%2Fblob%2Fmain%2Fnightlight.yaml)
@@ -23,37 +25,28 @@ This Home Assistant blueprint is an expert-level automation designed to help tod
 2. Or manually copy this URL into the Blueprints configuration:
 `https://github.com/leviemartin/Blueprints_Home/blob/main/nightlight.yaml`
 
-## Configuration Options
+---
 
-### Devices
-*   **Night Light:** Select your RGB light entity (e.g., `light.night_light`).
-*   **Motion Sensor:** Select your motion sensor entity (e.g., `binary_sensor.night_light_motion`).
+## Circadian Living Room Lights Blueprint
 
-### Schedule (Wakeup Times)
-Set the time you want the light to turn Green (Wakeup Mode) for each day:
-*   **Monday - Friday:** Default 07:00
-*   **Saturday - Sunday:** Default 07:30
+### Overview
+A comprehensive lighting automation for the Living Room that adapts to human presence, circadian rhythms (Sun Elevation), and specific family routines. It utilizes the Aqara FP2 (or any lux+presence sensor) for high-precision control.
 
-### Colors & Brightness (Advanced)
-*   **Night Color:** The color during sleep hours. *Recommendation: Red (255, 67, 0) or Amber.*
-*   **Wakeup Color:** The color for the morning. *Default: Green (0, 255, 0).*
-*   **Sleep Brightness:** Default 5%.
-*   **Motion Boost Brightness:** Default 20%.
-*   **Wakeup Brightness:** Default 50%.
+### Features
+*   **☀️ Native Circadian Algorithm:** Automatically shifts Color Temperature (Kelvin) based on the Sun's elevation without external integrations.
+*   **🍽️ Routine Overrides:** Dedicated time slots for **Dinner** (Bright/Neutral) and **Toddler Prep** (Warm Amber/Dim) to override the sun cycle.
+*   **💡 Daylight Harvesting:**
+    *   **Auto-ON:** Lights turn on if you enter and it's dark (<150 lux) OR if you are sitting and the sun sets.
+    *   **Auto-OFF:** Lights turn off if the sun comes out (>400 lux) for 5 minutes.
+*   **✨ Seamless Transitions:** Uses long transitions (30s) for color shifts and fast transitions (2s) for presence, ensuring a premium feel.
 
-### Timing
-*   **Transition Time:** Time in seconds to fade between states (default 2s).
-*   **Motion Clear Delay:** How long to stay in "Boost" mode after motion stops (default 30s).
+### Installation
+1. Click the button below to import this blueprint into your Home Assistant instance:
 
-## How it Works (Logic)
-1.  **Start (18:00):** The automation activates "Night Mode" (Red, 5%).
-2.  **Night Phase (18:00 -> Wakeup Time):** 
-    *   If motion is detected, brightness boosts to 20%.
-    *   When motion clears, it fades back to 5%.
-3.  **Wakeup Phase (Wakeup Time -> +1 Hour):**
-    *   The light turns Green (50%) to indicate morning.
-4.  **End Phase (+1 Hour):**
-    *   The light turns off automatically.
+[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fleviemartin%2FBlueprints_Home%2Fblob%2Fmain%2Fcircadian_livingroom.yaml)
+
+2. Or manually copy this URL into the Blueprints configuration:
+`https://github.com/leviemartin/Blueprints_Home/blob/main/circadian_livingroom.yaml`
 
 ---
 *Created by Martin Levie (Gemini CLI Agent)*

@@ -1,0 +1,248 @@
+blueprint:
+  name: "Circadian Living Room Lights v1.0.1"
+  description: >
+    **Version: 1.0.1**
+    
+    A comprehensive lighting automation for the Living Room that adapts to human presence, 
+    circadian rhythms, and specific family routines.
+    
+    **Features:**
+    - **Native Circadian:** Adapts color temp to Sun Elevation.
+    - **Routine Overrides:** Specific slots for Dinner (Bright) and Toddler Prep (Warm).
+    - **Daylight Harvesting:** Turns lights off if room is naturally bright (>400 lux for 5m).
+    - **Seamless:** Long transitions for imperceptible color shifts.
+    
+  domain: automation
+  input:
+    light_entity:
+      name: Lights
+      selector:
+        entity:
+          domain: light
+    presence_entity:
+      name: Presence Sensor
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: occupancy
+    illuminance_entity:
+      name: Illuminance (Lux) Sensor
+      selector:
+        entity:
+          domain: sensor
+          device_class: illuminance
+    
+    # --- Thresholds ---
+    lux_on_threshold:
+      name: Turn On Threshold
+      description: Lights turn ON if Lux drops below this (Default: 150).
+      default: 150
+      selector:
+        number:
+          min: 0
+          max: 1000
+          unit_of_measurement: lx
+    lux_off_threshold:
+      name: Turn Off Threshold (Daylight Harvesting)
+      description: Lights turn OFF if Lux stays above this (Default: 400).
+      default: 400
+      selector:
+        number:
+          min: 100
+          max: 2000
+          unit_of_measurement: lx
+    lux_off_duration:
+      name: Turn Off Duration
+      description: How long Lux must be high before turning off (Anti-Flicker).
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: min
+
+    # --- Time Slots ---
+    time_dinner:
+      name: Dinner Start Time
+      default: "18:00:00"
+      selector:
+        time:
+    time_toddler:
+      name: Toddler Prep Start Time
+      default: "19:00:00"
+      selector:
+        time:
+    time_evening:
+      name: Evening Start Time
+      default: "20:00:00"
+      selector:
+        time:
+    time_night:
+      name: Night Start Time
+      default: "22:00:00"
+      selector:
+        time:
+
+    # --- Light Settings ---
+    max_kelvin:
+      name: Max Kelvin (Daylight)
+      default: 4500
+      selector:
+        number:
+          min: 2000
+          max: 6500
+          step: 100
+          unit_of_measurement: K
+    min_kelvin:
+      name: Min Kelvin (Warm)
+      default: 2200
+      selector:
+        number:
+          min: 2000
+          max: 4000
+          step: 100
+          unit_of_measurement: K
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  # 1. Presence Detected
+  - platform: state
+    entity_id: !input presence_entity
+    to: "on"
+    id: "presence_on"
+  
+  # 2. Presence Cleared
+  - platform: state
+    entity_id: !input presence_entity
+    to: "off"
+    id: "presence_off"
+  
+  # 3. Periodic Update (Circadian Shift)
+  - platform: time_pattern
+    minutes: "/5"
+    id: "update_loop"
+
+  # 4. Daylight Harvesting (Auto-OFF)
+  - platform: numeric_state
+    entity_id: !input illuminance_entity
+    above: !input lux_off_threshold
+    for: 
+      minutes: !input lux_off_duration
+    id: "lux_high"
+
+  # 5. Daylight Fading (Auto-ON)
+  - platform: numeric_state
+    entity_id: !input illuminance_entity
+    below: !input lux_on_threshold
+    id: "lux_low"
+
+variables:
+  # Inputs
+  sensor_lux: !input illuminance_entity
+  sensor_presence: !input presence_entity
+  threshold_on: !input lux_on_threshold
+  val_max_k: !input max_kelvin
+  val_min_k: !input min_kelvin
+  
+  t_dinner: !input time_dinner
+  t_toddler: !input time_toddler
+  t_evening: !input time_evening
+  t_night: !input time_night
+
+action:
+  # 1. Calculate Logic Variables
+  - variables:
+      current_lux: "{{ states(sensor_lux) | float(0) }}"
+      is_presence_on: "{{ is_state(sensor_presence, 'on') }}"
+      
+      # Determine Current Mode based on Time
+      mode: >
+        {% set t_now = now().strftime('%H:%M:%S') %}
+        {% if t_now >= t_night %} night
+        {% elif t_now >= t_evening %} evening
+        {% elif t_now >= t_toddler %} toddler
+        {% elif t_now >= t_dinner %} dinner
+        {% else %} day
+        {% endif %}
+      
+      # Calculate Target Settings
+      target_kelvin: >
+        {% if mode == 'dinner' %} 3000
+        {% elif mode == 'toddler' %} {{ val_min_k }}
+        {% elif mode == 'night' %} {{ val_min_k }}
+        {% else %}
+          {# Day or Evening: Use Sun Elevation #}
+          {% set elev = state_attr('sun.sun', 'elevation') | float(0) %}
+          {% set pct = (elev + 6) / 51 %}
+          {% set k = (val_max_k - val_min_k) * pct + val_min_k %}
+          {{ k | min(val_max_k) | max(val_min_k) | int }}
+        {% endif %}
+        
+      target_brightness: >
+        {% if mode == 'dinner' %} 100
+        {% elif mode == 'toddler' %} 60
+        {% elif mode == 'evening' %} 50
+        {% elif mode == 'night' %} 20
+        {% else %} 100 {% endif %}
+
+  - choose:
+      # SCENARIO 1: TURN OFF (Presence Cleared OR High Lux)
+      - conditions:
+          - condition: or
+            conditions:
+              - condition: trigger
+                id: "presence_off"
+              - condition: trigger
+                id: "lux_high"
+        sequence:
+          - service: light.turn_off
+            target:
+              entity_id: !input light_entity
+            data:
+              transition: 5
+
+      # SCENARIO 2: TURN ON (Presence Detected OR Lux Low)
+      - conditions:
+          - condition: template
+            value_template: "{{ is_presence_on }}"
+          - condition: or
+            conditions:
+              # Triggered by presence -> Check Lux
+              - condition: and
+                conditions:
+                  - condition: trigger
+                    id: "presence_on"
+                  - condition: template
+                    value_template: "{{ current_lux < threshold_on }}"
+              # Triggered by Lux Low -> Check if we are already present
+              - condition: trigger
+                id: "lux_low"
+        sequence:
+          - service: light.turn_on
+            target:
+              entity_id: !input light_entity
+            data:
+              kelvin: "{{ target_kelvin }}"
+              brightness_pct: "{{ target_brightness }}"
+              transition: 2
+
+      # SCENARIO 3: UPDATE LOOP (Already On)
+      - conditions:
+          - condition: trigger
+            id: "update_loop"
+          - condition: state
+            entity_id: !input light_entity
+            state: "on"
+          # Safety: Don't update if lux is crazy high (should have turned off via trigger, but just in case)
+          - condition: template
+            value_template: "{{ current_lux < (threshold_on + 300) }}" 
+        sequence:
+          - service: light.turn_on
+            target:
+              entity_id: !input light_entity
+            data:
+              kelvin: "{{ target_kelvin }}"
+              brightness_pct: "{{ target_brightness }}"
+              transition: 30
