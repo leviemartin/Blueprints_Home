@@ -1,7 +1,7 @@
 blueprint:
-  name: "Circadian Living Room Lights v1.0.2"
+  name: "Circadian Living Room Lights v1.0.4"
   description: >
-    **Version: 1.0.2**
+    **Version: 1.0.4**
     
     A comprehensive lighting automation for the Living Room that adapts to human presence, 
     circadian rhythms, and specific family routines.
@@ -16,6 +16,7 @@ blueprint:
   input:
     light_entity:
       name: Lights
+      description: Select one or multiple lights to control.
       selector:
         entity:
           domain: light
@@ -54,7 +55,7 @@ blueprint:
           unit_of_measurement: lx
     lux_off_duration:
       name: Turn Off Duration
-      description: How long Lux must be high before turning off (Anti-Flicker).
+      description: "How long Lux must be high before turning off (Anti-Flicker)."
       default: 5
       selector:
         number:
