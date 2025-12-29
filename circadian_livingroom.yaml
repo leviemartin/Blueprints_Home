@@ -1,7 +1,7 @@
 blueprint:
-  name: "Circadian Living Room Lights v1.0.1"
+  name: "Circadian Living Room Lights v1.0.2"
   description: >
-    **Version: 1.0.1**
+    **Version: 1.0.2**
     
     A comprehensive lighting automation for the Living Room that adapts to human presence, 
     circadian rhythms, and specific family routines.
@@ -19,6 +19,7 @@ blueprint:
       selector:
         entity:
           domain: light
+          multiple: true
     presence_entity:
       name: Presence Sensor
       selector:
@@ -140,6 +141,7 @@ trigger:
 
 variables:
   # Inputs
+  target_lights: !input light_entity
   sensor_lux: !input illuminance_entity
   sensor_presence: !input presence_entity
   threshold_on: !input lux_on_threshold
@@ -232,16 +234,19 @@ action:
       - conditions:
           - condition: trigger
             id: "update_loop"
-          - condition: state
-            entity_id: !input light_entity
-            state: "on"
-          # Safety: Don't update if lux is crazy high (should have turned off via trigger, but just in case)
+          # Only run if AT LEAST ONE of the target lights is ON
+          - condition: template
+            value_template: >
+              {{ expand(target_lights) | selectattr('state', 'eq', 'on') | list | count > 0 }}
+          # Safety: Don't update if lux is crazy high
           - condition: template
             value_template: "{{ current_lux < (threshold_on + 300) }}" 
         sequence:
           - service: light.turn_on
             target:
-              entity_id: !input light_entity
+              # Only target the lights that are currently ON
+              entity_id: >
+                {{ expand(target_lights) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
             data:
               kelvin: "{{ target_kelvin }}"
               brightness_pct: "{{ target_brightness }}"
