@@ -40,23 +40,37 @@
 *   `max_kelvin`: (Default 4500K).
 *   `min_kelvin`: (Default 2200K - very warm).
 
-### 4.2. Time Slots (Brightness Profiles) - Configurable
-*   **Day Start:** Sunrise (Automatic).
-*   **Dinner Start:** Input Time (Default: 18:00). Profile: Fixed Warm/Neutral (3000K), Brightness 100%.
-*   **Toddler Prep Start:** Input Time (Default: 19:00). Profile: Fixed Warm Amber (2200K), Brightness 60%.
-*   **Evening Start:** Input Time (Default: 20:00). Profile: Sun-based Warm (2700K), Brightness 50%.
-*   **Night Start:** Input Time (Default: 22:00). Profile: Deep Warm (2200K), Brightness 20%.
+### 4.2. Time Slots (Brightness Profiles) - Fully Configurable
+*   **Day Start:** Sunrise (Automatic). (Uses Max Kelvin input).
+*   **Dinner:**
+    *   Start Time (Default: 18:00)
+    *   Kelvin (Default: 3000K)
+    *   Brightness (Default: 100%)
+*   **Toddler Prep:**
+    *   Start Time (Default: 19:00)
+    *   Kelvin (Default: 2200K)
+    *   Brightness (Default: 60%)
+*   **Evening:**
+    *   Start Time (Default: 20:00)
+    *   Kelvin (Default: 2700K)
+    *   Brightness (Default: 50%)
+*   **Night:**
+    *   Start Time (Default: 22:00)
+    *   Kelvin (Default: 2200K)
+    *   Brightness (Default: 20%)
 
 ### 4.3. Circadian Math (Simplified)
-*   Instead of a complex curve, we will use a "Sun Elevation" mapping for the "Day" and "Evening" slots.
-*   *Formula:* Map Sun Elevation (-6° to 45°) to Kelvin Range (`min_kelvin` to `max_kelvin`).
-*   *Override:* The "Dinner" and "Toddler Prep" time slots take precedence over the Sun Elevation to ensure routine consistency.
+*   **Day Mode:** Maps Sun Elevation to `min_kelvin` - `max_kelvin`.
+*   **Override:** The specific time slots above take precedence over the sun calculation.
 
 ## 5. Transition Handling & Flicker Prevention
 *   **Turn ON Condition:** Presence detected AND Lux < 150 (Residential Standard).
 *   **Auto-OFF (Daylight Harvesting):**
     *   If Lux > 400 (High Buffer) for **5 minutes**, turn OFF even if presence is detected.
-    *   This prevents flickering by ensuring the room is consistently bright enough without artificial light.
+*   **Manual Override:**
+    *   Input: `override_entity` (Switch/Input Boolean).
+    *   Behavior: If ON, the automation halts (no auto-on/off/update).
+    *   Resume: When turned OFF, the automation resumes and restores the correct circadian state.
 *   **Seamless Transitions:**
     *   **Turn On/Off:** 2-5 seconds.
     *   **Circadian Updates:** 30 seconds.

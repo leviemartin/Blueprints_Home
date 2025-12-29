@@ -1,16 +1,16 @@
 blueprint:
-  name: "Circadian Living Room Lights v1.0.4"
+  name: "Circadian Living Room Lights v1.1.0"
   description: >
-    **Version: 1.0.4**
+    **Version: 1.1.0**
     
     A comprehensive lighting automation for the Living Room that adapts to human presence, 
     circadian rhythms, and specific family routines.
     
     **Features:**
-    - **Native Circadian:** Adapts color temp to Sun Elevation.
-    - **Routine Overrides:** Specific slots for Dinner (Bright) and Toddler Prep (Warm).
-    - **Daylight Harvesting:** Turns lights off if room is naturally bright (>400 lux for 5m).
-    - **Seamless:** Long transitions for imperceptible color shifts.
+    - **Fully Configurable Profiles:** Customize Time, Kelvin, and Brightness for Dinner, Toddler, Evening, and Night.
+    - **Manual Override:** Pause automation via a Switch or Input Boolean (e.g., for Movie Night).
+    - **Daylight Harvesting:** Auto-Off if naturally bright (>400 lux).
+    - **Flicker Protection:** Hybrid Lux logic prevents rapid toggling.
     
   domain: automation
   input:
@@ -33,6 +33,15 @@ blueprint:
         entity:
           domain: sensor
           device_class: illuminance
+    override_entity:
+      name: Manual Override Switch
+      description: "If ON, automation pauses. Use a Helper (Input Boolean) toggled by your Remote."
+      default: []
+      selector:
+        entity:
+          domain: 
+            - input_boolean
+            - switch
     
     # --- Thresholds ---
     lux_on_threshold:
@@ -63,31 +72,106 @@ blueprint:
           max: 60
           unit_of_measurement: min
 
-    # --- Time Slots ---
+    # --- DINNER PROFILE ---
     time_dinner:
       name: Dinner Start Time
       default: "18:00:00"
       selector:
         time:
+    dinner_kelvin:
+      name: Dinner Color (K)
+      default: 3000
+      selector:
+        number:
+          min: 2000
+          max: 6500
+          step: 100
+          unit_of_measurement: K
+    dinner_bri:
+      name: Dinner Brightness (%)
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+
+    # --- TODDLER PROFILE ---
     time_toddler:
       name: Toddler Prep Start Time
       default: "19:00:00"
       selector:
         time:
+    toddler_kelvin:
+      name: Toddler Color (K)
+      default: 2200
+      selector:
+        number:
+          min: 2000
+          max: 6500
+          step: 100
+          unit_of_measurement: K
+    toddler_bri:
+      name: Toddler Brightness (%)
+      default: 60
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+
+    # --- EVENING PROFILE ---
     time_evening:
       name: Evening Start Time
       default: "20:00:00"
       selector:
         time:
+    evening_kelvin:
+      name: Evening Color (K)
+      default: 2700
+      selector:
+        number:
+          min: 2000
+          max: 6500
+          step: 100
+          unit_of_measurement: K
+    evening_bri:
+      name: Evening Brightness (%)
+      default: 50
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+
+    # --- NIGHT PROFILE ---
     time_night:
       name: Night Start Time
       default: "22:00:00"
       selector:
         time:
+    night_kelvin:
+      name: Night Color (K)
+      default: 2200
+      selector:
+        number:
+          min: 2000
+          max: 6500
+          step: 100
+          unit_of_measurement: K
+    night_bri:
+      name: Night Brightness (%)
+      default: 20
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
 
-    # --- Light Settings ---
+    # --- General Light Settings ---
     max_kelvin:
       name: Max Kelvin (Daylight)
+      description: Used for Day Mode calculation.
       default: 4500
       selector:
         number:
@@ -97,6 +181,7 @@ blueprint:
           unit_of_measurement: K
     min_kelvin:
       name: Min Kelvin (Warm)
+      description: Used for Day Mode calculation.
       default: 2200
       selector:
         number:
@@ -140,22 +225,48 @@ trigger:
     below: !input lux_on_threshold
     id: "lux_low"
 
+  # 6. Override Turned OFF (Resume)
+  - platform: state
+    entity_id: !input override_entity
+    to: "off"
+    id: "override_resume"
+
 variables:
   # Inputs
   target_lights: !input light_entity
   sensor_lux: !input illuminance_entity
   sensor_presence: !input presence_entity
+  entity_override: !input override_entity
   threshold_on: !input lux_on_threshold
   val_max_k: !input max_kelvin
   val_min_k: !input min_kelvin
   
+  # Time Slots
   t_dinner: !input time_dinner
   t_toddler: !input time_toddler
   t_evening: !input time_evening
   t_night: !input time_night
+  
+  # Profile Settings
+  k_dinner: !input dinner_kelvin
+  b_dinner: !input dinner_bri
+  k_toddler: !input toddler_kelvin
+  b_toddler: !input toddler_bri
+  k_evening: !input evening_kelvin
+  b_evening: !input evening_bri
+  k_night: !input night_kelvin
+  b_night: !input night_bri
 
 action:
-  # 1. Calculate Logic Variables
+  # 1. Check Override First
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ entity_override != [] and is_state(entity_override, 'on') }}"
+        sequence:
+          - stop: "Manual Override is ON. Automation halted."
+
+  # 2. Calculate Logic Variables
   - variables:
       current_lux: "{{ states(sensor_lux) | float(0) }}"
       is_presence_on: "{{ is_state(sensor_presence, 'on') }}"
@@ -172,11 +283,12 @@ action:
       
       # Calculate Target Settings
       target_kelvin: >
-        {% if mode == 'dinner' %} 3000
-        {% elif mode == 'toddler' %} {{ val_min_k }}
-        {% elif mode == 'night' %} {{ val_min_k }}
+        {% if mode == 'dinner' %} {{ k_dinner }}
+        {% elif mode == 'toddler' %} {{ k_toddler }}
+        {% elif mode == 'evening' %} {{ k_evening }}
+        {% elif mode == 'night' %} {{ k_night }}
         {% else %}
-          {# Day or Evening: Use Sun Elevation #}
+          {# Day Mode: Use Sun Elevation #}
           {% set elev = state_attr('sun.sun', 'elevation') | float(0) %}
           {% set pct = (elev + 6) / 51 %}
           {% set k = (val_max_k - val_min_k) * pct + val_min_k %}
@@ -184,10 +296,10 @@ action:
         {% endif %}
         
       target_brightness: >
-        {% if mode == 'dinner' %} 100
-        {% elif mode == 'toddler' %} 60
-        {% elif mode == 'evening' %} 50
-        {% elif mode == 'night' %} 20
+        {% if mode == 'dinner' %} {{ b_dinner }}
+        {% elif mode == 'toddler' %} {{ b_toddler }}
+        {% elif mode == 'evening' %} {{ b_evening }}
+        {% elif mode == 'night' %} {{ b_night }}
         {% else %} 100 {% endif %}
 
   - choose:
@@ -206,7 +318,7 @@ action:
             data:
               transition: 5
 
-      # SCENARIO 2: TURN ON (Presence Detected OR Lux Low)
+      # SCENARIO 2: TURN ON (Presence Detected OR Lux Low OR Override Resume)
       - conditions:
           - condition: template
             value_template: "{{ is_presence_on }}"
@@ -222,6 +334,9 @@ action:
               # Triggered by Lux Low -> Check if we are already present
               - condition: trigger
                 id: "lux_low"
+              # Triggered by Override Resume -> Restore state immediately
+              - condition: trigger
+                id: "override_resume"
         sequence:
           - service: light.turn_on
             target:
