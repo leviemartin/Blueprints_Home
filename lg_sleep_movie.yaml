@@ -1,0 +1,114 @@
+blueprint:
+  name: "LG AC Sleep & Movie Mode v1.0.0"
+  description: >
+    **Version: 1.0.0**
+    
+    Automates LG AC Display and Sound settings for Sleep and Movie scenes.
+    
+    **Features:**
+    - **Sleep Mode:** Auto-off AC display/sound at a specific time.
+    - **Movie Mode:** Toggle AC display/sound on/off via a remote button.
+    
+  domain: automation
+  input:
+    ac_display_switch:
+      name: AC Display Switch
+      description: The switch entity that controls the AC's display light.
+      selector:
+        entity:
+          domain: switch
+    ac_sound_switch:
+      name: AC Sound Switch (Optional)
+      description: The switch entity that controls the AC's beep sound.
+      default: []
+      selector:
+        entity:
+          domain: switch
+          multiple: true # Allowed to be empty or single
+    remote_trigger:
+      name: Remote Button Trigger
+      description: The specific button press to toggle Movie Mode (e.g., Hue Dimmer "On" Hold).
+      selector:
+        trigger:
+    
+    # --- Sleep Schedule ---
+    sleep_start_time:
+      name: Sleep Start Time
+      description: Time to automatically turn off AC display/sound.
+      default: "22:00:00"
+      selector:
+        time:
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  # 1. Sleep Time Reached
+  - platform: time
+    at: !input sleep_start_time
+    id: "sleep_time"
+  
+  # 2. Remote Button Pressed (User Input)
+  - platform: trigger
+    id: "remote_press"
+    trig: !input remote_trigger
+
+variables:
+  target_display: !input ac_display_switch
+  target_sound: !input ac_sound_switch
+
+action:
+  - choose:
+      # SCENARIO 1: SLEEP TIME (Force Off)
+      - conditions:
+          - condition: trigger
+            id: "sleep_time"
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: !input ac_display_switch
+          - choose:
+              - conditions: "{{ target_sound != [] }}"
+                sequence:
+                  - service: switch.turn_off
+                    target:
+                      entity_id: !input ac_sound_switch
+
+      # SCENARIO 2: REMOTE TOGGLE (Movie Mode)
+      - conditions:
+          - condition: trigger
+            id: "remote_press"
+        sequence:
+          # Logic: If Display is ON -> Turn Everything OFF. Else -> Turn Everything ON.
+          - choose:
+              # Case A: Display is ON -> Go Dark (Movie Start)
+              - conditions:
+                  - condition: state
+                    entity_id: !input ac_display_switch
+                    state: "on"
+                sequence:
+                  - service: switch.turn_off
+                    target:
+                      entity_id: !input ac_display_switch
+                  - choose:
+                      - conditions: "{{ target_sound != [] }}"
+                        sequence:
+                          - service: switch.turn_off
+                            target:
+                              entity_id: !input ac_sound_switch
+              
+              # Case B: Display is OFF -> Go Bright (Movie End)
+              - conditions:
+                  - condition: state
+                    entity_id: !input ac_display_switch
+                    state: "off"
+                sequence:
+                  - service: switch.turn_on
+                    target:
+                      entity_id: !input ac_display_switch
+                  - choose:
+                      - conditions: "{{ target_sound != [] }}"
+                        sequence:
+                          - service: switch.turn_on
+                            target:
+                              entity_id: !input ac_sound_switch

@@ -49,4 +49,24 @@ A comprehensive lighting automation for the Living Room that adapts to human pre
 `https://github.com/leviemartin/Blueprints_Home/blob/main/circadian_livingroom.yaml`
 
 ---
+
+## LG AC Sleep & Movie Mode Blueprint
+
+### Overview
+Automates the Display (Light) and Sound (Beep) settings of LG Air Conditioners. Designed to ensure a dark room for sleeping and a distraction-free environment for movie watching.
+
+### Features
+*   **🌙 Auto-Sleep:** Automatically turns off AC display and sound at a set time each night.
+*   **🎬 Movie Toggle:** Use a remote control (e.g., Philips Hue Dimmer) to toggle the AC into "Dark Mode" and back again with a single button press.
+*   **🛠️ Hardware Flexibility:** Supports models with separate Display and Sound switch entities.
+
+### Installation
+1. Click the button below to import this blueprint into your Home Assistant instance:
+
+[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fleviemartin%2FBlueprints_Home%2Fblob%2Fmain%2Flg_sleep_movie.yaml)
+
+2. Or manually copy this URL into the Blueprints configuration:
+`https://github.com/leviemartin/Blueprints_Home/blob/main/lg_sleep_movie.yaml`
+
+---
 *Created by Martin Levie (Gemini CLI Agent)*
