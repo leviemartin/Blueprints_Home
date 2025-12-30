@@ -1,7 +1,7 @@
 blueprint:
-  name: "Circadian Living Room Lights v1.1.0"
+  name: "Circadian Living Room Lights v1.1.1"
   description: >
-    **Version: 1.1.0**
+    **Version: 1.1.1**
     
     A comprehensive lighting automation for the Living Room that adapts to human presence, 
     circadian rhythms, and specific family routines.
@@ -292,7 +292,8 @@ action:
           {% set elev = state_attr('sun.sun', 'elevation') | float(0) %}
           {% set pct = (elev + 6) / 51 %}
           {% set k = (val_max_k - val_min_k) * pct + val_min_k %}
-          {{ k | min(val_max_k) | max(val_min_k) | int }}
+          {# Clamp k between val_min_k and val_max_k #}
+          {{ [val_min_k, [val_max_k, k] | min] | max | int }}
         {% endif %}
         
       target_brightness: >
