@@ -1,7 +1,7 @@
 blueprint:
-  name: "Circadian Living Room Lights v1.1.1"
+  name: "Circadian Living Room Lights v1.1.2"
   description: >
-    **Version: 1.1.1**
+    **Version: 1.1.2**
     
     A comprehensive lighting automation for the Living Room that adapts to human presence, 
     circadian rhythms, and specific family routines.
@@ -278,7 +278,13 @@ action:
         {% elif t_now >= t_evening %} evening
         {% elif t_now >= t_toddler %} toddler
         {% elif t_now >= t_dinner %} dinner
-        {% else %} day
+        {% else %}
+          {# 00:00 - Dinner Time #}
+          {% if is_state('sun.sun', 'below_horizon') and now().hour < 12 %}
+            night
+          {% else %}
+            day
+          {% endif %}
         {% endif %}
       
       # Calculate Target Settings
