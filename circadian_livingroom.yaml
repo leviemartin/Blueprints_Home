@@ -1,7 +1,7 @@
 blueprint:
-  name: "Circadian Living Room Lights v1.1.2"
+  name: "Circadian Living Room Lights v1.2.0"
   description: >
-    **Version: 1.1.2**
+    **Version: 1.2.0**
     
     A comprehensive lighting automation for the Living Room that adapts to human presence, 
     circadian rhythms, and specific family routines.
@@ -11,6 +11,7 @@ blueprint:
     - **Manual Override:** Pause automation via a Switch or Input Boolean (e.g., for Movie Night).
     - **Daylight Harvesting:** Auto-Off if naturally bright (>400 lux).
     - **Flicker Protection:** Hybrid Lux logic prevents rapid toggling.
+    - **Presence Timeout:** Configurable delay before turning off lights.
     
   domain: automation
   input:
@@ -27,6 +28,15 @@ blueprint:
         entity:
           domain: binary_sensor
           device_class: occupancy
+    presence_timeout:
+      name: Presence Timeout
+      description: "Wait this long after motion clears before turning off lights (Default: 5 min)."
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 60
+          unit_of_measurement: min
     illuminance_entity:
       name: Illuminance (Lux) Sensor
       selector:
@@ -200,10 +210,12 @@ trigger:
     to: "on"
     id: "presence_on"
   
-  # 2. Presence Cleared
+  # 2. Presence Cleared (With Timeout)
   - platform: state
     entity_id: !input presence_entity
     to: "off"
+    for: 
+      minutes: !input presence_timeout
     id: "presence_off"
   
   # 3. Periodic Update (Circadian Shift)
@@ -278,14 +290,8 @@ action:
         {% elif t_now >= t_evening %} evening
         {% elif t_now >= t_toddler %} toddler
         {% elif t_now >= t_dinner %} dinner
-        {% else %}
-          {# 00:00 - Dinner Time #}
-          {% if is_state('sun.sun', 'below_horizon') and now().hour < 12 %}
-            night
-          {% else %}
-            day
-          {% endif %}
-        {% endif %}
+        {% elif t_now >= '06:00:00' %} day
+        {% else %} night {% endif %}
       
       # Calculate Target Settings
       target_kelvin: >
@@ -306,7 +312,7 @@ action:
         {% if mode == 'dinner' %} {{ b_dinner }}
         {% elif mode == 'toddler' %} {{ b_toddler }}
         {% elif mode == 'evening' %} {{ b_evening }}
-        {% elif mode == 'night' %} {{ b_night }}
+        {% elif mode == 'night' %} {{ b_night %}
         {% else %} 100 {% endif %}
 
   - choose:
