@@ -41,7 +41,7 @@
 *   `min_kelvin`: (Default 2200K - very warm).
 
 ### 4.2. Time Slots (Brightness Profiles) - Fully Configurable
-*   **Day Start:** Sunrise (Automatic). (Uses Max Kelvin input).
+*   **Day Start:** 06:00 (Fixed). (Uses Max Kelvin input).
 *   **Dinner:**
     *   Start Time (Default: 18:00)
     *   Kelvin (Default: 3000K)
@@ -65,12 +65,14 @@
 
 ## 5. Transition Handling & Flicker Prevention
 *   **Turn ON Condition:** Presence detected AND Lux < 150 (Residential Standard).
+*   **Presence Timeout (Feature):**
+    *   Wait for a configurable duration (Default: 5 min) after presence clears before turning OFF.
 *   **Auto-OFF (Daylight Harvesting):**
     *   If Lux > 400 (High Buffer) for **5 minutes**, turn OFF even if presence is detected.
 *   **Manual Override:**
     *   Input: `override_entity` (Switch/Input Boolean).
-    *   Behavior: If ON, the automation halts (no auto-on/off/update).
-    *   Resume: When turned OFF, the automation resumes and restores the correct circadian state.
+    *   Behavior: If ON, automation pauses.
+    *   Resume: When turned OFF, automation resumes immediately.
 *   **Seamless Transitions:**
     *   **Turn On/Off:** 2-5 seconds.
     *   **Circadian Updates:** 30 seconds.

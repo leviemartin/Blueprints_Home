@@ -312,7 +312,7 @@ action:
         {% if mode == 'dinner' %} {{ b_dinner }}
         {% elif mode == 'toddler' %} {{ b_toddler }}
         {% elif mode == 'evening' %} {{ b_evening }}
-        {% elif mode == 'night' %} {{ b_night %}
+        {% elif mode == 'night' %} {{ b_night }}
         {% else %} 100 {% endif %}
 
   - choose:
