@@ -24,10 +24,11 @@ blueprint:
           domain: binary_sensor
           device_class: occupancy
     light_entity:
-      name: Dining Table Light (Hue Go)
+      name: Dining Table Light(s) (Hue Go)
       selector:
-        entity:
-          domain: light
+        target:
+          entity:
+            domain: light
     
     # --- Battery Monitoring ---
     battery_level_sensor:
@@ -227,8 +228,7 @@ action:
           # Requirement said: "manual control... outside of time blocks".
           # Usually Overrides shouldn't fight the user. But let's ensure it's ON.
           - service: light.turn_on
-            target:
-              entity_id: !input light_entity
+            target: !input light_entity
             data:
               transition: !input transition_time
       
@@ -239,8 +239,7 @@ action:
             value_template: "{{ is_bat_critical and not is_plugged }}"
         sequence:
           - service: light.turn_on
-            target:
-              entity_id: !input light_entity
+            target: !input light_entity
             data:
               rgb_color: [255, 0, 0]
               brightness_pct: 50
@@ -254,8 +253,7 @@ action:
             value_template: "{{ is_fully_charged }}"
         sequence:
           - service: light.turn_on
-            target:
-              entity_id: !input light_entity
+            target: !input light_entity
             data:
               rgb_color: [0, 255, 0]
               brightness_pct: 50
@@ -287,8 +285,7 @@ action:
                   # I will allow "Turn Off" to win if no presence.
         sequence:
           - service: light.turn_off
-            target:
-              entity_id: !input light_entity
+            target: !input light_entity
             data:
               transition: !input transition_time
 
@@ -304,8 +301,7 @@ action:
               - conditions: "{{ is_breakfast }}"
                 sequence:
                   - service: light.turn_on
-                    target:
-                      entity_id: !input light_entity
+                    target: !input light_entity
                     data:
                       kelvin: 3500
                       brightness_pct: !input bri_breakfast
@@ -315,8 +311,7 @@ action:
               - conditions: "{{ is_lunch }}"
                 sequence:
                   - service: light.turn_on
-                    target:
-                      entity_id: !input light_entity
+                    target: !input light_entity
                     data:
                       kelvin: 4000
                       brightness_pct: !input bri_lunch
@@ -326,8 +321,7 @@ action:
               - conditions: "{{ is_dinner }}"
                 sequence:
                   - service: light.turn_on
-                    target:
-                      entity_id: !input light_entity
+                    target: !input light_entity
                     data:
                       kelvin: 2200
                       brightness_pct: !input bri_dinner
