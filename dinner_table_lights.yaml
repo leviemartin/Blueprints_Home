@@ -8,11 +8,9 @@ blueprint:
     **Features:**
     *   **Mealtime Logic:** Lights only auto-activate during configured Breakfast, Lunch, and Dinner windows.
     *   **Circadian Warmth:** Uses warmer-than-standard tones (2200K-4000K) for a cozy dining atmosphere.
-    *   **Battery Monitor:** 
-        *   **< 5%:** Pulses RED (Low Battery Warning).
-        *   **100% & Plugged In:** Turns GREEN (Fully Charged Indicator).
-        *   **Unplugged:** Reverts to normal lighting.
     *   **Presence Control:** Configurable timeout (default 5 min).
+    
+    *Note: Battery monitoring features have been removed due to hardware limitations (Hue Go does not expose battery level to HA).*
     
   domain: automation
   input:
@@ -29,22 +27,6 @@ blueprint:
         target:
           entity:
             domain: light
-    
-    # --- Battery Monitoring ---
-    battery_level_sensor:
-      name: Battery Level Sensor (%)
-      description: Sensor entity providing battery percentage (0-100).
-      selector:
-        entity:
-          domain: sensor
-          device_class: battery
-    battery_state_sensor:
-      name: Battery State Sensor (Optional)
-      description: Sensor indicating 'charging', 'discharging', or 'plugged in'. Used for the "Green when full" logic.
-      default: []
-      selector:
-        entity:
-          domain: sensor
 
     # --- Manual Override ---
     override_entity:
@@ -136,16 +118,10 @@ trigger:
       minutes: !input motion_delay
     id: "presence_clear"
   
-  # 2. State/Battery
+  # 2. State
   - platform: state
     entity_id: !input override_entity
     id: "state_change"
-  - platform: state
-    entity_id: !input battery_level_sensor
-    id: "battery_change"
-  - platform: state
-    entity_id: !input battery_state_sensor
-    id: "battery_change"
 
   # 3. Schedule Checks (Update light if it's already on)
   - platform: time
@@ -170,8 +146,6 @@ trigger:
 variables:
   # Inputs
   sensor_presence: !input motion_sensor
-  sensor_bat_lvl: !input battery_level_sensor
-  sensor_bat_state: !input battery_state_sensor
   entity_override: !input override_entity
   
   t_bk_start: !input time_breakfast_start
@@ -190,22 +164,6 @@ variables:
     {% else %}
       false
     {% endif %}
-
-  # Battery Logic
-  bat_level: "{{ states(sensor_bat_lvl) | int(default=0) }}"
-  is_bat_critical: "{{ bat_level < 5 }}"
-  
-  # Determine if Charging/Plugged based on optional sensor
-  # Common states: 'charging', 'battery', 'plugged'
-  bat_state_val: "{{ states(sensor_bat_state) | lower }}"
-  is_plugged: >
-    {% if sensor_bat_state %}
-      {{ 'charging' in bat_state_val or 'plugged' in bat_state_val or 'full' in bat_state_val or 'mains' in bat_state_val }}
-    {% else %}
-      false 
-    {% endif %}
-  
-  is_fully_charged: "{{ bat_level == 100 and is_plugged }}"
 
   # Time Window Logic
   current_time: "{{ now().strftime('%H:%M:%S') }}"
@@ -232,34 +190,7 @@ action:
             data:
               transition: !input transition_time
       
-      # 2. BATTERY CRITICAL (< 5% & Discharging)
-      # Priority over normal lights to warn user.
-      - conditions:
-          - condition: template
-            value_template: "{{ is_bat_critical and not is_plugged }}"
-        sequence:
-          - service: light.turn_on
-            target: !input light_entity
-            data:
-              rgb_color: [255, 0, 0]
-              brightness_pct: 50
-              effect: "breathe" # Try to use built-in breathe if available, else just solid red.
-          # If 'breathe' effect isn't supported by Hue Go via HA, it might just ignore it.
-          # We could loop a flash, but let's stick to simple Red for now to avoid complexity.
-
-      # 3. BATTERY FULLY CHARGED (100% & Plugged)
-      - conditions:
-          - condition: template
-            value_template: "{{ is_fully_charged }}"
-        sequence:
-          - service: light.turn_on
-            target: !input light_entity
-            data:
-              rgb_color: [0, 255, 0]
-              brightness_pct: 50
-              transition: !input transition_time
-
-      # 4. TURN OFF (No Presence or Not Meal Time)
+      # 2. TURN OFF (No Presence or Not Meal Time)
       # We turn off if: (Presence Cleared) OR (Presence Active BUT Not Meal Time)
       - conditions:
           - condition: or
@@ -272,24 +203,13 @@ action:
                     value_template: "{{ not is_meal_time }}"
                   - condition: template
                     value_template: "{{ not is_override }}"
-                  # Important: Don't turn off if we are in a Battery Signal state?
-                  # Actually, if I'm not at the table, I probably don't care if it's green.
-                  # But the prompt says "When the light is fully charged... have the lights turn green".
-                  # It doesn't say "only if someone is looking at it".
-                  # HOWEVER, keeping a light on 24/7 when charged is wasteful.
-                  # Let's assume Battery Signals abide by Presence to save energy?
-                  # Re-reading: "Find a way to have the portable go table lamps indicate..."
-                  # Usually indicators are always on.
-                  # BUT, let's strictly follow the "Turn off lights when no presence detected" rule.
-                  # That rule likely overrides the battery indicator.
-                  # I will allow "Turn Off" to win if no presence.
         sequence:
           - service: light.turn_off
             target: !input light_entity
             data:
               transition: !input transition_time
 
-      # 5. NORMAL OPERATION (Presence & Meal Time)
+      # 3. NORMAL OPERATION (Presence & Meal Time)
       - conditions:
           - condition: template
             value_template: "{{ is_presence }}"
