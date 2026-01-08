@@ -1,7 +1,7 @@
 blueprint:
-  name: "Bathroom Routine v1.0.2 (Circadian & Toddler)"
+  name: "Bathroom Routine v1.0.3 (Circadian & Toddler)"
   description: >
-    **Version: 1.0.2**
+    **Version: 1.0.3**
     
     A smart bathroom automation utilizing Philips Hue devices.
     
@@ -11,7 +11,7 @@ blueprint:
     *   **Toddler Sleep Support:** "Late Night" mode uses specific Red/Amber light (Hue Go) to preserve melatonin.
     *   **Summer Safe:** "Evening" mode enforces warm light at a fixed time (e.g. 19:00) regardless of late sunsets.
     *   **Makeup Override:** Supports an external helper (Input Boolean) to force bright cool light.
-    
+
   domain: automation
   input:
     # --- Devices ---
@@ -175,39 +175,20 @@ variables:
       false
     {% endif %}
 
-  # Determine Logic Phase
+  # Determine Logic Phase (Fixed Logic v1.0.3)
   current_phase: >
     {% set t = now().strftime('%H:%M:%S') %}
     
-    {# Define Intervals #}
-    {# Morning: t_morning -> t_day #}
-    {% if t_morning <= t_day %}
-      {% set is_morning = t_morning <= t < t_day %}
-    {% else %}
-      {% set is_morning = t_morning <= t or t < t_day %}
-    {% endif %}
-
-    {# Day: t_day -> t_evening #}
-    {% if t_day <= t_evening %}
-      {% set is_day = t_day <= t < t_evening %}
-    {% else %}
-      {% set is_day = t_day <= t or t < t_evening %}
-    {% endif %}
-
-    {# Evening: t_evening -> t_night #}
-    {% if t_evening <= t_night %}
-      {% set is_evening = t_evening <= t < t_night %}
-    {% else %}
-      {% set is_evening = t_evening <= t or t < t_night %}
-    {% endif %}
-
-    {# Evaluate #}
-    {% if is_morning %}
+    {# 1. Check Morning Interval (t_morning -> t_day) #}
+    {% if (t_morning <= t_day and t_morning <= t < t_day) or (t_morning > t_day and (t >= t_morning or t < t_day)) %}
       morning
-    {% elif is_day %}
+    {# 2. Check Day Interval (t_day -> t_evening) #}
+    {% elif (t_day <= t_evening and t_day <= t < t_evening) or (t_day > t_evening and (t >= t_day or t < t_evening)) %}
       day
-    {% elif is_evening %}
+    {# 3. Check Evening Interval (t_evening -> t_night) #}
+    {% elif (t_evening <= t_night and t_evening <= t < t_night) or (t_evening > t_night and (t >= t_evening or t < t_night)) %}
       evening
+    {# 4. Fallback -> Late Night #}
     {% else %}
       late_night
     {% endif %}
