@@ -1,7 +1,7 @@
 blueprint:
-  name: "Bathroom Routine v2.0.1 (Reliability Focus)"
+  name: "Bathroom Routine v2.0.2 (Reliability Focus)"
   description: >
-    **Version: 2.0.1 - Bug Fix**
+    **Version: 2.0.2 - Critical Fix**
     
     A completely strictly-typed rewrite focusing on reliability.
     
@@ -40,7 +40,7 @@ blueprint:
     override_entity:
       name: Override / Makeup Mode (Optional)
       description: Input Boolean. When ON, force Bright White.
-      default: []
+      default: ""
       selector:
         entity:
           domain: input_boolean
@@ -197,7 +197,7 @@ variables:
   # States
   is_motion: "{{ is_state(sensor_motion, 'on') }}"
   is_override: >
-    {% if entity_override is defined and entity_override %}
+    {% if entity_override is defined and entity_override not in [none, "", []] %}
       {{ is_state(entity_override, 'on') }}
     {% else %}
       false
