@@ -1,7 +1,7 @@
 blueprint:
-  name: "Bathroom Routine v1.0.1 (Circadian & Toddler)"
+  name: "Bathroom Routine v1.0.2 (Circadian & Toddler)"
   description: >
-    **Version: 1.0.1**
+    **Version: 1.0.2**
     
     A smart bathroom automation utilizing Philips Hue devices.
     
@@ -178,14 +178,38 @@ variables:
   # Determine Logic Phase
   current_phase: >
     {% set t = now().strftime('%H:%M:%S') %}
-    {% if t >= t_night or t < t_morning %}
-      late_night
-    {% elif t >= t_evening %}
-      evening
-    {% elif t >= t_day %}
-      day
+    
+    {# Define Intervals #}
+    {# Morning: t_morning -> t_day #}
+    {% if t_morning <= t_day %}
+      {% set is_morning = t_morning <= t < t_day %}
     {% else %}
+      {% set is_morning = t_morning <= t or t < t_day %}
+    {% endif %}
+
+    {# Day: t_day -> t_evening #}
+    {% if t_day <= t_evening %}
+      {% set is_day = t_day <= t < t_evening %}
+    {% else %}
+      {% set is_day = t_day <= t or t < t_evening %}
+    {% endif %}
+
+    {# Evening: t_evening -> t_night #}
+    {% if t_evening <= t_night %}
+      {% set is_evening = t_evening <= t < t_night %}
+    {% else %}
+      {% set is_evening = t_evening <= t or t < t_night %}
+    {% endif %}
+
+    {# Evaluate #}
+    {% if is_morning %}
       morning
+    {% elif is_day %}
+      day
+    {% elif is_evening %}
+      evening
+    {% else %}
+      late_night
     {% endif %}
 
 action:
