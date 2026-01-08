@@ -1,7 +1,7 @@
 blueprint:
-  name: "Bathroom Routine v2.0.2 (Reliability Focus)"
+  name: "Bathroom Routine v2.0.3 (Reliability Focus)"
   description: >
-    **Version: 2.0.2 - Critical Fix**
+    **Version: 2.0.3 - Trigger Fix**
     
     A completely strictly-typed rewrite focusing on reliability.
     
@@ -40,10 +40,11 @@ blueprint:
     override_entity:
       name: Override / Makeup Mode (Optional)
       description: Input Boolean. When ON, force Bright White.
-      default: ""
+      default: []
       selector:
         entity:
           domain: input_boolean
+          multiple: true # Allows default: [] to work safely for triggers
     
     # --- Schedule (Start Times) ---
     time_morning:
@@ -156,7 +157,7 @@ trigger:
       minutes: !input motion_delay
     id: "motion_off"
   
-  # Override
+  # Override (Now accepts list safely)
   - platform: state
     entity_id: !input override_entity
     id: "override_change"
@@ -176,7 +177,7 @@ trigger:
     id: "time_change"
 
 variables:
-  # Inputs (Mapping for readability)
+  # Inputs
   sensor_motion: !input motion_sensor
   entity_override: !input override_entity
   enable_main_night: !input enable_main_night
@@ -196,9 +197,11 @@ variables:
 
   # States
   is_motion: "{{ is_state(sensor_motion, 'on') }}"
+  
+  # Check if any override entity in the list is ON
   is_override: >
-    {% if entity_override is defined and entity_override not in [none, "", []] %}
-      {{ is_state(entity_override, 'on') }}
+    {% if entity_override is iterable and entity_override | length > 0 %}
+      {{ expand(entity_override) | selectattr('state', 'eq', 'on') | list | length > 0 }}
     {% else %}
       false
     {% endif %}
