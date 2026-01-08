@@ -1,7 +1,7 @@
 blueprint:
-  name: "Bathroom Routine v1.0.3 (Circadian & Toddler)"
+  name: "Bathroom Routine v1.0.4 (Circadian & Toddler)"
   description: >
-    **Version: 1.0.3**
+    **Version: 1.0.4**
     
     A smart bathroom automation utilizing Philips Hue devices.
     
@@ -175,23 +175,18 @@ variables:
       false
     {% endif %}
 
-  # Determine Logic Phase (Fixed Logic v1.0.3)
-  current_phase: >
-    {% set t = now().strftime('%H:%M:%S') %}
-    
-    {# 1. Check Morning Interval (t_morning -> t_day) #}
-    {% if (t_morning <= t_day and t_morning <= t < t_day) or (t_morning > t_day and (t >= t_morning or t < t_day)) %}
+  # Determine Logic Phase (Fixed Logic v1.0.4 - Whitespace Control)
+  current_phase: >-
+    {%- set t = now().strftime('%H:%M:%S') -%}
+    {%- if (t_morning <= t_day and t_morning <= t < t_day) or (t_morning > t_day and (t >= t_morning or t < t_day)) -%}
       morning
-    {# 2. Check Day Interval (t_day -> t_evening) #}
-    {% elif (t_day <= t_evening and t_day <= t < t_evening) or (t_day > t_evening and (t >= t_day or t < t_evening)) %}
+    {%- elif (t_day <= t_evening and t_day <= t < t_evening) or (t_day > t_evening and (t >= t_day or t < t_evening)) -%}
       day
-    {# 3. Check Evening Interval (t_evening -> t_night) #}
-    {% elif (t_evening <= t_night and t_evening <= t < t_night) or (t_evening > t_night and (t >= t_evening or t < t_night)) %}
+    {%- elif (t_evening <= t_night and t_evening <= t < t_night) or (t_evening > t_night and (t >= t_evening or t < t_night)) -%}
       evening
-    {# 4. Fallback -> Late Night #}
-    {% else %}
+    {%- else -%}
       late_night
-    {% endif %}
+    {%- endif -%}
 
 action:
   - choose:
@@ -328,3 +323,19 @@ action:
                         target: !input light_main
                         data:
                           transition: !input transition_time
+            
+            # DEFAULT FAILSAFE (Safe Mode: Evening Settings)
+            default:
+              - service: light.turn_on
+                target: !input light_main
+                data:
+                  kelvin: 2700
+                  brightness_pct: 50
+                  transition: !input transition_time
+              - service: light.turn_on
+                target:
+                  entity_id: !input light_night
+                data:
+                  kelvin: 2700
+                  brightness_pct: 50
+                  transition: !input transition_time
