@@ -1,16 +1,20 @@
 blueprint:
-  name: "Bathroom Routine v1.0.4 (Circadian & Toddler)"
+  name: "Bathroom Routine v2.0.0 (Reliability Focus)"
   description: >
-    **Version: 1.0.4**
+    **Version: 2.0.0 - Complete Rewrite**
     
-    A smart bathroom automation utilizing Philips Hue devices.
+    A completely strictly-typed rewrite focusing on reliability.
     
-    **Features:**
-    *   **4-Phase Routine:** Morning, Day, Evening (Toddler Wind-Down), Late Night (Sleep).
-    *   **Circadian Logic:** Automatically adjusts color temperature (Morning/Day = Cool/Neutral, Evening = Warm).
-    *   **Toddler Sleep Support:** "Late Night" mode uses specific Red/Amber light (Hue Go) to preserve melatonin.
-    *   **Summer Safe:** "Evening" mode enforces warm light at a fixed time (e.g. 19:00) regardless of late sunsets.
-    *   **Makeup Override:** Supports an external helper (Input Boolean) to force bright cool light.
+    **Logic Flow:**
+    1. **Override:** If enabled, lights force ON (Bright White).
+    2. **Turn Off:** If motion clears (and no override), lights turn OFF.
+    3. **Turn On:** If motion is active, logic evaluates Time Blocks in a specific "Waterfall" order to ensure a valid state is always selected.
+    
+    **Time Logic (Waterfall):**
+    1. **Late Night:** Checks if time is >= Night Start OR < Morning Start.
+    2. **Evening:** Checks if time is >= Evening Start.
+    3. **Day:** Checks if time is >= Day Start.
+    4. **Morning:** Default fallback (Everything else).
 
   domain: automation
   input:
@@ -23,21 +27,19 @@ blueprint:
           device_class: motion
     light_main:
       name: Main Lights (Ceiling & Mirrors)
-      description: These lights will follow the main circadian routine.
       selector:
         target:
           entity:
             domain: light
     light_night:
       name: Night Light (Hue Go)
-      description: This light will turn Red during Late Night mode.
       selector:
         entity:
           domain: light
 
     override_entity:
       name: Override / Makeup Mode (Optional)
-      description: An Input Boolean. When ON, lights turn Bright White (Makeup Mode).
+      description: Input Boolean. When ON, force Bright White.
       default: []
       selector:
         entity:
@@ -46,68 +48,89 @@ blueprint:
     # --- Schedule (Start Times) ---
     time_morning:
       name: Morning Start
-      description: Cool White, High Brightness.
       default: "06:00:00"
       selector:
         time:
     time_day:
       name: Day Start
-      description: Neutral White.
       default: "09:00:00"
       selector:
         time:
     time_evening:
       name: Evening Start (Toddler Wind-Down)
-      description: Warm White (2200K). Set this to ~1 hour before bedtime (e.g., 18:30).
       default: "18:30:00"
       selector:
         time:
     time_night:
       name: Late Night Start (Sleep)
-      description: Red Light only (Hue Go).
       default: "22:00:00"
       selector:
         time:
 
-    # --- Brightness Settings ---
+    # --- Brightness/Color Settings ---
+    # Morning
     bri_morning:
       name: Morning Brightness
       default: 80
       selector:
         number: {min: 1, max: 100, unit_of_measurement: "%"}
+    temp_morning:
+      name: Morning Color Temp (K)
+      default: 4000
+      selector:
+        color_temp:
+          min_mireds: 153
+          max_mireds: 500
+          
+    # Day
     bri_day:
       name: Day Brightness
       default: 100
       selector:
         number: {min: 1, max: 100, unit_of_measurement: "%"}
+    temp_day:
+      name: Day Color Temp (K)
+      default: 3500
+      selector:
+        color_temp:
+          min_mireds: 153
+          max_mireds: 500
+
+    # Evening
     bri_evening:
       name: Evening Brightness
       default: 50
       selector:
         number: {min: 1, max: 100, unit_of_measurement: "%"}
+    temp_evening:
+      name: Evening Color Temp (K)
+      default: 2200
+      selector:
+        color_temp:
+          min_mireds: 153
+          max_mireds: 500
+
+    # Late Night
     bri_night:
       name: Late Night Brightness (Hue Go)
       default: 10
       selector:
         number: {min: 1, max: 100, unit_of_measurement: "%"}
-
-    # --- Advanced Options ---
+    
     enable_main_night:
       name: Enable Main Lights in Late Night?
-      description: If enabled, Main Lights will turn on (very dim) during Late Night. If disabled, only the Hue Go turns on.
       default: false
       selector:
         boolean:
     bri_main_night:
       name: Late Night Brightness (Main Lights)
-      description: Only used if Main Lights are enabled for Late Night.
       default: 5
       selector:
         number: {min: 1, max: 100, unit_of_measurement: "%"}
 
+    # --- General ---
     motion_delay:
       name: Motion Timeout
-      description: Time to wait before turning off lights.
       default: 5
       selector:
         number: {min: 1, max: 60, unit_of_measurement: "min"}
@@ -133,41 +156,46 @@ trigger:
       minutes: !input motion_delay
     id: "motion_off"
   
-  # Override Toggle
+  # Override
   - platform: state
     entity_id: !input override_entity
     id: "override_change"
 
-  # Time Blocks (Update light state if already on)
+  # Time Changes (Trigger re-evaluation if lights are already on)
   - platform: time
     at: !input time_morning
-    id: "schedule_change"
+    id: "time_change"
   - platform: time
     at: !input time_day
-    id: "schedule_change"
+    id: "time_change"
   - platform: time
     at: !input time_evening
-    id: "schedule_change"
+    id: "time_change"
   - platform: time
     at: !input time_night
-    id: "schedule_change"
+    id: "time_change"
 
 variables:
-  # Inputs
+  # Inputs (Mapping for readability)
   sensor_motion: !input motion_sensor
   entity_override: !input override_entity
   enable_main_night: !input enable_main_night
+  
+  # Settings
+  bri_morn: !input bri_morning
+  bri_day: !input bri_day
+  bri_even: !input bri_evening
+  bri_night: !input bri_night
   bri_main_night: !input bri_main_night
   
-  t_morning: !input time_morning
+  # Times
+  t_morn: !input time_morning
   t_day: !input time_day
-  t_evening: !input time_evening
+  t_even: !input time_evening
   t_night: !input time_night
 
-  # Current State
+  # States
   is_motion: "{{ is_state(sensor_motion, 'on') }}"
-  
-  # Robust Override Check
   is_override: >
     {% if entity_override %}
       {{ is_state(entity_override, 'on') }}
@@ -175,27 +203,15 @@ variables:
       false
     {% endif %}
 
-  # Determine Logic Phase (Fixed Logic v1.0.4 - Whitespace Control)
-  current_phase: >-
-    {%- set t = now().strftime('%H:%M:%S') -%}
-    {%- if (t_morning <= t_day and t_morning <= t < t_day) or (t_morning > t_day and (t >= t_morning or t < t_day)) -%}
-      morning
-    {%- elif (t_day <= t_evening and t_day <= t < t_evening) or (t_day > t_evening and (t >= t_day or t < t_evening)) -%}
-      day
-    {%- elif (t_evening <= t_night and t_evening <= t < t_night) or (t_evening > t_night and (t >= t_evening or t < t_night)) -%}
-      evening
-    {%- else -%}
-      late_night
-    {%- endif -%}
-
 action:
   - choose:
-      # 1. OVERRIDE MODE (Makeup)
+      # -----------------------------------------------------------
+      # 1. OVERRIDE MODE (Highest Priority)
+      # -----------------------------------------------------------
       - conditions:
           - condition: template
             value_template: "{{ is_override }}"
         sequence:
-          # Turn EVERYTHING on Bright Cool White
           - service: light.turn_on
             target: !input light_main
             data:
@@ -210,7 +226,9 @@ action:
               brightness_pct: 100
               transition: !input transition_time
 
-      # 2. TURN OFF (No Motion & No Override)
+      # -----------------------------------------------------------
+      # 2. TURN OFF (Motion Cleared & Not Override)
+      # -----------------------------------------------------------
       - conditions:
           - condition: trigger
             id: "motion_off"
@@ -227,7 +245,9 @@ action:
             data:
               transition: !input transition_time
 
-      # 3. TURN ON / UPDATE (Motion Active OR Schedule Change)
+      # -----------------------------------------------------------
+      # 3. TURN ON (Motion Active OR Time Change)
+      # -----------------------------------------------------------
       - conditions:
           - condition: template
             value_template: "{{ is_motion }}"
@@ -235,78 +255,21 @@ action:
             value_template: "{{ not is_override }}"
         sequence:
           - choose:
-              # PHASE: MORNING (Cool, Bright)
+              # A. LATE NIGHT (Waterfall 1: Time >= Night OR Time < Morning)
               - conditions:
                   - condition: template
-                    value_template: "{{ current_phase == 'morning' }}"
-                sequence:
-                  - service: light.turn_on
-                    target: !input light_main
-                    data:
-                      kelvin: 4000
-                      brightness_pct: !input bri_morning
-                      transition: !input transition_time
-                  - service: light.turn_on
-                    target:
-                      entity_id: !input light_night
-                    data:
-                      kelvin: 4000
-                      brightness_pct: !input bri_morning
-                      transition: !input transition_time
-
-              # PHASE: DAY (Neutral, Bright)
-              - conditions:
-                  - condition: template
-                    value_template: "{{ current_phase == 'day' }}"
-                sequence:
-                  - service: light.turn_on
-                    target: !input light_main
-                    data:
-                      kelvin: 3500
-                      brightness_pct: !input bri_day
-                      transition: !input transition_time
-                  - service: light.turn_on
-                    target:
-                      entity_id: !input light_night
-                    data:
-                      kelvin: 3500
-                      brightness_pct: !input bri_day
-                      transition: !input transition_time
-
-              # PHASE: EVENING (Warm, Dim)
-              - conditions:
-                  - condition: template
-                    value_template: "{{ current_phase == 'evening' }}"
-                sequence:
-                  - service: light.turn_on
-                    target: !input light_main
-                    data:
-                      kelvin: 2200
-                      brightness_pct: !input bri_evening
-                      transition: !input transition_time
-                  - service: light.turn_on
-                    target:
-                      entity_id: !input light_night
-                    data:
-                      kelvin: 2200
-                      brightness_pct: !input bri_evening
-                      transition: !input transition_time
-
-              # PHASE: LATE NIGHT (Red/Amber, Dark)
-              - conditions:
-                  - condition: template
-                    value_template: "{{ current_phase == 'late_night' }}"
+                    value_template: >
+                      {{ now() >= today_at(t_night) or now() < today_at(t_morn) }}
                 sequence:
                   # Hue Go -> RED
                   - service: light.turn_on
                     target:
                       entity_id: !input light_night
                     data:
-                      rgb_color: [255, 67, 0] # Deep Orange/Red
+                      rgb_color: [255, 67, 0]
                       brightness_pct: !input bri_night
                       transition: !input transition_time
-                  
-                  # Main Lights -> OFF or DIM Warm
+                  # Main Lights -> Conditional
                   - choose:
                       - conditions:
                           - condition: template
@@ -323,19 +286,57 @@ action:
                         target: !input light_main
                         data:
                           transition: !input transition_time
-            
-            # DEFAULT FAILSAFE (Safe Mode: Evening Settings)
+
+              # B. EVENING (Waterfall 2: Time >= Evening)
+              - conditions:
+                  - condition: template
+                    value_template: "{{ now() >= today_at(t_even) }}"
+                sequence:
+                  - service: light.turn_on
+                    target: !input light_main
+                    data:
+                      kelvin: !input temp_evening
+                      brightness_pct: !input bri_evening
+                      transition: !input transition_time
+                  - service: light.turn_on
+                    target:
+                      entity_id: !input light_night
+                    data:
+                      kelvin: !input temp_evening
+                      brightness_pct: !input bri_evening
+                      transition: !input transition_time
+
+              # C. DAY (Waterfall 3: Time >= Day)
+              - conditions:
+                  - condition: template
+                    value_template: "{{ now() >= today_at(t_day) }}"
+                sequence:
+                  - service: light.turn_on
+                    target: !input light_main
+                    data:
+                      kelvin: !input temp_day
+                      brightness_pct: !input bri_day
+                      transition: !input transition_time
+                  - service: light.turn_on
+                    target:
+                      entity_id: !input light_night
+                    data:
+                      kelvin: !input temp_day
+                      brightness_pct: !input bri_day
+                      transition: !input transition_time
+
+            # D. MORNING (Waterfall 4: Default/Fallback)
             default:
               - service: light.turn_on
                 target: !input light_main
                 data:
-                  kelvin: 2700
-                  brightness_pct: 50
+                  kelvin: !input temp_morning
+                  brightness_pct: !input bri_morning
                   transition: !input transition_time
               - service: light.turn_on
                 target:
                   entity_id: !input light_night
                 data:
-                  kelvin: 2700
-                  brightness_pct: 50
+                  kelvin: !input temp_morning
+                  brightness_pct: !input bri_morning
                   transition: !input transition_time
