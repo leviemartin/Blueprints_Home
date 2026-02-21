@@ -52,6 +52,13 @@
 *   **Logic:** The transition is calculated in the **Mired space** ($M = 1,000,000 / K$). This matches human perception where changes at lower Kelvin are more noticeable, ensuring a perfectly smooth, natural-feeling shift.
 *   **Brightness Scaling:** In Kelvin mode (>= 2700K), Govee is significantly brighter and is scaled by `govee_brightness_scale`. In RGB mode (< 2700K), brightness is naturally lower and remains unscaled to maintain alignment with Hue.
 
+### 4.3. Govee Smoothing Logic
+*   **Problem:** Govee lights often ignore the `transition` parameter in Home Assistant service calls, resulting in "instant" state changes.
+*   **Solution:** The blueprint implements **Simulated Transitions** for Govee lights using `repeat` loops:
+    *   **Turn ON (2s):** 4 steps of 0.5s each, fading from 1% to target brightness.
+    *   **Turn OFF (5s):** 5 steps of 1.0s each, fading to 0%.
+    *   **Update Loop (30s):** 6 steps of 5.0s each to match the Hue's native circadian shift smoothness.
+
 ### 4.2. Time Slots (Brightness Profiles) - Fully Configurable
 *   **Day Start:** 06:00 (Fixed). (Uses Max Kelvin input).
 *   **Dinner:**
