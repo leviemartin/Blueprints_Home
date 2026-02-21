@@ -47,7 +47,7 @@
 ### 4.2. Multi-Brand Color Alignment
 *   **Problem:** Govee Ceiling Light Pro only supports down to 2700K natively.
 *   **Solution:** For targets below 2700K (e.g., 2000K or 2200K), the Govee light automatically switches to **RGB mode** with interpolated color values:
-    *   **2000K:** `[255, 90, 0]` (Calibrated for refined amber-red).
+    *   **2000K:** `[255, 97, 2]` (Calibrated to reduce excessive amber-red warmth).
     *   **2700K:** `[255, 166, 87]`
 *   **Brightness Scaling:** In Kelvin mode (>= 2700K), Govee is significantly brighter and is scaled by `govee_brightness_scale`. In RGB mode (< 2700K), brightness is naturally lower and remains unscaled to maintain alignment with Hue.
 

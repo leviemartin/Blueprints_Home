@@ -1,7 +1,7 @@
 blueprint:
-  name: "Circadian Living Room Lights v1.3.4"
+  name: "Circadian Living Room Lights v1.3.5"
   description: >
-    **Version: 1.3.4**
+    **Version: 1.3.5**
     
     A comprehensive lighting automation for the Living Room that adapts to human presence, 
     circadian rhythms, and specific family routines.
@@ -347,12 +347,12 @@ action:
       govee_rgb: >
         {% if g_is_rgb %}
           {% set k = target_kelvin | int %}
-          {# Interpolate between 2000K [255, 90, 0] and 2700K [255, 166, 87] #}
+          {# Interpolate between 2000K [255, 97, 2] and 2700K [255, 166, 87] #}
           {% set k_adj = [2000, [2700, k]|min]|max %}
           {% set factor = (k_adj - 2000) / 700 %}
           {% set r = 255 %}
-          {% set g = (90 + (166 - 90) * factor) | round(0) | int %}
-          {% set b = (0 + (87 - 0) * factor) | round(0) | int %}
+          {% set g = (97 + (166 - 97) * factor) | round(0) | int %}
+          {% set b = (2 + (87 - 2) * factor) | round(0) | int %}
           {{ [r, g, b] }}
         {% else %} [] {% endif %}
 
