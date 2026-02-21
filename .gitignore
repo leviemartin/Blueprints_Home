@@ -1,2 +1,6 @@
 .gemini/
 gha-creds-*.json
+.DS_Store
+*.swp
+.idea/
+.vscode/

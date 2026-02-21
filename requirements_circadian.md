@@ -23,7 +23,9 @@
     *   Prevent lights from turning on if ambient light (Aqara FP2 Lux) is above a configurable threshold (e.g., 300 Lux).
 
 ## 3. Hardware & Inputs
-*   **Lights:** Philips Hue Group (Color/White Ambiance).
+*   **Lights:** 
+    *   **Philips Hue:** Primary bulbs (Color/White Ambiance).
+    *   **Govee:** Smart Ceiling Light Pro (supports 2700K-6500K natively).
 *   **Presence:** Aqara FP2 (binary_sensor).
 *   **Illuminance:** Aqara FP2 (sensor.lux).
 *   **Sun:** Home Assistant `sun.sun` entity.
@@ -32,13 +34,22 @@
 ## 4. Detailed Logic & Settings
 
 ### 4.1. Inputs
-*   `light_entity`: Target lights.
+*   `hue_lights`: Philips Hue bulbs/groups.
+*   `govee_lights`: Govee ceiling lights.
+*   `govee_brightness_scale`: Multiplier (e.g., 0.4) to dim Govee lights relative to Hue in Kelvin mode.
 *   `presence_entity`: Occupancy sensor.
 *   `illuminance_entity`: Lux sensor.
 *   `manual_override`: (Optional) Entity to block automation.
 *   `lux_threshold`: Number (default 300). Above this, lights don't turn on.
 *   `max_kelvin`: (Default 4500K).
 *   `min_kelvin`: (Default 2200K - very warm).
+
+### 4.2. Multi-Brand Color Alignment
+*   **Problem:** Govee Ceiling Light Pro only supports down to 2700K natively.
+*   **Solution:** For targets below 2700K (e.g., 2000K or 2200K), the Govee light automatically switches to **RGB mode** with interpolated color values:
+    *   **2000K:** `[255, 141, 11]`
+    *   **2700K:** `[255, 166, 87]`
+*   **Brightness Scaling:** In Kelvin mode (>= 2700K), Govee is significantly brighter and is scaled by `govee_brightness_scale`. In RGB mode (< 2700K), brightness is naturally lower and remains unscaled to maintain alignment with Hue.
 
 ### 4.2. Time Slots (Brightness Profiles) - Fully Configurable
 *   **Day Start:** 06:00 (Fixed). (Uses Max Kelvin input).
