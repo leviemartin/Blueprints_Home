@@ -347,12 +347,12 @@ action:
       govee_rgb: >
         {% if g_is_rgb %}
           {% set k = target_kelvin | int %}
-          {# Interpolate between 2000K [255, 141, 11] and 2700K [255, 166, 87] #}
+          {# Interpolate between 2000K [255, 80, 0] and 2700K [255, 166, 87] #}
           {% set k_adj = [2000, [2700, k]|min]|max %}
           {% set factor = (k_adj - 2000) / 700 %}
           {% set r = 255 %}
-          {% set g = (141 + (166 - 141) * factor) | round(0) | int %}
-          {% set b = (11 + (87 - 11) * factor) | round(0) | int %}
+          {% set g = (80 + (166 - 80) * factor) | round(0) | int %}
+          {% set b = (0 + (87 - 0) * factor) | round(0) | int %}
           {{ [r, g, b] }}
         {% else %} [] {% endif %}
 
