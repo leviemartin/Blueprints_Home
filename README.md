@@ -20,10 +20,10 @@ This Home Assistant blueprint is an expert-level automation designed to help tod
 ### Installation
 1. Click the button below to import this blueprint into your Home Assistant instance:
 
-[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fleviemartin%2FBlueprints_Home%2Fblob%2Fmain%2Fnightlight.yaml)
+[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fleviemartin%2FBlueprints_Home%2Fmain%2Fnightlight.yaml)
 
 2. Or manually copy this URL into the Blueprints configuration:
-`https://github.com/leviemartin/Blueprints_Home/blob/main/nightlight.yaml`
+`https://raw.githubusercontent.com/leviemartin/Blueprints_Home/main/nightlight.yaml`
 
 ---
 
@@ -45,10 +45,10 @@ A comprehensive lighting automation for the Living Room that adapts to human pre
 ### Installation
 1. Click the button below to import this blueprint into your Home Assistant instance:
 
-[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fleviemartin%2FBlueprints_Home%2Fblob%2Fmain%2Fcircadian_livingroom.yaml)
+[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fleviemartin%2FBlueprints_Home%2Fmain%2Fcircadian_livingroom.yaml)
 
 2. Or manually copy this URL into the Blueprints configuration:
-`https://github.com/leviemartin/Blueprints_Home/blob/main/circadian_livingroom.yaml`
+`https://raw.githubusercontent.com/leviemartin/Blueprints_Home/main/circadian_livingroom.yaml`
 
 ---
 
@@ -65,10 +65,10 @@ Automates the Display (Light) and Sound (Beep) settings of LG Air Conditioners. 
 ### Installation
 1. Click the button below to import this blueprint into your Home Assistant instance:
 
-[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fleviemartin%2FBlueprints_Home%2Fblob%2Fmain%2Flg_sleep_movie.yaml)
+[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fleviemartin%2FBlueprints_Home%2Fmain%2Flg_sleep_movie.yaml)
 
 2. Or manually copy this URL into the Blueprints configuration:
-`https://github.com/leviemartin/Blueprints_Home/blob/main/lg_sleep_movie.yaml`
+`https://raw.githubusercontent.com/leviemartin/Blueprints_Home/main/lg_sleep_movie.yaml`
 
 ---
 *Created by Martin Levie (Gemini CLI Agent)*
