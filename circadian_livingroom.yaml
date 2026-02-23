@@ -1,13 +1,14 @@
 blueprint:
-  name: "Circadian Living Room Lights v2.0.0"
+  name: "Circadian Living Room Lights v2.1.0"
   description: >
-    **Version: 2.0.0**
+    **Version: 2.1.0**
     
     A comprehensive lighting automation for the Living Room that adapts to human presence, 
     circadian rhythms, and specific family routines. Optimized for Philips Hue Infuse and Bulbs.
     
     **Features:**
     - **Fully Configurable Profiles:** Customize Time, Kelvin, and Brightness for Dinner, Toddler, Evening, and Night.
+    - **Brightness Calibration:** Scale ceiling light brightness to match bulbs for even distribution.
     - **Separate Control:** Independent inputs for Hue Bulbs and Hue Ceiling Lights.
     - **Native Hue Effects:** Optional "Candlelight" or "Fireplace" effects for Evening and Night modes.
     - **Manual Override:** Pause automation via a Switch or Input Boolean (e.g., for Movie Night).
@@ -19,7 +20,7 @@ blueprint:
   input:
     hue_bulbs:
       name: Philips Hue Bulbs
-      description: Select your Philips Hue bulbs/groups here.
+      description: Select your Philips Hue bulbs/spots and Gradient TV strips here.
       default: []
       selector:
         entity:
@@ -33,6 +34,15 @@ blueprint:
         entity:
           domain: light
           multiple: true
+    ceiling_brightness_scale:
+      name: Ceiling Brightness Scale
+      description: "Scale ceiling brightness to match bulbs for even distribution (e.g., 0.6 = 60% of bulb brightness)."
+      default: 0.6
+      selector:
+        number:
+          min: 0.1
+          max: 1.0
+          step: 0.05
     presence_entity:
       name: Presence Sensor
       selector:
@@ -294,6 +304,9 @@ variables:
   val_max_k: !input max_kelvin
   val_min_k: !input min_kelvin
   
+  # Scaling
+  c_scale: !input ceiling_brightness_scale
+  
   # Time Slots
   t_dinner: !input time_dinner
   t_toddler: !input time_toddler
@@ -357,6 +370,8 @@ action:
         {% elif mode == 'night' %} {{ b_night }}
         {% else %} 100 {% endif %}
 
+      ceiling_bri: "{{ (target_brightness | float * c_scale | float) | round(0) | int }}"
+
       target_effect: >
         {% if mode == 'evening' %} {{ e_evening }}
         {% elif mode == 'night' %} {{ e_night }}
@@ -399,24 +414,33 @@ action:
               - condition: trigger
                 id: "override_resume"
         sequence:
-          # Turn on All Lights (Native transition)
-          - service: light.turn_on
-            target:
-              entity_id: "{{ all_target_lights }}"
-            data:
-              kelvin: "{{ target_kelvin }}"
-              brightness_pct: "{{ target_brightness }}"
-              transition: 2
-          # Apply Effect to Ceiling Lights if configured
+          # Turn on Bulbs (Native transition)
           - if:
               - condition: template
-                value_template: "{{ hue_list_ceiling != [] and target_effect != 'none' }}"
+                value_template: "{{ hue_list_bulbs != [] }}"
+            then:
+              - service: light.turn_on
+                target:
+                  entity_id: "{{ hue_list_bulbs }}"
+                data:
+                  kelvin: "{{ target_kelvin }}"
+                  brightness_pct: "{{ target_brightness }}"
+                  transition: 2
+          # Turn on Ceiling Lights (Scaled and/or Effect)
+          - if:
+              - condition: template
+                value_template: "{{ hue_list_ceiling != [] }}"
             then:
               - service: light.turn_on
                 target:
                   entity_id: "{{ hue_list_ceiling }}"
                 data:
+                  kelvin: "{{ target_kelvin }}"
+                  brightness_pct: "{{ ceiling_bri }}"
+                  transition: 2
+                  {% if target_effect != 'none' %}
                   effect: "{{ target_effect }}"
+                  {% endif %}
 
       # SCENARIO 3: UPDATE LOOP
       - conditions:
@@ -428,23 +452,32 @@ action:
           - condition: template
             value_template: "{{ current_lux < (threshold_on + 300) }}" 
         sequence:
-          # Update All Active Lights
-          - service: light.turn_on
-            target:
-              entity_id: >
-                {{ expand(all_target_lights) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
-            data:
-              kelvin: "{{ target_kelvin }}"
-              brightness_pct: "{{ target_brightness }}"
-              transition: 30
-          # Ensure Effect is still running on ceiling lights if active
+          # Update Active Bulbs (Native 30s)
           - if:
               - condition: template
-                value_template: "{{ hue_list_ceiling != [] and target_effect != 'none' }}"
+                value_template: "{{ expand(hue_list_bulbs) | selectattr('state', 'eq', 'on') | list | count > 0 }}"
+            then:
+              - service: light.turn_on
+                target:
+                  entity_id: >
+                    {{ expand(hue_list_bulbs) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
+                data:
+                  kelvin: "{{ target_kelvin }}"
+                  brightness_pct: "{{ target_brightness }}"
+                  transition: 30
+          # Update Active Ceiling Lights (Native 30s)
+          - if:
+              - condition: template
+                value_template: "{{ expand(hue_list_ceiling) | selectattr('state', 'eq', 'on') | list | count > 0 }}"
             then:
               - service: light.turn_on
                 target:
                   entity_id: >
                     {{ expand(hue_list_ceiling) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
                 data:
+                  kelvin: "{{ target_kelvin }}"
+                  brightness_pct: "{{ ceiling_bri }}"
+                  transition: 30
+                  {% if target_effect != 'none' %}
                   effect: "{{ target_effect }}"
+                  {% endif %}

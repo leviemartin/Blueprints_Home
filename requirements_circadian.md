@@ -38,6 +38,7 @@
 ### 4.1. Inputs
 *   `hue_bulbs`: Target bulbs.
 *   `hue_ceiling`: Target ceiling lights (Infuse).
+*   `ceiling_brightness_scale`: Multiplier (e.g., 0.6) to dim Hue Infuse lights relative to bulbs for even room distribution.
 *   `presence_entity`: Occupancy sensor.
 *   `illuminance_entity`: Lux sensor.
 *   `manual_override`: (Optional) Entity to block automation.
