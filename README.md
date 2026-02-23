@@ -34,9 +34,8 @@ A comprehensive lighting automation for the Living Room that adapts to human pre
 
 ### Features
 *   **☀️ Native Circadian Algorithm:** Automatically shifts Color Temperature (Kelvin) based on the Sun's elevation without external integrations.
-*   **⚖️ Multi-Brand Calibration (Hue & Govee):** 
-    *   **Brightness Scaling:** Calibrate Govee Ceiling Lights to match Hue bulbs' lumen output.
-    *   **Color Alignment (2000K-6500K):** Govee lights automatically switch to calibrated **RGB mode** for warm hues (2000K-2699K) to perfectly match Philips Hue "Candlelight" settings.
+*   **🛋️ Hue Infuse Support:** Optimized for Philips Hue Infuse ceiling lights, supporting independent control of main and backlight entities.
+*   **✨ Native Hue Effects:** Supports triggering native effects like **Candlelight** and **Fireplace** during Evening and Night profiles.
 *   **🍽️ Routine Overrides:** Dedicated time slots for **Dinner** (Bright/Neutral) and **Toddler Prep** (Warm Amber/Dim) to override the sun cycle.
 *   **💡 Daylight Harvesting:**
     *   **Auto-ON:** Lights turn on if you enter and it's dark (<150 lux) OR if you are sitting and the sun sets.

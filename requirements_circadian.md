@@ -2,7 +2,7 @@
 
 ## 1. Overview
 **Name:** Circadian LivingRoom Lights  
-**Description:** A comprehensive lighting automation for the Living Room that adapts to human presence, circadian rhythms (sun position), and specific family routines (dinner, toddler sleep). It utilizes the Aqara FP2 for high-precision presence and light level detection, ensuring lights are only on when needed and visually comfortable.
+**Description:** A comprehensive lighting automation for the Living Room that adapts to human presence, circadian rhythms (sun position), and specific family routines. Optimized for a Philips Hue ecosystem, including Hue Infuse ceiling lights and ambient bulbs.
 
 ## 2. Core Features
 *   **Presence-Based Switching:**
@@ -14,6 +14,8 @@
     *   **Sunset/Twilight:** Transitions to Warm White (~2700K).
 *   **Toddler Summer Adjustment (The "Sunset Override"):**
     *   Even if the sun is still up (summer evenings), the lights must shift to "Sleep Prep" mode (Warm Amber, ~2200K) starting at **19:00** to support the toddler's 20:00 bedtime.
+*   **Native Hue Effects:**
+    *   Optional support for "Candlelight" or "Fireplace" effects on ceiling lights during Evening and Night profiles.
 *   **Smart Brightness Schedule:**
     *   **Day:** Adaptive (or blocked by Lux threshold).
     *   **Dinner Mode (18:00-19:00):** Boost to high brightness (80-100%) for eating/tasks.
@@ -24,8 +26,8 @@
 
 ## 3. Hardware & Inputs
 *   **Lights:** 
-    *   **Philips Hue:** Primary bulbs (Color/White Ambiance).
-    *   **Govee:** Smart Ceiling Light Pro (supports 2700K-6500K natively).
+    *   **Philips Hue Bulbs:** Ambient/Color bulbs for general lighting.
+    *   **Philips Hue Infuse:** Ceiling lights (Main and Backlight entities supported).
 *   **Presence:** Aqara FP2 (binary_sensor).
 *   **Illuminance:** Aqara FP2 (sensor.lux).
 *   **Sun:** Home Assistant `sun.sun` entity.
@@ -34,9 +36,8 @@
 ## 4. Detailed Logic & Settings
 
 ### 4.1. Inputs
-*   `hue_lights`: Philips Hue bulbs/groups.
-*   `govee_lights`: Govee ceiling lights.
-*   `govee_brightness_scale`: Multiplier (e.g., 0.4) to dim Govee lights relative to Hue in Kelvin mode.
+*   `hue_bulbs`: Target bulbs.
+*   `hue_ceiling`: Target ceiling lights (Infuse).
 *   `presence_entity`: Occupancy sensor.
 *   `illuminance_entity`: Lux sensor.
 *   `manual_override`: (Optional) Entity to block automation.
@@ -44,22 +45,10 @@
 *   `max_kelvin`: (Default 4500K).
 *   `min_kelvin`: (Default 2200K - very warm).
 
-### 4.2. Multi-Brand Color Alignment
-*   **Problem:** Govee Ceiling Light Pro only supports down to 2700K natively.
-*   **Solution:** For targets below 2700K (e.g., 2000K or 2200K), the Govee light automatically switches to **RGB mode** with **Perceptual Mired-based Interpolation**:
-    *   **2000K:** `[255, 94, 1]` (The "Perfect" warm amber-red).
-    *   **2700K:** `[255, 169, 80]` (Calibrated Warm White anchor).
-*   **Logic:** The transition is calculated in the **Mired space** ($M = 1,000,000 / K$). This matches human perception where changes at lower Kelvin are more noticeable, ensuring a perfectly smooth, natural-feeling shift.
-*   **Brightness Scaling:** In Kelvin mode (>= 2700K), Govee is significantly brighter and is scaled by `govee_brightness_scale`. In RGB mode (< 2700K), brightness is naturally lower and remains unscaled to maintain alignment with Hue.
+### 4.2. Per-Profile Effects
+*   **Evening/Night:** Users can select native Hue effects (Candlelight, Fireplace) which are applied to the `hue_ceiling` entities automatically when the profile starts.
 
-### 4.3. Govee Smoothing Logic
-*   **Problem:** Govee lights often ignore the `transition` parameter in Home Assistant service calls, resulting in "instant" state changes.
-*   **Solution:** The blueprint implements **Simulated Transitions** for Govee lights using `repeat` loops:
-    *   **Turn ON (2s):** 4 steps of 0.5s each, fading from 1% to target brightness.
-    *   **Turn OFF (5s):** 5 steps of 1.0s each, fading to 0%.
-    *   **Update Loop (30s):** 6 steps of 5.0s each to match the Hue's native circadian shift smoothness.
-
-### 4.2. Time Slots (Brightness Profiles) - Fully Configurable
+### 4.3. Time Slots (Brightness Profiles) - Fully Configurable
 *   **Day Start:** 06:00 (Fixed). (Uses Max Kelvin input).
 *   **Dinner:**
     *   Start Time (Default: 18:00)
@@ -73,10 +62,12 @@
     *   Start Time (Default: 20:00)
     *   Kelvin (Default: 2700K)
     *   Brightness (Default: 50%)
+    *   Effect (Optional: Candlelight/Fireplace)
 *   **Night:**
     *   Start Time (Default: 22:00)
     *   Kelvin (Default: 2200K)
     *   Brightness (Default: 20%)
+    *   Effect (Optional: Candlelight/Fireplace)
 
 ### 4.3. Circadian Math (Simplified)
 *   **Day Mode:** Maps Sun Elevation to `min_kelvin` - `max_kelvin`.

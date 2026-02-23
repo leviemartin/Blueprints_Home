@@ -1,48 +1,38 @@
 blueprint:
-  name: "Circadian Living Room Lights v1.5.0"
+  name: "Circadian Living Room Lights v2.0.0"
   description: >
-    **Version: 1.5.0**
+    **Version: 2.0.0**
     
     A comprehensive lighting automation for the Living Room that adapts to human presence, 
-    circadian rhythms, and specific family routines.
+    circadian rhythms, and specific family routines. Optimized for Philips Hue Infuse and Bulbs.
     
     **Features:**
     - **Fully Configurable Profiles:** Customize Time, Kelvin, and Brightness for Dinner, Toddler, Evening, and Night.
+    - **Separate Control:** Independent inputs for Hue Bulbs and Hue Ceiling Lights.
+    - **Native Hue Effects:** Optional "Candlelight" or "Fireplace" effects for Evening and Night modes.
     - **Manual Override:** Pause automation via a Switch or Input Boolean (e.g., for Movie Night).
     - **Daylight Harvesting:** Auto-Off if naturally bright (>400 lux).
     - **Flicker Protection:** Hybrid Lux logic prevents rapid toggling.
     - **Presence Timeout:** Configurable delay before turning off lights.
-    - **Multi-Brand Calibration:** Calibrated brightness and color matching for Philips Hue and Govee Ceiling Lights.
-    - **Perceptual Color Logic:** Natural Mired-based transitions for Govee RGB warm-white simulation.
-    - **Govee Smoothing:** Simulated transitions for brands that don't support native transition commands.
     
   domain: automation
   input:
-    hue_lights:
-      name: Philips Hue Lights
+    hue_bulbs:
+      name: Philips Hue Bulbs
       description: Select your Philips Hue bulbs/groups here.
       default: []
       selector:
         entity:
           domain: light
           multiple: true
-    govee_lights:
-      name: Govee Lights
-      description: Select your Govee Ceiling Light(s) here.
+    hue_ceiling:
+      name: Philips Hue Ceiling Lights (Infuse)
+      description: Select your Hue Infuse ceiling light entities (Main and Backlight) here.
       default: []
       selector:
         entity:
           domain: light
           multiple: true
-    govee_brightness_scale:
-      name: Govee Brightness Scale
-      description: "Scale Govee brightness to match Hue (e.g., 0.4 = 40% of Hue brightness). Only applies in Kelvin mode."
-      default: 0.4
-      selector:
-        number:
-          min: 0.1
-          max: 1.0
-          step: 0.05
     presence_entity:
       name: Presence Sensor
       selector:
@@ -174,6 +164,19 @@ blueprint:
           min: 1
           max: 100
           unit_of_measurement: "%"
+    evening_effect:
+      name: Evening Effect
+      description: "Optional native Hue effect for the ceiling lights."
+      default: "none"
+      selector:
+        select:
+          options:
+            - label: "None"
+              value: "none"
+            - label: "Candlelight"
+              value: "candlelight"
+            - label: "Fireplace"
+              value: "fireplace"
 
     # --- NIGHT PROFILE ---
     time_night:
@@ -198,6 +201,19 @@ blueprint:
           min: 1
           max: 100
           unit_of_measurement: "%"
+    night_effect:
+      name: Night Effect
+      description: "Optional native Hue effect for the ceiling lights."
+      default: "none"
+      selector:
+        select:
+          options:
+            - label: "None"
+              value: "none"
+            - label: "Candlelight"
+              value: "candlelight"
+            - label: "Fireplace"
+              value: "fireplace"
 
     # --- General Light Settings ---
     max_kelvin:
@@ -266,10 +282,10 @@ trigger:
 
 variables:
   # Inputs
-  hue_list: !input hue_lights
-  govee_list: !input govee_lights
-  # Combine for presence checks (turn-on logic)
-  all_target_lights: "{{ hue_list + govee_list }}"
+  hue_list_bulbs: !input hue_bulbs
+  hue_list_ceiling: !input hue_ceiling
+  # Combine for presence checks (turn-on/off logic)
+  all_target_lights: "{{ hue_list_bulbs + hue_list_ceiling }}"
   
   sensor_lux: !input illuminance_entity
   sensor_presence: !input presence_entity
@@ -277,9 +293,6 @@ variables:
   threshold_on: !input lux_on_threshold
   val_max_k: !input max_kelvin
   val_min_k: !input min_kelvin
-  
-  # Scaling
-  g_scale: !input govee_brightness_scale
   
   # Time Slots
   t_dinner: !input time_dinner
@@ -294,8 +307,10 @@ variables:
   b_toddler: !input toddler_bri
   k_evening: !input evening_kelvin
   b_evening: !input evening_bri
+  e_evening: !input evening_effect
   k_night: !input night_kelvin
   b_night: !input night_bri
+  e_night: !input night_effect
 
 action:
   # 1. Check Override First
@@ -342,36 +357,10 @@ action:
         {% elif mode == 'night' %} {{ b_night }}
         {% else %} 100 {% endif %}
 
-      # --- Govee Specific Logic ---
-      # For Kelvin < 2700, use RGB interpolation.
-      # For Kelvin >= 2700, use Kelvin + Scaled Brightness.
-      g_is_rgb: "{{ target_kelvin | int < 2700 }}"
-      
-      govee_rgb: >
-        {% if g_is_rgb %}
-          {% set k = target_kelvin | int %}
-          {# Perceptual Interpolation using Mireds (1,000,000 / K) #}
-          {# 2000K = 500 Mireds, 2700K = 370 Mireds #}
-          {% set m_target = (1000000 / k) | int %}
-          {% set m_start = 500 %}
-          {% set m_end = 370 %}
-          
-          {# Factor 0.0 at 2000K (500 Mireds), 1.0 at 2700K (370 Mireds) #}
-          {% set factor = (m_start - m_target) / (m_start - m_end) %}
-          {% set factor = [0.0, [1.0, factor]|min]|max %}
-          
-          {# Anchor RGBs #}
-          {# 2000K: [255, 94, 1] | 2700K: [255, 169, 80] #}
-          {% set r = 255 %}
-          {% set g = (94 + (169 - 94) * factor) | round(0) | int %}
-          {% set b = (1 + (80 - 1) * factor) | round(0) | int %}
-          {{ [r, g, b] }}
-        {% else %} [] {% endif %}
-
-      govee_bri: >
-        {# If in RGB mode, don't scale. If in Kelvin mode, scale. #}
-        {% if g_is_rgb %} {{ target_brightness }}
-        {% else %} {{ (target_brightness | float * g_scale | float) | round(0) | int }} {% endif %}
+      target_effect: >
+        {% if mode == 'evening' %} {{ e_evening }}
+        {% elif mode == 'night' %} {{ e_night }}
+        {% else %} none {% endif %}
 
   - choose:
       # SCENARIO 1: TURN OFF
@@ -387,37 +376,11 @@ action:
               - condition: template
                 value_template: "{{ all_target_lights != [] }}"
             then:
-              # Parallel Off
-              - parallel:
-                  # Hue Off (Native)
-                  - if:
-                      - condition: template
-                        value_template: "{{ hue_list != [] }}"
-                    then:
-                      - service: light.turn_off
-                        target:
-                          entity_id: "{{ hue_list }}"
-                        data:
-                          transition: 5
-                  # Govee Off (Simulated 5s)
-                  - if:
-                      - condition: template
-                        value_template: "{{ govee_list != [] }}"
-                    then:
-                      - repeat:
-                          count: 5
-                          sequence:
-                            - service: light.turn_on
-                              target:
-                                entity_id: "{{ govee_list }}"
-                              data:
-                                # Decrease brightness in 20% steps of current profile (approximate)
-                                brightness_pct: "{{ (target_brightness * (1 - repeat.index / 5)) | int }}"
-                            - delay:
-                                seconds: 1
-                      - service: light.turn_off
-                        target:
-                          entity_id: "{{ govee_list }}"
+              - service: light.turn_off
+                target:
+                  entity_id: "{{ all_target_lights }}"
+                data:
+                  transition: 5
 
       # SCENARIO 2: TURN ON
       - conditions:
@@ -436,54 +399,24 @@ action:
               - condition: trigger
                 id: "override_resume"
         sequence:
-          # Turn on Hue Lights (Native)
+          # Turn on All Lights (Native transition)
+          - service: light.turn_on
+            target:
+              entity_id: "{{ all_target_lights }}"
+            data:
+              kelvin: "{{ target_kelvin }}"
+              brightness_pct: "{{ target_brightness }}"
+              transition: 2
+          # Apply Effect to Ceiling Lights if configured
           - if:
               - condition: template
-                value_template: "{{ hue_list != [] }}"
+                value_template: "{{ hue_list_ceiling != [] and target_effect != 'none' }}"
             then:
               - service: light.turn_on
                 target:
-                  entity_id: "{{ hue_list }}"
+                  entity_id: "{{ hue_list_ceiling }}"
                 data:
-                  kelvin: "{{ target_kelvin }}"
-                  brightness_pct: "{{ target_brightness }}"
-                  transition: 2
-          # Turn on Govee Lights (Simulated 2s)
-          - if:
-              - condition: template
-                value_template: "{{ govee_list != [] }}"
-            then:
-              - repeat:
-                  count: 4
-                  sequence:
-                    - variables:
-                        # 25%, 50%, 75%, 100% of target brightness
-                        current_step_bri: "{{ (govee_bri * (repeat.index / 4)) | round(0) | int }}"
-                    - choose:
-                        # RGB Mode
-                        - conditions:
-                            - condition: template
-                              value_template: "{{ g_is_rgb }}"
-                          sequence:
-                            - service: light.turn_on
-                              target:
-                                entity_id: "{{ govee_list }}"
-                              data:
-                                brightness_pct: "{{ [1, current_step_bri] | max }}"
-                                rgb_color: "{{ govee_rgb }}"
-                        # Kelvin Mode
-                        - conditions:
-                            - condition: template
-                              value_template: "{{ not g_is_rgb }}"
-                          sequence:
-                            - service: light.turn_on
-                              target:
-                                entity_id: "{{ govee_list }}"
-                              data:
-                                brightness_pct: "{{ [1, current_step_bri] | max }}"
-                                kelvin: "{{ target_kelvin }}"
-                    - delay:
-                        milliseconds: 500
+                  effect: "{{ target_effect }}"
 
       # SCENARIO 3: UPDATE LOOP
       - conditions:
@@ -495,52 +428,23 @@ action:
           - condition: template
             value_template: "{{ current_lux < (threshold_on + 300) }}" 
         sequence:
-          # Update Hue (Native 30s)
+          # Update All Active Lights
+          - service: light.turn_on
+            target:
+              entity_id: >
+                {{ expand(all_target_lights) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
+            data:
+              kelvin: "{{ target_kelvin }}"
+              brightness_pct: "{{ target_brightness }}"
+              transition: 30
+          # Ensure Effect is still running on ceiling lights if active
           - if:
               - condition: template
-                value_template: "{{ expand(hue_list) | selectattr('state', 'eq', 'on') | list | count > 0 }}"
+                value_template: "{{ hue_list_ceiling != [] and target_effect != 'none' }}"
             then:
               - service: light.turn_on
                 target:
                   entity_id: >
-                    {{ expand(hue_list) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
+                    {{ expand(hue_list_ceiling) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
                 data:
-                  kelvin: "{{ target_kelvin }}"
-                  brightness_pct: "{{ target_brightness }}"
-                  transition: 30
-          # Update Govee (Simulated 30s)
-          - if:
-              - condition: template
-                value_template: "{{ expand(govee_list) | selectattr('state', 'eq', 'on') | list | count > 0 }}"
-            then:
-              - variables:
-                  on_govee: >
-                    {{ expand(govee_list) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
-              - repeat:
-                  count: 6
-                  sequence:
-                    - choose:
-                        # RGB Mode
-                        - conditions:
-                            - condition: template
-                              value_template: "{{ g_is_rgb }}"
-                          sequence:
-                            - service: light.turn_on
-                              target:
-                                entity_id: "{{ on_govee }}"
-                              data:
-                                brightness_pct: "{{ govee_bri }}"
-                                rgb_color: "{{ govee_rgb }}"
-                        # Kelvin Mode
-                        - conditions:
-                            - condition: template
-                              value_template: "{{ not g_is_rgb }}"
-                          sequence:
-                            - service: light.turn_on
-                              target:
-                                entity_id: "{{ on_govee }}"
-                              data:
-                                brightness_pct: "{{ govee_bri }}"
-                                kelvin: "{{ target_kelvin }}"
-                    - delay:
-                        seconds: 5
+                  effect: "{{ target_effect }}"
