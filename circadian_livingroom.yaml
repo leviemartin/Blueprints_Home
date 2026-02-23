@@ -1,7 +1,7 @@
 blueprint:
-  name: "Circadian Living Room Lights v2.1.0"
+  name: "Circadian Living Room Lights v2.1.1"
   description: >
-    **Version: 2.1.0**
+    **Version: 2.1.1**
     
     A comprehensive lighting automation for the Living Room that adapts to human presence, 
     circadian rhythms, and specific family routines. Optimized for Philips Hue Infuse and Bulbs.
@@ -431,16 +431,32 @@ action:
               - condition: template
                 value_template: "{{ hue_list_ceiling != [] }}"
             then:
-              - service: light.turn_on
-                target:
-                  entity_id: "{{ hue_list_ceiling }}"
-                data:
-                  kelvin: "{{ target_kelvin }}"
-                  brightness_pct: "{{ ceiling_bri }}"
-                  transition: 2
-                  {% if target_effect != 'none' %}
-                  effect: "{{ target_effect }}"
-                  {% endif %}
+              - choose:
+                  # Apply with Effect
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ target_effect != 'none' }}"
+                    sequence:
+                      - service: light.turn_on
+                        target:
+                          entity_id: "{{ hue_list_ceiling }}"
+                        data:
+                          kelvin: "{{ target_kelvin }}"
+                          brightness_pct: "{{ ceiling_bri }}"
+                          transition: 2
+                          effect: "{{ target_effect }}"
+                  # Apply without Effect
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ target_effect == 'none' }}"
+                    sequence:
+                      - service: light.turn_on
+                        target:
+                          entity_id: "{{ hue_list_ceiling }}"
+                        data:
+                          kelvin: "{{ target_kelvin }}"
+                          brightness_pct: "{{ ceiling_bri }}"
+                          transition: 2
 
       # SCENARIO 3: UPDATE LOOP
       - conditions:
@@ -470,14 +486,32 @@ action:
               - condition: template
                 value_template: "{{ expand(hue_list_ceiling) | selectattr('state', 'eq', 'on') | list | count > 0 }}"
             then:
-              - service: light.turn_on
-                target:
-                  entity_id: >
+              - variables:
+                  on_ceiling: >
                     {{ expand(hue_list_ceiling) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
-                data:
-                  kelvin: "{{ target_kelvin }}"
-                  brightness_pct: "{{ ceiling_bri }}"
-                  transition: 30
-                  {% if target_effect != 'none' %}
-                  effect: "{{ target_effect }}"
-                  {% endif %}
+              - choose:
+                  # Update with Effect
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ target_effect != 'none' }}"
+                    sequence:
+                      - service: light.turn_on
+                        target:
+                          entity_id: "{{ on_ceiling }}"
+                        data:
+                          kelvin: "{{ target_kelvin }}"
+                          brightness_pct: "{{ ceiling_bri }}"
+                          transition: 30
+                          effect: "{{ target_effect }}"
+                  # Update without Effect
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ target_effect == 'none' }}"
+                    sequence:
+                      - service: light.turn_on
+                        target:
+                          entity_id: "{{ on_ceiling }}"
+                        data:
+                          kelvin: "{{ target_kelvin }}"
+                          brightness_pct: "{{ ceiling_bri }}"
+                          transition: 30
