@@ -17,6 +17,9 @@ blueprint:
     **Designed for:** Philips Hue Ambiance Panel (tunable white) + Aqara PIR motion sensor.
     Works with any standard motion sensor and tunable white light.
 
+    **Safety:** Includes a watchdog that turns off lights if the motion sensor becomes
+    unavailable, preventing lights from staying on indefinitely.
+
   domain: automation
   input:
     # --- DEVICES ---
@@ -84,7 +87,7 @@ blueprint:
     # --- STAGED TURN-OFF TIMING ---
     time_to_stage1:
       name: Minutes to First Warning
-      description: "Minutes after motion clears before dimming to Stage 1."
+      description: "Minutes after motion clears before dimming to Stage 1. Must be less than Stage 2."
       default: 5
       selector:
         number:
@@ -93,7 +96,7 @@ blueprint:
           unit_of_measurement: min
     time_to_stage2:
       name: Minutes to Second Warning
-      description: "Minutes after motion clears before dimming to Stage 2."
+      description: "Minutes after motion clears before dimming to Stage 2. Must be between Stage 1 and Turn Off."
       default: 10
       selector:
         number:
@@ -102,7 +105,7 @@ blueprint:
           unit_of_measurement: min
     time_to_off:
       name: Minutes to Turn Off
-      description: "Minutes after motion clears before turning off."
+      description: "Minutes after motion clears before turning off. Must be greater than Stage 2."
       default: 15
       selector:
         number:
@@ -130,10 +133,10 @@ blueprint:
     warning_kelvin:
       name: Warning Color Temp (K)
       description: "Color temperature during warning stages."
-      default: 1800
+      default: 2000
       selector:
         number:
-          min: 1800
+          min: 2000
           max: 2500
           step: 100
           unit_of_measurement: K
@@ -295,25 +298,21 @@ trigger:
     minutes: "/5"
     id: "update_loop"
 
-  # 6. Daylight Harvesting (Auto-OFF)
-  - platform: numeric_state
-    entity_id: !input illuminance_entity
-    above: !input lux_off_threshold
-    for:
-      minutes: !input lux_off_duration
-    id: "lux_high"
-
-  # 7. Daylight Fading (Auto-ON)
-  - platform: numeric_state
-    entity_id: !input illuminance_entity
-    below: !input lux_on_threshold
-    id: "lux_low"
-
-  # 8. Override Turned OFF (Resume)
+  # 6. Safety Watchdog: Motion sensor unavailable for 30 min → turn off lights
   - platform: state
-    entity_id: !input override_entity
-    to: "off"
-    id: "override_resume"
+    entity_id: !input motion_sensor
+    to: "unavailable"
+    for:
+      minutes: 30
+    id: "sensor_watchdog"
+
+  # 7. Safety Watchdog: Motion sensor unknown for 30 min → turn off lights
+  - platform: state
+    entity_id: !input motion_sensor
+    to: "unknown"
+    for:
+      minutes: 30
+    id: "sensor_watchdog"
 
 variables:
   # Inputs
@@ -322,6 +321,8 @@ variables:
   sensor_lux: !input illuminance_entity
   entity_override: !input override_entity
   threshold_on: !input lux_on_threshold
+  threshold_off: !input lux_off_threshold
+  lux_off_mins: !input lux_off_duration
   val_max_k: !input max_kelvin
   val_min_k: !input min_kelvin
   val_warn_k: !input warning_kelvin
@@ -329,7 +330,7 @@ variables:
   b_stage2: !input stage_2_brightness
 
   # Lux sensor enabled flag
-  lux_enabled: "{{ sensor_lux != [] }}"
+  lux_enabled: "{{ sensor_lux not in [[], none, ''] }}"
 
   # Time Slots
   t_dinner: !input time_dinner
@@ -373,10 +374,10 @@ action:
 
       # Target Kelvin (Base) — IDENTICAL formula to circadian_livingroom.yaml
       target_kelvin: >
-        {% if mode == 'dinner' %} {{ k_dinner }}
-        {% elif mode == 'toddler' %} {{ k_toddler }}
-        {% elif mode == 'evening' %} {{ k_evening }}
-        {% elif mode == 'night' %} {{ k_night }}
+        {% if mode == 'dinner' %} {{ k_dinner | int }}
+        {% elif mode == 'toddler' %} {{ k_toddler | int }}
+        {% elif mode == 'evening' %} {{ k_evening | int }}
+        {% elif mode == 'night' %} {{ k_night | int }}
         {% else %}
           {# Day Mode: Use Sun Elevation #}
           {% set elev = state_attr('sun.sun', 'elevation') | float(0) %}
@@ -386,22 +387,22 @@ action:
         {% endif %}
 
       target_brightness: >
-        {% if mode == 'dinner' %} {{ b_dinner }}
-        {% elif mode == 'toddler' %} {{ b_toddler }}
-        {% elif mode == 'evening' %} {{ b_evening }}
-        {% elif mode == 'night' %} {{ b_night }}
+        {% if mode == 'dinner' %} {{ b_dinner | int }}
+        {% elif mode == 'toddler' %} {{ b_toddler | int }}
+        {% elif mode == 'evening' %} {{ b_evening | int }}
+        {% elif mode == 'night' %} {{ b_night | int }}
         {% else %} 100 {% endif %}
 
   # 3. Main Choose
   - choose:
-      # --- A: TURN OFF (stage_off OR lux_high) ---
+      # --- A: TURN OFF (stage_off OR sensor_watchdog OR lux too bright) ---
       - conditions:
           - condition: or
             conditions:
               - condition: trigger
                 id: "stage_off"
               - condition: trigger
-                id: "lux_high"
+                id: "sensor_watchdog"
         sequence:
           - service: light.turn_off
             target:
@@ -421,8 +422,8 @@ action:
             target:
               entity_id: "{{ light_list }}"
             data:
-              color_temp_kelvin: "{{ val_warn_k }}"
-              brightness_pct: "{{ b_stage1 }}"
+              color_temp_kelvin: "{{ val_warn_k | int }}"
+              brightness_pct: "{{ b_stage1 | int }}"
               transition: 3
 
       # --- C: STAGE 2 WARNING (dim further) ---
@@ -437,33 +438,25 @@ action:
             target:
               entity_id: "{{ light_list }}"
             data:
-              color_temp_kelvin: "{{ val_warn_k }}"
-              brightness_pct: "{{ b_stage2 }}"
+              color_temp_kelvin: "{{ val_warn_k | int }}"
+              brightness_pct: "{{ b_stage2 | int }}"
               transition: 3
 
-      # --- D: TURN ON (motion_on OR lux_low OR override_resume) ---
+      # --- D: TURN ON (motion_on) ---
       - conditions:
+          - condition: trigger
+            id: "motion_on"
           - condition: template
             value_template: "{{ is_motion_on }}"
-          - condition: or
-            conditions:
-              - condition: and
-                conditions:
-                  - condition: trigger
-                    id: "motion_on"
-                  - condition: template
-                    value_template: "{{ not lux_enabled or current_lux < threshold_on }}"
-              - condition: trigger
-                id: "lux_low"
-              - condition: trigger
-                id: "override_resume"
+          - condition: template
+            value_template: "{{ not lux_enabled or current_lux < threshold_on }}"
         sequence:
           - service: light.turn_on
             target:
               entity_id: "{{ light_list }}"
             data:
-              color_temp_kelvin: "{{ target_kelvin }}"
-              brightness_pct: "{{ target_brightness }}"
+              color_temp_kelvin: "{{ target_kelvin | int }}"
+              brightness_pct: "{{ target_brightness | int }}"
               transition: 2
 
       # --- E: UPDATE LOOP (circadian shift while lights are on) ---
@@ -476,17 +469,30 @@ action:
           - condition: template
             value_template: >
               {% set on_lights = expand(light_list) | selectattr('state', 'eq', 'on') | list %}
-              {% set in_warning = on_lights | selectattr('attributes.color_temp_kelvin', 'defined')
-                | selectattr('attributes.color_temp_kelvin', 'eq', val_warn_k | int) | list | count > 0 %}
-              {{ not in_warning }}
+              {% set warn_k = val_warn_k | int %}
+              {% set ns = namespace(in_warning=false) %}
+              {% for light in on_lights if light.attributes.color_temp_kelvin is defined %}
+                {% if (light.attributes.color_temp_kelvin | int - warn_k) | abs <= 50 %}
+                  {% set ns.in_warning = true %}
+                {% endif %}
+              {% endfor %}
+              {{ not ns.in_warning }}
           - condition: template
-            value_template: "{{ not lux_enabled or current_lux < (threshold_on + 300) }}"
+            value_template: >
+              {{ not lux_enabled or current_lux < (threshold_on + 300) }}
+          - condition: template
+            value_template: >
+              {% if lux_enabled %}
+                {{ current_lux < threshold_off }}
+              {% else %}
+                {{ true }}
+              {% endif %}
         sequence:
           - service: light.turn_on
             target:
               entity_id: >
                 {{ expand(light_list) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
             data:
-              color_temp_kelvin: "{{ target_kelvin }}"
-              brightness_pct: "{{ target_brightness }}"
+              color_temp_kelvin: "{{ target_kelvin | int }}"
+              brightness_pct: "{{ target_brightness | int }}"
               transition: 30
