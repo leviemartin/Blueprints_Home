@@ -1,0 +1,492 @@
+blueprint:
+  name: "Adjacent Room Circadian Lights v1.0.0"
+  description: >
+    **Version: 1.0.0 - HA 2026.3 Compatibility**
+
+    Motion-triggered circadian lighting for adjacent rooms (hallway, bathroom, etc.)
+    that matches the Living Room color temperature exactly for seamless room-to-room transitions.
+
+    **Features:**
+    - **Identical Circadian Formula:** Same time profiles and sun elevation calculation as the Living Room blueprint.
+    - **Staged Turn-Off:** Three-stage dimming (warning → dim → off) via staggered motion-off timers.
+    - **Optional Lux Sensor:** Skip if not available; lights always respond to motion.
+    - **Anti-Flicker Protection:** Configurable lux thresholds with duration-based debounce.
+    - **Manual Override:** Pause automation via a Switch or Input Boolean.
+    - **Circadian Update Loop:** 5-minute periodic updates keep color temperature current.
+
+    **Designed for:** Philips Hue Ambiance Panel (tunable white) + Aqara PIR motion sensor.
+    Works with any standard motion sensor and tunable white light.
+
+  domain: automation
+  input:
+    # --- DEVICES ---
+    target_lights:
+      name: Target Lights
+      description: Select the light entities for this room.
+      selector:
+        entity:
+          domain: light
+          multiple: true
+    motion_sensor:
+      name: Motion Sensor
+      description: Select the motion sensor (binary_sensor) for this room.
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: motion
+    illuminance_entity:
+      name: Lux Sensor (Optional)
+      description: "Optional: Select a lux sensor. Leave empty to always turn on with motion."
+      default: []
+      selector:
+        entity:
+          domain: sensor
+          device_class: illuminance
+    override_entity:
+      name: Manual Override Switch
+      description: "If ON, automation pauses. Use a Helper (Input Boolean) toggled by your Remote."
+      default: []
+      selector:
+        entity:
+          domain:
+            - input_boolean
+            - switch
+
+    # --- LUX THRESHOLDS ---
+    lux_on_threshold:
+      name: Turn On Threshold
+      description: "Lights turn ON if Lux drops below this (Default: 150)."
+      default: 150
+      selector:
+        number:
+          min: 0
+          max: 1000
+          unit_of_measurement: lx
+    lux_off_threshold:
+      name: Turn Off Threshold (Daylight Harvesting)
+      description: "Lights turn OFF if Lux stays above this (Default: 400)."
+      default: 400
+      selector:
+        number:
+          min: 100
+          max: 2000
+          unit_of_measurement: lx
+    lux_off_duration:
+      name: Turn Off Duration (Anti-Flicker)
+      description: "How long Lux must be high before turning off (Anti-Flicker)."
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: min
+
+    # --- STAGED TURN-OFF TIMING ---
+    time_to_stage1:
+      name: Minutes to First Warning
+      description: "Minutes after motion clears before dimming to Stage 1."
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 30
+          unit_of_measurement: min
+    time_to_stage2:
+      name: Minutes to Second Warning
+      description: "Minutes after motion clears before dimming to Stage 2."
+      default: 10
+      selector:
+        number:
+          min: 2
+          max: 45
+          unit_of_measurement: min
+    time_to_off:
+      name: Minutes to Turn Off
+      description: "Minutes after motion clears before turning off."
+      default: 15
+      selector:
+        number:
+          min: 3
+          max: 60
+          unit_of_measurement: min
+    stage_1_brightness:
+      name: Stage 1 Warning Brightness (%)
+      description: "Brightness for the first warning dim."
+      default: 40
+      selector:
+        number:
+          min: 10
+          max: 60
+          unit_of_measurement: "%"
+    stage_2_brightness:
+      name: Stage 2 Warning Brightness (%)
+      description: "Brightness for the second warning dim."
+      default: 20
+      selector:
+        number:
+          min: 5
+          max: 40
+          unit_of_measurement: "%"
+    warning_kelvin:
+      name: Warning Color Temp (K)
+      description: "Color temperature during warning stages."
+      default: 1800
+      selector:
+        number:
+          min: 1800
+          max: 2500
+          step: 100
+          unit_of_measurement: K
+
+    # --- DINNER PROFILE ---
+    time_dinner:
+      name: Dinner Start Time
+      default: "18:00:00"
+      selector:
+        time:
+    dinner_kelvin:
+      name: Dinner Color (K)
+      default: 3000
+      selector:
+        number:
+          min: 2000
+          max: 6500
+          step: 100
+          unit_of_measurement: K
+    dinner_bri:
+      name: Dinner Brightness (%)
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+
+    # --- TODDLER PROFILE ---
+    time_toddler:
+      name: Toddler Prep Start Time
+      default: "19:00:00"
+      selector:
+        time:
+    toddler_kelvin:
+      name: Toddler Color (K)
+      default: 2200
+      selector:
+        number:
+          min: 2000
+          max: 6500
+          step: 100
+          unit_of_measurement: K
+    toddler_bri:
+      name: Toddler Brightness (%)
+      default: 60
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+
+    # --- EVENING PROFILE ---
+    time_evening:
+      name: Evening Start Time
+      default: "20:00:00"
+      selector:
+        time:
+    evening_kelvin:
+      name: Evening Color (K)
+      default: 2700
+      selector:
+        number:
+          min: 2000
+          max: 6500
+          step: 100
+          unit_of_measurement: K
+    evening_bri:
+      name: Evening Brightness (%)
+      default: 50
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+
+    # --- NIGHT PROFILE ---
+    time_night:
+      name: Night Start Time
+      default: "22:00:00"
+      selector:
+        time:
+    night_kelvin:
+      name: Night Color (K)
+      default: 2200
+      selector:
+        number:
+          min: 2000
+          max: 6500
+          step: 100
+          unit_of_measurement: K
+    night_bri:
+      name: Night Brightness (%)
+      default: 20
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+
+    # --- GENERAL LIGHT SETTINGS ---
+    max_kelvin:
+      name: Max Kelvin (Daylight)
+      description: Used for Day Mode calculation.
+      default: 4500
+      selector:
+        number:
+          min: 2000
+          max: 6500
+          step: 100
+          unit_of_measurement: K
+    min_kelvin:
+      name: Min Kelvin (Warm)
+      description: Used for Day Mode calculation.
+      default: 2200
+      selector:
+        number:
+          min: 2000
+          max: 4000
+          step: 100
+          unit_of_measurement: K
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  # 1. Motion Detected
+  - platform: state
+    entity_id: !input motion_sensor
+    to: "on"
+    id: "motion_on"
+
+  # 2. Stage 1 Warning (motion off for X minutes)
+  - platform: state
+    entity_id: !input motion_sensor
+    to: "off"
+    for:
+      minutes: !input time_to_stage1
+    id: "stage_1"
+
+  # 3. Stage 2 Warning (motion off for X minutes)
+  - platform: state
+    entity_id: !input motion_sensor
+    to: "off"
+    for:
+      minutes: !input time_to_stage2
+    id: "stage_2"
+
+  # 4. Turn Off (motion off for X minutes)
+  - platform: state
+    entity_id: !input motion_sensor
+    to: "off"
+    for:
+      minutes: !input time_to_off
+    id: "stage_off"
+
+  # 5. Periodic Update (Circadian Shift)
+  - platform: time_pattern
+    minutes: "/5"
+    id: "update_loop"
+
+  # 6. Daylight Harvesting (Auto-OFF)
+  - platform: numeric_state
+    entity_id: !input illuminance_entity
+    above: !input lux_off_threshold
+    for:
+      minutes: !input lux_off_duration
+    id: "lux_high"
+
+  # 7. Daylight Fading (Auto-ON)
+  - platform: numeric_state
+    entity_id: !input illuminance_entity
+    below: !input lux_on_threshold
+    id: "lux_low"
+
+  # 8. Override Turned OFF (Resume)
+  - platform: state
+    entity_id: !input override_entity
+    to: "off"
+    id: "override_resume"
+
+variables:
+  # Inputs
+  light_list: !input target_lights
+  sensor_motion: !input motion_sensor
+  sensor_lux: !input illuminance_entity
+  entity_override: !input override_entity
+  threshold_on: !input lux_on_threshold
+  val_max_k: !input max_kelvin
+  val_min_k: !input min_kelvin
+  val_warn_k: !input warning_kelvin
+  b_stage1: !input stage_1_brightness
+  b_stage2: !input stage_2_brightness
+
+  # Lux sensor enabled flag
+  lux_enabled: "{{ sensor_lux != [] }}"
+
+  # Time Slots
+  t_dinner: !input time_dinner
+  t_toddler: !input time_toddler
+  t_evening: !input time_evening
+  t_night: !input time_night
+
+  # Profile Settings
+  k_dinner: !input dinner_kelvin
+  b_dinner: !input dinner_bri
+  k_toddler: !input toddler_kelvin
+  b_toddler: !input toddler_bri
+  k_evening: !input evening_kelvin
+  b_evening: !input evening_bri
+  k_night: !input night_kelvin
+  b_night: !input night_bri
+
+action:
+  # 1. Check Override First
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ entity_override != [] and is_state(entity_override, 'on') }}"
+        sequence:
+          - stop: "Manual Override is ON. Automation halted."
+
+  # 2. Calculate Common Logic Variables (IDENTICAL to circadian_livingroom.yaml)
+  - variables:
+      current_lux: "{{ states(sensor_lux) | float(0) if lux_enabled else 0 }}"
+      is_motion_on: "{{ is_state(sensor_motion, 'on') }}"
+
+      # Determine Current Mode based on Time
+      mode: >
+        {% set t_now = now().strftime('%H:%M:%S') %}
+        {% if t_now >= t_night %} night
+        {% elif t_now >= t_evening %} evening
+        {% elif t_now >= t_toddler %} toddler
+        {% elif t_now >= t_dinner %} dinner
+        {% elif t_now >= '06:00:00' %} day
+        {% else %} night {% endif %}
+
+      # Target Kelvin (Base) — IDENTICAL formula to circadian_livingroom.yaml
+      target_kelvin: >
+        {% if mode == 'dinner' %} {{ k_dinner }}
+        {% elif mode == 'toddler' %} {{ k_toddler }}
+        {% elif mode == 'evening' %} {{ k_evening }}
+        {% elif mode == 'night' %} {{ k_night }}
+        {% else %}
+          {# Day Mode: Use Sun Elevation #}
+          {% set elev = state_attr('sun.sun', 'elevation') | float(0) %}
+          {% set pct = (elev + 6) / 51 %}
+          {% set k = (val_max_k - val_min_k) * pct + val_min_k %}
+          {{ [val_min_k, [val_max_k, k] | min] | max | int }}
+        {% endif %}
+
+      target_brightness: >
+        {% if mode == 'dinner' %} {{ b_dinner }}
+        {% elif mode == 'toddler' %} {{ b_toddler }}
+        {% elif mode == 'evening' %} {{ b_evening }}
+        {% elif mode == 'night' %} {{ b_night }}
+        {% else %} 100 {% endif %}
+
+  # 3. Main Choose
+  - choose:
+      # --- A: TURN OFF (stage_off OR lux_high) ---
+      - conditions:
+          - condition: or
+            conditions:
+              - condition: trigger
+                id: "stage_off"
+              - condition: trigger
+                id: "lux_high"
+        sequence:
+          - service: light.turn_off
+            target:
+              entity_id: "{{ light_list }}"
+            data:
+              transition: 5
+
+      # --- B: STAGE 1 WARNING (dim to warning brightness/color) ---
+      - conditions:
+          - condition: trigger
+            id: "stage_1"
+          - condition: template
+            value_template: >
+              {{ expand(light_list) | selectattr('state', 'eq', 'on') | list | count > 0 }}
+        sequence:
+          - service: light.turn_on
+            target:
+              entity_id: "{{ light_list }}"
+            data:
+              color_temp_kelvin: "{{ val_warn_k }}"
+              brightness_pct: "{{ b_stage1 }}"
+              transition: 3
+
+      # --- C: STAGE 2 WARNING (dim further) ---
+      - conditions:
+          - condition: trigger
+            id: "stage_2"
+          - condition: template
+            value_template: >
+              {{ expand(light_list) | selectattr('state', 'eq', 'on') | list | count > 0 }}
+        sequence:
+          - service: light.turn_on
+            target:
+              entity_id: "{{ light_list }}"
+            data:
+              color_temp_kelvin: "{{ val_warn_k }}"
+              brightness_pct: "{{ b_stage2 }}"
+              transition: 3
+
+      # --- D: TURN ON (motion_on OR lux_low OR override_resume) ---
+      - conditions:
+          - condition: template
+            value_template: "{{ is_motion_on }}"
+          - condition: or
+            conditions:
+              - condition: and
+                conditions:
+                  - condition: trigger
+                    id: "motion_on"
+                  - condition: template
+                    value_template: "{{ not lux_enabled or current_lux < threshold_on }}"
+              - condition: trigger
+                id: "lux_low"
+              - condition: trigger
+                id: "override_resume"
+        sequence:
+          - service: light.turn_on
+            target:
+              entity_id: "{{ light_list }}"
+            data:
+              color_temp_kelvin: "{{ target_kelvin }}"
+              brightness_pct: "{{ target_brightness }}"
+              transition: 2
+
+      # --- E: UPDATE LOOP (circadian shift while lights are on) ---
+      - conditions:
+          - condition: trigger
+            id: "update_loop"
+          - condition: template
+            value_template: >
+              {{ expand(light_list) | selectattr('state', 'eq', 'on') | list | count > 0 }}
+          - condition: template
+            value_template: >
+              {% set on_lights = expand(light_list) | selectattr('state', 'eq', 'on') | list %}
+              {% set in_warning = on_lights | selectattr('attributes.color_temp_kelvin', 'defined')
+                | selectattr('attributes.color_temp_kelvin', 'eq', val_warn_k | int) | list | count > 0 %}
+              {{ not in_warning }}
+          - condition: template
+            value_template: "{{ not lux_enabled or current_lux < (threshold_on + 300) }}"
+        sequence:
+          - service: light.turn_on
+            target:
+              entity_id: >
+                {{ expand(light_list) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
+            data:
+              color_temp_kelvin: "{{ target_kelvin }}"
+              brightness_pct: "{{ target_brightness }}"
+              transition: 30
