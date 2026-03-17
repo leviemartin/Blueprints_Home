@@ -1,7 +1,7 @@
 blueprint:
-  name: "Circadian Living Room Lights v2.1.1"
+  name: "Circadian Living Room Lights v2.2.0"
   description: >
-    **Version: 2.1.1**
+    **Version: 2.2.0 - HA 2026.3 Compatibility**
     
     A comprehensive lighting automation for the Living Room that adapts to human presence, 
     circadian rhythms, and specific family routines. Optimized for Philips Hue Infuse and Bulbs.
@@ -423,7 +423,7 @@ action:
                 target:
                   entity_id: "{{ hue_list_bulbs }}"
                 data:
-                  kelvin: "{{ target_kelvin }}"
+                  color_temp_kelvin: "{{ target_kelvin }}"
                   brightness_pct: "{{ target_brightness }}"
                   transition: 2
           # Turn on Ceiling Lights (Scaled and/or Effect)
@@ -441,7 +441,7 @@ action:
                         target:
                           entity_id: "{{ hue_list_ceiling }}"
                         data:
-                          kelvin: "{{ target_kelvin }}"
+                          color_temp_kelvin: "{{ target_kelvin }}"
                           brightness_pct: "{{ ceiling_bri }}"
                           transition: 2
                           effect: "{{ target_effect }}"
@@ -454,7 +454,7 @@ action:
                         target:
                           entity_id: "{{ hue_list_ceiling }}"
                         data:
-                          kelvin: "{{ target_kelvin }}"
+                          color_temp_kelvin: "{{ target_kelvin }}"
                           brightness_pct: "{{ ceiling_bri }}"
                           transition: 2
 
@@ -478,7 +478,7 @@ action:
                   entity_id: >
                     {{ expand(hue_list_bulbs) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
                 data:
-                  kelvin: "{{ target_kelvin }}"
+                  color_temp_kelvin: "{{ target_kelvin }}"
                   brightness_pct: "{{ target_brightness }}"
                   transition: 30
           # Update Active Ceiling Lights (Native 30s)
@@ -499,7 +499,7 @@ action:
                         target:
                           entity_id: "{{ on_ceiling }}"
                         data:
-                          kelvin: "{{ target_kelvin }}"
+                          color_temp_kelvin: "{{ target_kelvin }}"
                           brightness_pct: "{{ ceiling_bri }}"
                           transition: 30
                           effect: "{{ target_effect }}"
@@ -512,6 +512,6 @@ action:
                         target:
                           entity_id: "{{ on_ceiling }}"
                         data:
-                          kelvin: "{{ target_kelvin }}"
+                          color_temp_kelvin: "{{ target_kelvin }}"
                           brightness_pct: "{{ ceiling_bri }}"
                           transition: 30

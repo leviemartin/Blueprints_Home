@@ -1,7 +1,7 @@
 blueprint:
-  name: "Bathroom Routine v2.0.3 (Reliability Focus)"
+  name: "Bathroom Routine v2.1.0 (Reliability Focus)"
   description: >
-    **Version: 2.0.3 - Trigger Fix**
+    **Version: 2.1.0 - HA 2026.3 Compatibility**
     
     A completely strictly-typed rewrite focusing on reliability.
     
@@ -80,8 +80,9 @@ blueprint:
       default: 4000
       selector:
         color_temp:
-          min_mireds: 153
-          max_mireds: 500
+          min: 2000
+          max: 6535
+          unit: kelvin
           
     # Day
     bri_day:
@@ -94,8 +95,9 @@ blueprint:
       default: 3500
       selector:
         color_temp:
-          min_mireds: 153
-          max_mireds: 500
+          min: 2000
+          max: 6535
+          unit: kelvin
 
     # Evening
     bri_evening:
@@ -108,8 +110,9 @@ blueprint:
       default: 2200
       selector:
         color_temp:
-          min_mireds: 153
-          max_mireds: 500
+          min: 2000
+          max: 6535
+          unit: kelvin
 
     # Late Night
     bri_night:
@@ -218,14 +221,14 @@ action:
           - service: light.turn_on
             target: !input light_main
             data:
-              kelvin: 5000
+              color_temp_kelvin: 5000
               brightness_pct: 100
               transition: !input transition_time
           - service: light.turn_on
             target:
               entity_id: !input light_night
             data:
-              kelvin: 5000
+              color_temp_kelvin: 5000
               brightness_pct: 100
               transition: !input transition_time
 
@@ -281,7 +284,7 @@ action:
                           - service: light.turn_on
                             target: !input light_main
                             data:
-                              kelvin: 2200
+                              color_temp_kelvin: 2200
                               brightness_pct: !input bri_main_night
                               transition: !input transition_time
                     default:
@@ -298,14 +301,14 @@ action:
                   - service: light.turn_on
                     target: !input light_main
                     data:
-                      kelvin: !input temp_evening
+                      color_temp_kelvin: !input temp_evening
                       brightness_pct: !input bri_evening
                       transition: !input transition_time
                   - service: light.turn_on
                     target:
                       entity_id: !input light_night
                     data:
-                      kelvin: !input temp_evening
+                      color_temp_kelvin: !input temp_evening
                       brightness_pct: !input bri_evening
                       transition: !input transition_time
 
@@ -317,14 +320,14 @@ action:
                   - service: light.turn_on
                     target: !input light_main
                     data:
-                      kelvin: !input temp_day
+                      color_temp_kelvin: !input temp_day
                       brightness_pct: !input bri_day
                       transition: !input transition_time
                   - service: light.turn_on
                     target:
                       entity_id: !input light_night
                     data:
-                      kelvin: !input temp_day
+                      color_temp_kelvin: !input temp_day
                       brightness_pct: !input bri_day
                       transition: !input transition_time
 
@@ -333,13 +336,13 @@ action:
               - service: light.turn_on
                 target: !input light_main
                 data:
-                  kelvin: !input temp_morning
+                  color_temp_kelvin: !input temp_morning
                   brightness_pct: !input bri_morning
                   transition: !input transition_time
               - service: light.turn_on
                 target:
                   entity_id: !input light_night
                 data:
-                  kelvin: !input temp_morning
+                  color_temp_kelvin: !input temp_morning
                   brightness_pct: !input bri_morning
                   transition: !input transition_time

@@ -1,7 +1,7 @@
 blueprint:
-  name: "Dinner Table Lights v1.0.1 (Circadian & Battery)"
+  name: "Dinner Table Lights v1.1.0 (Circadian & Battery)"
   description: >
-    **Version: 1.0.1**
+    **Version: 1.1.0 - HA 2026.3 Compatibility**
     
     A specialized automation for dining table lighting using portable Hue Go lights and mmWave presence detection.
     
@@ -223,7 +223,7 @@ action:
                   - service: light.turn_on
                     target: !input light_entity
                     data:
-                      kelvin: 3500
+                      color_temp_kelvin: 3500
                       brightness_pct: !input bri_breakfast
                       transition: !input transition_time
               
@@ -233,7 +233,7 @@ action:
                   - service: light.turn_on
                     target: !input light_entity
                     data:
-                      kelvin: 4000
+                      color_temp_kelvin: 4000
                       brightness_pct: !input bri_lunch
                       transition: !input transition_time
 
@@ -243,6 +243,6 @@ action:
                   - service: light.turn_on
                     target: !input light_entity
                     data:
-                      kelvin: 2200
+                      color_temp_kelvin: 2200
                       brightness_pct: !input bri_dinner
                       transition: !input transition_time
