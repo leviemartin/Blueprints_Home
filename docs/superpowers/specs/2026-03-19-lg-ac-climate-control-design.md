@@ -39,7 +39,7 @@ A Home Assistant blueprint that automates LG air conditioners on a per-floor bas
 | `temperature_sensors` | `entity` (domain: sensor, multiple) | Aqara temperature sensors for the floor | required |
 | `sensor_strategy` | `select` (average / min / max) | How to aggregate multiple sensor readings | average |
 | `ac_sound_switch` | `entity` (domain: switch, multiple, optional) | AC sound switch to mute. Empty = no sound control | `[]` |
-| `outdoor_temp_sensor` | `entity` (domain: sensor) | Outdoor temperature sensor or HA weather entity | required |
+| `outdoor_temp_sensor` | `entity` (domain: sensor, device_class: temperature) | Outdoor temperature sensor (must be a sensor entity, not a weather entity) | required |
 | `door_sensor` | `entity` (domain: binary_sensor, multiple, optional) | Garden door contact sensor(s) | `[]` |
 
 ### Comfort Range
@@ -88,13 +88,14 @@ Supports overnight windows (e.g., 22:00 → 06:00).
 
 | ID | Platform | Description |
 |---|---|---|
-| `update_loop` | `time_pattern` (every 10 min) | Main control loop |
+| `update_loop` | `time_pattern` (`minutes: "/10"`) | Main control loop |
 | `vacation_on` | `state` (vacation toggle → on) | Immediately shut off AC |
-| `vacation_off` | `state` (vacation toggle → off) | Resume on next loop cycle |
 | `door_opened` | `state` (door sensor → on, for: `door_off_delay` minutes) | Turn off AC after door open delay |
-| `ha_start` | `homeassistant` (event: start) | Re-evaluate after HA restart |
+| `init` | `homeassistant` (event: start) | Re-evaluate after HA restart |
 
 No per-day schedule triggers. The 10-minute loop checks the operating window each cycle.
+
+`vacation_off` is intentionally not a trigger — when vacation is toggled off, the next `update_loop` cycle resumes normal operation naturally.
 
 ---
 
@@ -132,7 +133,8 @@ variables:
 | `sensors_available` | `true` if at least one sensor has a valid numeric reading |
 | `outdoor_temp` | `states(sensor_outdoor) \| float` |
 | `is_vacation` | `states(entity_vacation) == 'on'` |
-| `door_is_open` | `true` if any door sensor is `on` (or empty list = false) |
+| `door_is_open` | `true` if any door sensor has been `on` for longer than `door_delay` minutes (or empty list = false). Uses `as_timestamp(now()) - as_timestamp(state.last_changed)` to check duration. |
+| `current_ac_mode` | Current HVAC mode of the AC: `states(climate_ac)` — used in maintenance mode to determine which boundary to hold |
 | `schedule_start_today` | Pick today's start time via `now().weekday()` index |
 | `schedule_end_today` | Pick today's end time via `now().weekday()` index |
 | `in_operating_window` | `schedule_start_today <= now() < schedule_end_today` (with midnight-crossing support) |
@@ -140,7 +142,7 @@ variables:
 | `distance_from_target` | Distance from nearest comfort boundary (0 if inside range) |
 | `outdoor_distance` | `abs(outdoor_temp - nearest_comfort_boundary)` |
 | `deadband_active` | `outdoor_distance < deadband_thresh` |
-| `ac_last_changed_minutes` | Minutes since `climate_ac` entity `last_changed` |
+| `minutes_in_current_mode` | Minutes since the AC's `hvac_action` attribute last changed. Tracked by comparing current `hvac_action` against what the mode *should* be — if the AC has been actively heating/cooling for longer than the escalation thresholds, fan speed escalates. Uses `as_timestamp(now()) - as_timestamp(states[climate_ac].last_changed)` as a baseline, with a guard that resets when `target_mode` differs from the current mode. |
 | `base_fan` | Proportional: `low` if distance < low_thresh, `medium` if < med_thresh, else `high` |
 | `target_fan` | Escalated fan: bump up from base if `ac_last_changed_minutes` exceeds stage thresholds |
 
@@ -148,45 +150,70 @@ variables:
 
 ## Action Logic
 
-Priority-based `choose` structure:
+The action block is structured as sequential steps, NOT a single `choose`. The mute sound step runs independently before the main priority logic.
 
 ```
-1. MUTE SOUND (always, first action)
-   └─ If sound switch is not empty and is on → switch.turn_off
-
-2. SENSOR CHECK
-   └─ If sensors_available == false → hold current state, fire persistent_notification, stop
-
-3. VACATION MODE (highest priority override)
-   └─ If is_vacation → turn off AC, stop
-
-4. OUTSIDE OPERATING WINDOW
-   └─ If not in_operating_window → turn off AC, stop
-
-5. DOOR OPEN
-   └─ If triggered by door_opened → turn off AC, stop
-   └─ If door_is_open (checked in loop) → keep AC off, stop
-
-6. MAIN CLIMATE CONTROL (inside window, no overrides)
-
-   6a. TEMP INSIDE COMFORT RANGE
-       └─ If deadband_active (outdoor temp is mild):
-           └─ Turn off AC, let room drift naturally
-       └─ If NOT deadband_active (extreme outdoor temp):
-           └─ MAINTENANCE MODE: keep AC on, low fan, hold at nearest boundary
-               - If was cooling → hold at temp_range_high
-               - If was heating → hold at temp_range_low
-
-   6b. TARGET MODE = COOL (current_temp > temp_range_high)
-       └─ climate.set_hvac_mode → cool
-       └─ climate.set_temperature → temp_range_high
-       └─ climate.set_fan_mode → target_fan (proportional + escalation)
-
-   6c. TARGET MODE = HEAT (current_temp < temp_range_low)
-       └─ climate.set_hvac_mode → heat
-       └─ climate.set_temperature → temp_range_low
-       └─ climate.set_fan_mode → target_fan (proportional + escalation)
+action:
+  ┌─────────────────────────────────────────────────────┐
+  │ STEP 1: MUTE SOUND (standalone choose, always runs) │
+  │  └─ If sound switch is not empty and is on           │
+  │      → switch.turn_off                               │
+  └─────────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────┐
+  │ STEP 2: COMPUTE VARIABLES                            │
+  │  └─ All computed variables calculated here           │
+  └─────────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────┐
+  │ STEP 3: RUNTIME VALIDATION                           │
+  │  └─ If temp_low >= temp_high → fire notification,    │
+  │     stop (guard against misconfiguration)            │
+  └─────────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────┐
+  │ STEP 4: MAIN PRIORITY CHOOSE (if/else-if chain)     │
+  │                                                      │
+  │  4a. SENSOR CHECK                                    │
+  │      └─ sensors_available == false                   │
+  │      └─ Hold current state, persistent_notification  │
+  │                                                      │
+  │  4b. VACATION MODE                                   │
+  │      └─ is_vacation → turn off AC                    │
+  │                                                      │
+  │  4c. OUTSIDE OPERATING WINDOW                        │
+  │      └─ not in_operating_window → turn off AC        │
+  │                                                      │
+  │  4d. DOOR OPEN                                       │
+  │      └─ If trigger is door_opened → turn off AC      │
+  │      └─ If door_is_open (duration exceeded)          │
+  │         → keep AC off                                │
+  │                                                      │
+  │  4e. TEMP INSIDE COMFORT RANGE                       │
+  │      └─ target_mode == 'off'                         │
+  │      └─ If deadband_active (mild outdoor):           │
+  │          → Turn off AC, let room drift               │
+  │      └─ If NOT deadband_active (extreme outdoor):    │
+  │          → MAINTENANCE MODE: low fan, hold boundary  │
+  │            - current_ac_mode == 'cool' → hold high   │
+  │            - current_ac_mode == 'heat' → hold low    │
+  │            - current_ac_mode == 'off' → pick nearest │
+  │              boundary to current_temp                 │
+  │                                                      │
+  │  4f. TARGET MODE = COOL                              │
+  │      └─ current_temp > temp_range_high               │
+  │      └─ climate.set_temperature with:                │
+  │          hvac_mode: cool                             │
+  │          temperature: temp_range_high                │
+  │      └─ climate.set_fan_mode → target_fan            │
+  │                                                      │
+  │  4g. TARGET MODE = HEAT                              │
+  │      └─ current_temp < temp_range_low                │
+  │      └─ climate.set_temperature with:                │
+  │          hvac_mode: heat                             │
+  │          temperature: temp_range_low                 │
+  │      └─ climate.set_fan_mode → target_fan            │
+  └─────────────────────────────────────────────────────┘
 ```
+
+**Note:** Steps 4f/4g use a single `climate.set_temperature` call with `hvac_mode` in the data payload to avoid multiple sequential API calls that may conflict on LG integrations.
 
 ### Fan Speed Logic
 
@@ -199,12 +226,14 @@ distance >= fan_med_thresh  → "high"
 
 **Escalation (override upward only):**
 ```
-if ac_last_changed_minutes >= esc_stage_2  → max available speed
-if ac_last_changed_minutes >= esc_stage_1  → bump up one level from base
+if minutes_in_current_mode >= esc_stage_2  → max available speed
+if minutes_in_current_mode >= esc_stage_1  → bump up one level from base
 otherwise                                  → use base fan speed
 ```
 
 Fan escalation only bumps up, never down. If proportional already says "high", stage 1 doesn't lower it.
+
+**Escalation timing note:** The escalation timer is based on how long the AC has been in its current HVAC mode (heat/cool), not on `last_changed` of the entity (which resets on any attribute update including temperature reports). When the mode changes (e.g., cool→off→heat), the timer effectively resets.
 
 ### Maintenance Mode (Deadband Disabled)
 
@@ -220,8 +249,9 @@ When outdoor temperature is extreme (outdoor_distance >= threshold), the AC stay
 | Some sensors unavailable | Aggregate only available sensors |
 | AC entity unavailable | Skip cycle, retry next loop |
 | Overnight schedule (22:00 → 06:00) | Midnight-crossing check in `in_operating_window` |
-| HA restart | `ha_start` trigger re-evaluates from scratch |
-| Escalation timer reset | Resets when AC entity `last_changed` updates (mode change) |
+| HA restart | `init` trigger re-evaluates from scratch |
+| Escalation timer reset | Resets when the AC's HVAC mode changes (not on every attribute update) |
+| Comfort range misconfigured | If `temp_range_low >= temp_range_high`, fire persistent notification and skip cycle |
 | Door closes | AC resumes on next 10-minute loop cycle (not immediately) |
 | Vacation toggled off | AC resumes on next loop cycle |
 
@@ -232,6 +262,29 @@ When outdoor temperature is extreme (outdoor_distance >= threshold), the AC stay
 ```yaml
 blueprint:
   name: "LG AC Climate Control v1.0.0"
+  description: >
+    **Version: 1.0.0**
+
+    Automates LG air conditioners per-floor using external temperature sensors
+    for reliable ambient readings.
+
+    **Features:**
+    - **Automatic Mode Selection:** Heats, cools, or turns off based on a
+      configurable comfort range.
+    - **Outdoor-Aware Deadband:** Disables deadband in extreme weather to
+      prevent energy-wasting on/off cycling.
+    - **Proportional Fan + Escalation:** Fan speed scales with distance from
+      target, with time-based escalation if the target isn't reached.
+    - **Per-Day Schedule:** Independent start/end times for each day of the week.
+    - **Vacation Mode:** Toggle to force AC fully off.
+    - **Door Sensor:** Auto-off when garden door is left open.
+    - **Sound Mute:** Silences AC beep notifications.
+
+    **Requirements:**
+    - LG AC connected via SmartThinQ or LG ThinQ integration
+    - External temperature sensor(s) (e.g., Aqara)
+    - Outdoor temperature sensor
+    - input_boolean helper for vacation mode
   domain: automation
 mode: restart
 max_exceeded: silent
@@ -243,8 +296,9 @@ max_exceeded: silent
 
 Following existing repository patterns:
 - Variable prefixes: `sensor_*`, `entity_*`, `climate_*`, `switch_*`, `t_*`, `fan_*`
-- Trigger IDs: kebab-case descriptive (`update_loop`, `vacation_on`, `door_opened`, `ha_start`)
+- Trigger IDs: snake_case descriptive (`update_loop`, `vacation_on`, `door_opened`, `init`)
 - Nested `choose` blocks for priority logic
 - Computed variables inside action block for HA trace debugging
-- `color_temp_kelvin` convention (HA 2026.3 compatibility)
 - Semantic versioning in blueprint name
+
+**LG fan mode strings:** The LG ThinQ integration typically exposes fan modes as capitalized strings (`"Low"`, `"Mid"`, `"High"`, `"Power"`). The implementation should verify available fan modes via `state_attr(climate_ac, 'fan_modes')` and map the proportional/escalation levels accordingly.
