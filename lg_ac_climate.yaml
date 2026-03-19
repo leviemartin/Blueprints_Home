@@ -300,3 +300,196 @@ variables:
 
   # --- Door ---
   door_delay: !input door_off_delay
+
+action:
+  # =============================================
+  # STEP 1: MUTE SOUND (standalone, always runs)
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ switch_sound not in [[], none, ''] and
+                 expand(switch_sound) | selectattr('state', 'eq', 'on') | list | count > 0 }}
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: "{{ switch_sound }}"
+
+  # =============================================
+  # STEP 2: COMPUTE VARIABLES
+  # =============================================
+  - variables:
+      # --- Sensor Aggregation ---
+      valid_temps: >
+        {% set ns = namespace(vals=[]) %}
+        {% for s in sensors_temp %}
+          {% set v = states(s) %}
+          {% if v not in ['unavailable', 'unknown', none] and v | float(none) is not none %}
+            {% set ns.vals = ns.vals + [v | float] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.vals }}
+      sensors_available: "{{ valid_temps | length > 0 }}"
+      current_temp: >
+        {% if valid_temps | length == 0 %}
+          {{ 0 }}
+        {% elif strategy == 'min' %}
+          {{ valid_temps | min }}
+        {% elif strategy == 'max' %}
+          {{ valid_temps | max }}
+        {% else %}
+          {{ ((valid_temps | sum) / (valid_temps | length)) | round(1) }}
+        {% endif %}
+
+      # --- Outdoor ---
+      outdoor_temp: "{{ states(sensor_outdoor) | float(0) }}"
+
+      # --- Vacation ---
+      is_vacation: "{{ is_state(entity_vacation, 'on') }}"
+
+      # --- Door ---
+      door_is_open: >
+        {% if sensor_door in [[], none, ''] %}
+          false
+        {% else %}
+          {% set ns = namespace(open=false) %}
+          {% for d in sensor_door %}
+            {% if is_state(d, 'on') %}
+              {% set opened_sec = as_timestamp(now()) - as_timestamp(states[d].last_changed) %}
+              {% if opened_sec >= (door_delay | int * 60) %}
+                {% set ns.open = true %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.open }}
+        {% endif %}
+
+      # --- Current AC State ---
+      current_ac_mode: "{{ states(climate_ac) }}"
+
+      # --- Per-Day Schedule ---
+      schedule_start_today: >
+        {{ [t_start_mon, t_start_tue, t_start_wed, t_start_thu, t_start_fri, t_start_sat, t_start_sun][now().weekday()] }}
+      schedule_end_today: >
+        {{ [t_end_mon, t_end_tue, t_end_wed, t_end_thu, t_end_fri, t_end_sat, t_end_sun][now().weekday()] }}
+      in_operating_window: >
+        {% set t_now = now().strftime('%H:%M:%S') %}
+        {% set t_start = schedule_start_today %}
+        {% set t_end = schedule_end_today %}
+        {% if t_start <= t_end %}
+          {{ t_start <= t_now < t_end }}
+        {% else %}
+          {{ t_now >= t_start or t_now < t_end }}
+        {% endif %}
+
+      # --- Target Mode & Distance ---
+      target_mode: >
+        {% if current_temp | float > temp_high | float %}
+          cool
+        {% elif current_temp | float < temp_low | float %}
+          heat
+        {% else %}
+          off
+        {% endif %}
+      distance_from_target: >
+        {% if current_temp | float > temp_high | float %}
+          {{ (current_temp | float - temp_high | float) | round(1) }}
+        {% elif current_temp | float < temp_low | float %}
+          {{ (temp_low | float - current_temp | float) | round(1) }}
+        {% else %}
+          {{ 0 }}
+        {% endif %}
+
+      # --- Outdoor Distance & Deadband ---
+      outdoor_distance: >
+        {% set o = outdoor_temp | float %}
+        {% set dist_low = (temp_low | float - o) | abs %}
+        {% set dist_high = (o - temp_high | float) | abs %}
+        {% if o < temp_low | float %}
+          {{ dist_low | round(1) }}
+        {% elif o > temp_high | float %}
+          {{ dist_high | round(1) }}
+        {% else %}
+          {{ 0 }}
+        {% endif %}
+      deadband_active: "{{ outdoor_distance | float < deadband_thresh | float }}"
+
+      # --- Fan Speed (Proportional) ---
+      available_fan_modes: "{{ state_attr(climate_ac, 'fan_modes') | default(['low', 'mid', 'high'], true) }}"
+      fan_mode_low: >
+        {% set modes = available_fan_modes %}
+        {% set ns = namespace(found='') %}
+        {% for m in ['Low', 'low', '1'] if m in modes %}
+          {% if ns.found == '' %}{% set ns.found = m %}{% endif %}
+        {% endfor %}
+        {{ ns.found if ns.found != '' else (modes[0] if modes | length > 0 else 'low') }}
+      fan_mode_mid: >
+        {% set modes = available_fan_modes %}
+        {% set ns = namespace(found='') %}
+        {% for m in ['Mid', 'Medium', 'mid', 'medium', '2'] if m in modes %}
+          {% if ns.found == '' %}{% set ns.found = m %}{% endif %}
+        {% endfor %}
+        {{ ns.found if ns.found != '' else (modes[1] if modes | length > 1 else fan_mode_low) }}
+      fan_mode_high: >
+        {% set modes = available_fan_modes %}
+        {% set ns = namespace(found='') %}
+        {% for m in ['High', 'high', '3'] if m in modes %}
+          {% if ns.found == '' %}{% set ns.found = m %}{% endif %}
+        {% endfor %}
+        {{ ns.found if ns.found != '' else (modes[2] if modes | length > 2 else fan_mode_mid) }}
+      fan_mode_max: >
+        {% set modes = available_fan_modes %}
+        {% set ns = namespace(found='') %}
+        {% for m in ['Power', 'Turbo', 'power', 'turbo', '4'] if m in modes %}
+          {% if ns.found == '' %}{% set ns.found = m %}{% endif %}
+        {% endfor %}
+        {{ ns.found if ns.found != '' else fan_mode_high }}
+
+      base_fan: >
+        {% set dist = distance_from_target | float %}
+        {% if dist < fan_low_thresh | float %}
+          {{ fan_mode_low }}
+        {% elif dist < fan_med_thresh | float %}
+          {{ fan_mode_mid }}
+        {% else %}
+          {{ fan_mode_high }}
+        {% endif %}
+
+      # --- Escalation ---
+      minutes_in_current_mode: >
+        {% if target_mode != current_ac_mode %}
+          0
+        {% else %}
+          {% set last = as_timestamp(states[climate_ac].last_changed) | default(as_timestamp(now())) %}
+          {{ ((as_timestamp(now()) - last) / 60) | round(0) | int }}
+        {% endif %}
+      target_fan: >
+        {% set mins = minutes_in_current_mode | int %}
+        {% set fan_levels = [fan_mode_low, fan_mode_mid, fan_mode_high, fan_mode_max] %}
+        {% set base_idx = fan_levels.index(base_fan) if base_fan in fan_levels else 0 %}
+        {% if mins >= esc_stage_2 | int %}
+          {{ fan_mode_max }}
+        {% elif mins >= esc_stage_1 | int %}
+          {{ fan_levels[[base_idx + 1, fan_levels | length - 1] | min] }}
+        {% else %}
+          {{ base_fan }}
+        {% endif %}
+
+  # =============================================
+  # STEP 3: RUNTIME VALIDATION
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ temp_low | float >= temp_high | float }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "AC Climate Blueprint — Configuration Error"
+              message: >
+                Comfort range is misconfigured: Low ({{ temp_low }}°C) must be
+                less than High ({{ temp_high }}°C). AC control is paused until
+                this is corrected.
+              notification_id: "ac_climate_config_error"
+          - stop: "Comfort range misconfigured"
