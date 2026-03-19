@@ -1,0 +1,302 @@
+blueprint:
+  name: "LG AC Climate Control v1.0.0"
+  description: >
+    **Version: 1.0.0**
+
+    Automates LG air conditioners per-floor using external temperature sensors
+    for reliable ambient readings.
+
+    **Features:**
+    - **Automatic Mode Selection:** Heats, cools, or turns off based on a
+      configurable comfort range.
+    - **Outdoor-Aware Deadband:** Disables deadband in extreme weather to
+      prevent energy-wasting on/off cycling.
+    - **Proportional Fan + Escalation:** Fan speed scales with distance from
+      target, with time-based escalation if the target isn't reached.
+    - **Per-Day Schedule:** Independent start/end times for each day of the week.
+    - **Vacation Mode:** Toggle to force AC fully off.
+    - **Door Sensor:** Auto-off when garden door is left open.
+    - **Sound Mute:** Silences AC beep notifications.
+
+    **Requirements:**
+    - LG AC connected via SmartThinQ or LG ThinQ integration
+    - External temperature sensor(s) (e.g., Aqara)
+    - Outdoor temperature sensor
+    - input_boolean helper for vacation mode
+
+  domain: automation
+  input:
+    # --- DEVICES ---
+    climate_entity:
+      name: LG AC Climate Entity
+      description: The climate entity for your LG air conditioner.
+      selector:
+        entity:
+          domain: climate
+    temperature_sensors:
+      name: Temperature Sensors
+      description: One or more Aqara (or other) temperature sensors for this floor.
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+          multiple: true
+    sensor_strategy:
+      name: Sensor Aggregation Strategy
+      description: "How to combine multiple sensor readings: average, min, or max."
+      default: "average"
+      selector:
+        select:
+          options:
+            - label: "Average"
+              value: "average"
+            - label: "Minimum"
+              value: "min"
+            - label: "Maximum"
+              value: "max"
+    ac_sound_switch:
+      name: AC Sound Switch (Optional)
+      description: The switch entity for the AC beep sound. Leave empty if not available.
+      default: []
+      selector:
+        entity:
+          domain: switch
+          multiple: true
+    outdoor_temp_sensor:
+      name: Outdoor Temperature Sensor
+      description: An outdoor temperature sensor entity (not a weather entity).
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    door_sensor:
+      name: Door Sensor (Optional)
+      description: Garden/balcony door contact sensor(s). AC turns off when door is left open.
+      default: []
+      selector:
+        entity:
+          domain: binary_sensor
+          multiple: true
+
+    # --- COMFORT RANGE ---
+    temp_range_low:
+      name: Comfort Range — Low (°C)
+      description: Lower bound of comfort range. AC heats if room drops below this.
+      default: 20.0
+      selector:
+        number:
+          min: 10.0
+          max: 30.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    temp_range_high:
+      name: Comfort Range — High (°C)
+      description: Upper bound of comfort range. AC cools if room rises above this.
+      default: 24.0
+      selector:
+        number:
+          min: 10.0
+          max: 30.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    deadband_outdoor_threshold:
+      name: Deadband Outdoor Threshold (°C)
+      description: "If outdoor temp is this far from the comfort range, deadband is disabled and AC holds in maintenance mode instead of cycling."
+      default: 10.0
+      selector:
+        number:
+          min: 0.0
+          max: 25.0
+          step: 0.5
+          unit_of_measurement: "°C"
+
+    # --- PER-DAY OPERATING SCHEDULE ---
+    schedule_start_mon:
+      name: "Monday — Start"
+      default: "07:00:00"
+      selector:
+        time:
+    schedule_end_mon:
+      name: "Monday — End"
+      default: "23:00:00"
+      selector:
+        time:
+    schedule_start_tue:
+      name: "Tuesday — Start"
+      default: "07:00:00"
+      selector:
+        time:
+    schedule_end_tue:
+      name: "Tuesday — End"
+      default: "23:00:00"
+      selector:
+        time:
+    schedule_start_wed:
+      name: "Wednesday — Start"
+      default: "07:00:00"
+      selector:
+        time:
+    schedule_end_wed:
+      name: "Wednesday — End"
+      default: "23:00:00"
+      selector:
+        time:
+    schedule_start_thu:
+      name: "Thursday — Start"
+      default: "07:00:00"
+      selector:
+        time:
+    schedule_end_thu:
+      name: "Thursday — End"
+      default: "23:00:00"
+      selector:
+        time:
+    schedule_start_fri:
+      name: "Friday — Start"
+      default: "07:00:00"
+      selector:
+        time:
+    schedule_end_fri:
+      name: "Friday — End"
+      default: "23:00:00"
+      selector:
+        time:
+    schedule_start_sat:
+      name: "Saturday — Start"
+      default: "07:00:00"
+      selector:
+        time:
+    schedule_end_sat:
+      name: "Saturday — End"
+      default: "23:00:00"
+      selector:
+        time:
+    schedule_start_sun:
+      name: "Sunday — Start"
+      default: "07:00:00"
+      selector:
+        time:
+    schedule_end_sun:
+      name: "Sunday — End"
+      default: "23:00:00"
+      selector:
+        time:
+
+    # --- VACATION MODE ---
+    vacation_toggle:
+      name: Vacation Mode Toggle
+      description: "An input_boolean helper. When ON, AC is forced fully off."
+      selector:
+        entity:
+          domain: input_boolean
+
+    # --- FAN SPEED & ESCALATION ---
+    fan_speed_low_threshold:
+      name: Fan Low Threshold (°C)
+      description: "Distance from target below which fan = low."
+      default: 1.0
+      selector:
+        number:
+          min: 0.5
+          max: 5.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    fan_speed_medium_threshold:
+      name: Fan Medium Threshold (°C)
+      description: "Distance from target for medium fan. Above this = high."
+      default: 3.0
+      selector:
+        number:
+          min: 1.0
+          max: 10.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    escalation_stage_1_minutes:
+      name: Escalation Stage 1 (min)
+      description: "Minutes before first fan speed escalation."
+      default: 20
+      selector:
+        number:
+          min: 5
+          max: 60
+          unit_of_measurement: min
+    escalation_stage_2_minutes:
+      name: Escalation Stage 2 (min)
+      description: "Minutes before second fan speed escalation (max speed)."
+      default: 40
+      selector:
+        number:
+          min: 10
+          max: 120
+          unit_of_measurement: min
+
+    # --- DOOR ---
+    door_off_delay:
+      name: Door Open Delay (min)
+      description: "Minutes to wait after door opens before shutting off AC."
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 30
+          unit_of_measurement: min
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  # 1. Main Control Loop (every 10 minutes)
+  - platform: time_pattern
+    minutes: "/10"
+    id: "update_loop"
+
+  # 2. Vacation Mode ON
+  - platform: state
+    entity_id: !input vacation_toggle
+    to: "on"
+    id: "vacation_on"
+
+  # 3. HA Restart
+  - platform: homeassistant
+    event: start
+    id: "init"
+
+variables:
+  # --- Entity Mappings ---
+  climate_ac: !input climate_entity
+  sensors_temp: !input temperature_sensors
+  strategy: !input sensor_strategy
+  switch_sound: !input ac_sound_switch
+  sensor_outdoor: !input outdoor_temp_sensor
+  sensor_door: !input door_sensor
+  entity_vacation: !input vacation_toggle
+
+  # --- Comfort ---
+  temp_low: !input temp_range_low
+  temp_high: !input temp_range_high
+  deadband_thresh: !input deadband_outdoor_threshold
+
+  # --- Schedule (Start/End per day) ---
+  t_start_mon: !input schedule_start_mon
+  t_end_mon: !input schedule_end_mon
+  t_start_tue: !input schedule_start_tue
+  t_end_tue: !input schedule_end_tue
+  t_start_wed: !input schedule_start_wed
+  t_end_wed: !input schedule_end_wed
+  t_start_thu: !input schedule_start_thu
+  t_end_thu: !input schedule_end_thu
+  t_start_fri: !input schedule_start_fri
+  t_end_fri: !input schedule_end_fri
+  t_start_sat: !input schedule_start_sat
+  t_end_sat: !input schedule_end_sat
+  t_start_sun: !input schedule_start_sun
+  t_end_sun: !input schedule_end_sun
+
+  # --- Fan ---
+  fan_low_thresh: !input fan_speed_low_threshold
+  fan_med_thresh: !input fan_speed_medium_threshold
+  esc_stage_1: !input escalation_stage_1_minutes
+  esc_stage_2: !input escalation_stage_2_minutes
+
+  # --- Door ---
+  door_delay: !input door_off_delay
