@@ -265,3 +265,124 @@ variables:
   # --- Schedule ---
   t_night_start: !input night_start
   t_night_end: !input night_end
+
+action:
+  # =============================================
+  # STEP 1: COMPUTE VARIABLES
+  # =============================================
+  - variables:
+      # --- Sensor Readings ---
+      indoor_temp: "{{ states(sensor_temperature) | float(20) }}"
+      indoor_rh: "{{ states(sensor_humidity) | float(50) }}"
+      outdoor_temp: "{{ state_attr(entity_weather, 'temperature') | float(15) }}"
+      outdoor_rh: "{{ state_attr(entity_weather, 'humidity') | float(50) }}"
+
+      # --- Dew Point (Magnus Formula) ---
+      indoor_dp: >-
+        {% set T = indoor_temp | float %}
+        {% set RH = [indoor_rh | float, 1] | max %}
+        {% set a = 17.625 %}
+        {% set b = 243.04 %}
+        {% set alpha = (a * T) / (b + T) + log(RH / 100.0) %}
+        {{ (b * alpha / (a - alpha)) | round(1) }}
+      outdoor_dp: >-
+        {% set T = outdoor_temp | float %}
+        {% set RH = [outdoor_rh | float, 1] | max %}
+        {% set a = 17.625 %}
+        {% set b = 243.04 %}
+        {% set alpha = (a * T) / (b + T) + log(RH / 100.0) %}
+        {{ (b * alpha / (a - alpha)) | round(1) }}
+
+      # --- Decision Variables ---
+      dp_delta: "{{ (indoor_dp | float - outdoor_dp | float) | round(1) }}"
+      ventilation_effective: "{{ dp_delta | float > dp_delta_min | float }}"
+      fan_is_on: "{{ is_state(entity_fan, 'on') }}"
+      is_night: >-
+        {% set t = now().strftime('%H:%M') %}
+        {{ t >= t_night_start[:5] or t < t_night_end[:5] }}
+
+      # --- Shower Detection ---
+      # Shower detection uses a different approach than a persisted baseline.
+      # Since blueprint variables don't persist across runs, we detect showers
+      # by checking: (1) motion has been sustained for shower_motion_min, AND
+      # (2) current humidity is significantly above the typical comfortable
+      # range (thresh_high). This avoids the need for a persisted baseline.
+      # The humidity_change trigger (T1) combined with motion_on (T2) timing
+      # gives us the detection window.
+      motion_is_on: "{{ is_state(sensor_motion, 'on') }}"
+      motion_sustained: >-
+        {{ is_state(sensor_motion, 'on') and
+           (now() - states[sensor_motion].last_changed).total_seconds()
+           > (shower_motion_min | int * 60) }}
+      shower_detected: >-
+        {{ motion_sustained and
+           indoor_rh | float > (thresh_high | float - shower_rh_rise | float) }}
+
+      # --- Hysteresis (5% buffer above target for P4 re-trigger) ---
+      high_hum_trigger_point: >-
+        {% if fan_is_on %}
+          {{ thresh_target | float }}
+        {% else %}
+          {{ thresh_target | float + 5 }}
+        {% endif %}
+
+      # --- Mold Check (fan state proxy for duration) ---
+      # If humidity > mold threshold and fan has been off for 60+ min,
+      # this indicates sustained high humidity without ventilation
+      mold_risk: >-
+        {% set rh = indoor_rh | float %}
+        {% set threshold = thresh_mold | float %}
+        {% if rh < threshold %}
+          false
+        {% elif fan_is_on %}
+          false
+        {% else %}
+          {% set fan_off_seconds = (now() - states[entity_fan].last_changed).total_seconds() %}
+          {{ fan_off_seconds > 3600 }}
+        {% endif %}
+
+      # --- Fan Runtime Tracking ---
+      fan_on_minutes: >-
+        {% if not fan_is_on %}
+          0
+        {% else %}
+          {{ ((now() - states[entity_fan].last_changed).total_seconds() / 60) | round(0) | int }}
+        {% endif %}
+      high_hum_max_exceeded: >-
+        {{ fan_is_on and
+           fan_on_minutes | int >= high_hum_max_run | int and
+           not shower_detected }}
+
+      # --- Refresh Timing ---
+      # Check if enough time has passed since fan was last on
+      minutes_since_fan_off: >-
+        {% if fan_is_on %}
+          0
+        {% else %}
+          {{ ((now() - states[entity_fan].last_changed).total_seconds() / 60) | round(0) | int }}
+        {% endif %}
+      refresh_due: >-
+        {{ refresh_enabled and
+           not is_night and
+           indoor_rh | float > refresh_skip | float and
+           minutes_since_fan_off | int >= (refresh_interval | int * 60) }}
+
+  # =============================================
+  # STEP 2: SENSOR VALIDATION
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ states(sensor_humidity) in ['unavailable', 'unknown'] or
+                 states(sensor_temperature) in ['unavailable', 'unknown'] }}
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Ventilator Blueprint — Sensor Warning"
+              message: >
+                Bathroom sensors unavailable. Fan holding current state.
+                Humidity: {{ states(sensor_humidity) }},
+                Temperature: {{ states(sensor_temperature) }}
+              notification_id: "ventilator_sensor_warning"
+          - stop: "Sensors unavailable"
