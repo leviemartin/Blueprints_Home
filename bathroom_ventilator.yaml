@@ -1,0 +1,267 @@
+blueprint:
+  name: "Bathroom Ventilator v1.0.0"
+  description: >
+    **Version: 1.0.0**
+
+    Intelligently controls a bathroom exhaust fan using dew point comparison
+    for optimal humidity management in humid climates (e.g., Netherlands).
+
+    **Features:**
+    - Dew point-based ventilation decisions (smarter than RH% comparison)
+    - Automatic shower detection (motion + humidity spike)
+    - Night mode (22:00-05:30) — fan only runs after shower
+    - Scheduled air refresh cycles (toggleable)
+    - Mold safety override at 85% RH sustained
+
+    **Requirements:**
+    - Smart plug (switch) controlling the exhaust fan
+    - Indoor temperature + humidity sensor (e.g., Aqara)
+    - Motion sensor (e.g., Philips Hue)
+    - Weather entity with outdoor temp + humidity (e.g., OpenWeatherMap)
+
+  domain: automation
+  input:
+    # --- DEVICES ---
+    fan_switch:
+      name: Fan Switch
+      description: Smart plug controlling the bathroom ventilator.
+      selector:
+        entity:
+          domain: switch
+    humidity_sensor:
+      name: Humidity Sensor
+      description: Indoor bathroom humidity sensor.
+      selector:
+        entity:
+          domain: sensor
+          device_class: humidity
+    temperature_sensor:
+      name: Temperature Sensor
+      description: Indoor bathroom temperature sensor (for dew point calculation).
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    motion_sensor:
+      name: Motion Sensor
+      description: Bathroom motion sensor for shower detection.
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: motion
+    weather_entity:
+      name: Weather Entity
+      description: "Weather entity for outdoor conditions (e.g., weather.openweathermap)."
+      selector:
+        entity:
+          domain: weather
+
+    # --- HUMIDITY THRESHOLDS ---
+    target_humidity:
+      name: Target Humidity (%)
+      description: Fan stops when indoor humidity drops below this.
+      default: 60
+      selector:
+        number:
+          min: 40
+          max: 80
+          step: 5
+          unit_of_measurement: "%"
+    high_humidity:
+      name: High Humidity Trigger (%)
+      description: Non-shower ventilation activates above this.
+      default: 75
+      selector:
+        number:
+          min: 60
+          max: 90
+          step: 5
+          unit_of_measurement: "%"
+    mold_humidity:
+      name: Mold Safety Threshold (%)
+      description: Force fan ON if humidity exceeds this for 60+ minutes.
+      default: 85
+      selector:
+        number:
+          min: 75
+          max: 95
+          step: 5
+          unit_of_measurement: "%"
+    dew_point_delta_min:
+      name: Minimum Dew Point Delta (°C)
+      description: "Ventilation is only effective when indoor dew point exceeds outdoor by at least this much."
+      default: 2.0
+      selector:
+        number:
+          min: 0.5
+          max: 5.0
+          step: 0.5
+          unit_of_measurement: "°C"
+
+    # --- SHOWER DETECTION ---
+    shower_humidity_rise:
+      name: Shower Humidity Rise (%)
+      description: "RH% increase (from motion start) that indicates a shower."
+      default: 10
+      selector:
+        number:
+          min: 5
+          max: 25
+          step: 1
+          unit_of_measurement: "%"
+    shower_motion_minutes:
+      name: Shower Motion Duration (min)
+      description: Minimum sustained motion to qualify as a shower.
+      default: 5
+      selector:
+        number:
+          min: 2
+          max: 15
+          step: 1
+          unit_of_measurement: min
+
+    # --- TIMER SETTINGS ---
+    post_shower_min_runtime:
+      name: Post-Shower Minimum Run (min)
+      description: Minimum fan run time after shower detection.
+      default: 15
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 5
+          unit_of_measurement: min
+    post_shower_max_runtime:
+      name: Post-Shower Maximum Run (min)
+      description: Hard maximum fan run time after shower.
+      default: 45
+      selector:
+        number:
+          min: 15
+          max: 90
+          step: 5
+          unit_of_measurement: min
+    high_humidity_max_runtime:
+      name: High Humidity Maximum Run (min)
+      description: Maximum fan run for non-shower high humidity events.
+      default: 30
+      selector:
+        number:
+          min: 10
+          max: 60
+          step: 5
+          unit_of_measurement: min
+
+    # --- AIR REFRESH ---
+    enable_refresh_cycles:
+      name: Enable Air Refresh Cycles
+      description: "Periodic fan runs for air quality. Disable once trickle vents are installed."
+      default: true
+      selector:
+        boolean:
+    refresh_interval_hours:
+      name: Refresh Interval (hours)
+      description: Hours between air refresh cycles.
+      default: 3
+      selector:
+        number:
+          min: 1
+          max: 6
+          step: 1
+          unit_of_measurement: h
+    refresh_duration_minutes:
+      name: Refresh Duration (min)
+      description: How long each refresh cycle runs.
+      default: 10
+      selector:
+        number:
+          min: 5
+          max: 20
+          step: 5
+          unit_of_measurement: min
+    refresh_skip_below:
+      name: Refresh Skip Below (%)
+      description: Skip refresh cycle if humidity is already below this.
+      default: 55
+      selector:
+        number:
+          min: 40
+          max: 70
+          step: 5
+          unit_of_measurement: "%"
+
+    # --- SCHEDULE ---
+    night_start:
+      name: Night Start (Quiet Hours)
+      description: Fan will not run for non-shower events after this time.
+      default: "22:00:00"
+      selector:
+        time:
+    night_end:
+      name: Night End (Quiet Hours)
+      description: Normal fan operation resumes at this time.
+      default: "05:30:00"
+      selector:
+        time:
+
+mode: single
+max_exceeded: silent
+
+trigger:
+  # T1: Humidity changes
+  - platform: state
+    entity_id: !input humidity_sensor
+    id: "humidity_change"
+
+  # T2: Motion starts
+  - platform: state
+    entity_id: !input motion_sensor
+    to: "on"
+    id: "motion_on"
+
+  # T3: Motion stops
+  - platform: state
+    entity_id: !input motion_sensor
+    to: "off"
+    id: "motion_off"
+
+  # T4: Periodic evaluation (every 5 min)
+  - platform: time_pattern
+    minutes: "/5"
+    id: "periodic_eval"
+
+  # T5: HA restart
+  - platform: homeassistant
+    event: start
+    id: "ha_start"
+
+variables:
+  # --- Entity Mappings ---
+  entity_fan: !input fan_switch
+  sensor_humidity: !input humidity_sensor
+  sensor_temperature: !input temperature_sensor
+  sensor_motion: !input motion_sensor
+  entity_weather: !input weather_entity
+
+  # --- Thresholds ---
+  thresh_target: !input target_humidity
+  thresh_high: !input high_humidity
+  thresh_mold: !input mold_humidity
+  dp_delta_min: !input dew_point_delta_min
+  shower_rh_rise: !input shower_humidity_rise
+  shower_motion_min: !input shower_motion_minutes
+
+  # --- Timers ---
+  shower_min_run: !input post_shower_min_runtime
+  shower_max_run: !input post_shower_max_runtime
+  high_hum_max_run: !input high_humidity_max_runtime
+
+  # --- Refresh ---
+  refresh_enabled: !input enable_refresh_cycles
+  refresh_interval: !input refresh_interval_hours
+  refresh_duration: !input refresh_duration_minutes
+  refresh_skip: !input refresh_skip_below
+
+  # --- Schedule ---
+  t_night_start: !input night_start
+  t_night_end: !input night_end
