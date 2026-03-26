@@ -316,14 +316,14 @@ action:
            > (shower_motion_min | int * 60) }}
       shower_detected: >-
         {{ motion_sustained and
-           indoor_rh | float > (thresh_high | float - shower_rh_rise | float) }}
+           indoor_rh | float > thresh_high | float }}
 
       # --- Hysteresis (5% buffer above target for P4 re-trigger) ---
       high_hum_trigger_point: >-
         {% if fan_is_on %}
-          {{ thresh_target | float }}
+          {{ thresh_high | float }}
         {% else %}
-          {{ thresh_target | float + 5 }}
+          {{ thresh_high | float + 5 }}
         {% endif %}
 
       # --- Mold Check (fan state proxy for duration) ---
@@ -497,25 +497,30 @@ action:
               entity_id: "{{ entity_fan }}"
 
   # =============================================
-  # STEP 4: DEBUG NOTIFICATION (Manual Run)
+  # STEP 4: DEBUG NOTIFICATION (Manual Run Only)
   # =============================================
-  - service: persistent_notification.create
-    data:
-      title: "Ventilator Debug — {{ now().strftime('%H:%M:%S') }}"
-      message: >
-        **Indoor:** {{ indoor_temp }}°C / {{ indoor_rh }}% RH / DP {{ indoor_dp }}°C
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id | default('manual') == 'manual' }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Ventilator Debug — {{ now().strftime('%H:%M:%S') }}"
+              message: >
+                **Indoor:** {{ indoor_temp }}°C / {{ indoor_rh }}% RH / DP {{ indoor_dp }}°C
 
-        **Outdoor:** {{ outdoor_temp }}°C / {{ outdoor_rh }}% RH / DP {{ outdoor_dp }}°C
+                **Outdoor:** {{ outdoor_temp }}°C / {{ outdoor_rh }}% RH / DP {{ outdoor_dp }}°C
 
-        **DP Delta:** {{ dp_delta }}°C (effective: {{ ventilation_effective }})
+                **DP Delta:** {{ dp_delta }}°C (effective: {{ ventilation_effective }})
 
-        **Fan:** {{ 'ON' if fan_is_on else 'OFF' }} (on for {{ fan_on_minutes }}min)
+                **Fan:** {{ 'ON' if fan_is_on else 'OFF' }} (on for {{ fan_on_minutes }}min)
 
-        **Night:** {{ is_night }} | **Motion:** {{ motion_is_on }} (sustained: {{ motion_sustained }})
+                **Night:** {{ is_night }} | **Motion:** {{ motion_is_on }} (sustained: {{ motion_sustained }})
 
-        **Shower:** {{ shower_detected }} | **Mold Risk:** {{ mold_risk }}
+                **Shower:** {{ shower_detected }} | **Mold Risk:** {{ mold_risk }}
 
-        **Refresh:** enabled={{ refresh_enabled }}, due={{ refresh_due }}, last off={{ minutes_since_fan_off }}min ago
+                **Refresh:** enabled={{ refresh_enabled }}, due={{ refresh_due }}, last off={{ minutes_since_fan_off }}min ago
 
-        **Trigger:** {{ trigger.id | default('manual') }}
-      notification_id: "ventilator_debug"
+                **Trigger:** manual
+              notification_id: "ventilator_debug"
