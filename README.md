@@ -71,4 +71,33 @@ Automates the Display (Light) and Sound (Beep) settings of LG Air Conditioners. 
 `https://raw.githubusercontent.com/leviemartin/Blueprints_Home/main/lg_sleep_movie.yaml`
 
 ---
+
+## Bathroom Ventilator Blueprint
+
+### Overview
+An intelligent bathroom exhaust fan automation using dew point comparison for optimal humidity management. Designed for humid climates like the Netherlands, it makes ventilation decisions based on the actual moisture content of indoor vs. outdoor air — smarter than simple relative humidity thresholds.
+
+### Features
+*   **💧 Dew Point Intelligence:** Uses the Magnus formula to compare indoor vs. outdoor dew points, ensuring ventilation only runs when it will actually reduce humidity.
+*   **🚿 Automatic Shower Detection:** Detects showers via sustained motion + humidity spike and ventilates for 15-45 minutes (configurable).
+*   **🌙 Night Mode:** No fan activity between 22:00-05:30 (configurable) except for shower detection.
+*   **🔄 Air Refresh Cycles:** Periodic 10-minute fan runs every 3 hours for air quality (toggleable, skipped at night or when humidity is already low).
+*   **🛡️ Mold Safety Override:** Forces fan ON if humidity exceeds 85% for 60+ minutes, regardless of all other conditions.
+*   **⚡ Energy Efficient:** Fan only runs when there's a reason — no wasteful continuous operation.
+
+### Requirements
+*   Smart plug (switch entity) controlling the exhaust fan
+*   Indoor temperature + humidity sensor (e.g., Aqara)
+*   Motion sensor (e.g., Philips Hue)
+*   Weather entity with outdoor temp + humidity (e.g., OpenWeatherMap)
+
+### Installation
+1. Click the button below to import this blueprint into your Home Assistant instance:
+
+[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fleviemartin%2FBlueprints_Home%2Fmain%2Fbathroom_ventilator.yaml)
+
+2. Or manually copy this URL into the Blueprints configuration:
+`https://raw.githubusercontent.com/leviemartin/Blueprints_Home/main/bathroom_ventilator.yaml`
+
+---
 *Created by Martin Levie (Gemini CLI Agent)*
