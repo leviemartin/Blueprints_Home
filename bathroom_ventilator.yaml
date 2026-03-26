@@ -495,3 +495,27 @@ action:
           - service: switch.turn_off
             target:
               entity_id: "{{ entity_fan }}"
+
+  # =============================================
+  # STEP 4: DEBUG NOTIFICATION (Manual Run)
+  # =============================================
+  - service: persistent_notification.create
+    data:
+      title: "Ventilator Debug — {{ now().strftime('%H:%M:%S') }}"
+      message: >
+        **Indoor:** {{ indoor_temp }}°C / {{ indoor_rh }}% RH / DP {{ indoor_dp }}°C
+
+        **Outdoor:** {{ outdoor_temp }}°C / {{ outdoor_rh }}% RH / DP {{ outdoor_dp }}°C
+
+        **DP Delta:** {{ dp_delta }}°C (effective: {{ ventilation_effective }})
+
+        **Fan:** {{ 'ON' if fan_is_on else 'OFF' }} (on for {{ fan_on_minutes }}min)
+
+        **Night:** {{ is_night }} | **Motion:** {{ motion_is_on }} (sustained: {{ motion_sustained }})
+
+        **Shower:** {{ shower_detected }} | **Mold Risk:** {{ mold_risk }}
+
+        **Refresh:** enabled={{ refresh_enabled }}, due={{ refresh_due }}, last off={{ minutes_since_fan_off }}min ago
+
+        **Trigger:** {{ trigger.id | default('manual') }}
+      notification_id: "ventilator_debug"
