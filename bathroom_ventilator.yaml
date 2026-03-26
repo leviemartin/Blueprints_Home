@@ -386,3 +386,72 @@ action:
                 Temperature: {{ states(sensor_temperature) }}
               notification_id: "ventilator_sensor_warning"
           - stop: "Sensors unavailable"
+
+  # =============================================
+  # STEP 3: MAIN PRIORITY CHOOSE
+  # =============================================
+  - choose:
+      # --- P1: MOLD SAFETY OVERRIDE ---
+      - conditions:
+          - condition: template
+            value_template: "{{ mold_risk }}"
+        sequence:
+          - service: switch.turn_on
+            target:
+              entity_id: "{{ entity_fan }}"
+          - service: persistent_notification.create
+            data:
+              title: "Ventilator — Mold Safety Override"
+              message: >
+                Fan forced ON: humidity {{ indoor_rh }}% has exceeded
+                {{ thresh_mold }}% for 60+ minutes. Indoor DP: {{ indoor_dp }}°C,
+                Outdoor DP: {{ outdoor_dp }}°C.
+              notification_id: "ventilator_mold_warning"
+
+      # --- P2: TARGET ACHIEVED — STOP ---
+      - conditions:
+          - condition: template
+            value_template: "{{ fan_is_on and indoor_rh | float < thresh_target | float }}"
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: "{{ entity_fan }}"
+
+      # --- P3: POST-SHOWER VENTILATION ---
+      - conditions:
+          - condition: template
+            value_template: "{{ shower_detected }}"
+        sequence:
+          - service: switch.turn_on
+            target:
+              entity_id: "{{ entity_fan }}"
+          # Minimum run: wait the guaranteed minimum time
+          - delay:
+              minutes: !input post_shower_min_runtime
+          # Recheck loop: every 5 min, stop if conditions met or max reached
+          - repeat:
+              until:
+                - condition: template
+                  value_template: >-
+                    {% set rh_now = states(sensor_humidity) | float(50) %}
+                    {% set T_in = states(sensor_temperature) | float(20) %}
+                    {% set RH_in = [rh_now, 1] | max %}
+                    {% set a = 17.625 %}
+                    {% set b = 243.04 %}
+                    {% set alpha_in = (a * T_in) / (b + T_in) + log(RH_in / 100.0) %}
+                    {% set dp_in = (b * alpha_in / (a - alpha_in)) | round(1) %}
+                    {% set T_out = state_attr(entity_weather, 'temperature') | float(15) %}
+                    {% set RH_out = [state_attr(entity_weather, 'humidity') | float(50), 1] | max %}
+                    {% set alpha_out = (a * T_out) / (b + T_out) + log(RH_out / 100.0) %}
+                    {% set dp_out = (b * alpha_out / (a - alpha_out)) | round(1) %}
+                    {% set delta = dp_in - dp_out %}
+                    {% set elapsed = (shower_min_run | int) + (repeat.index * 5) %}
+                    {{ rh_now < thresh_target | float or
+                       delta < dp_delta_min | float or
+                       elapsed >= shower_max_run | int }}
+              sequence:
+                - delay:
+                    minutes: 5
+          - service: switch.turn_off
+            target:
+              entity_id: "{{ entity_fan }}"
