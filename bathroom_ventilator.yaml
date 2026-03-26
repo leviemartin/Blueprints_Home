@@ -455,3 +455,43 @@ action:
           - service: switch.turn_off
             target:
               entity_id: "{{ entity_fan }}"
+
+      # --- P4: HIGH HUMIDITY (NON-SHOWER) ---
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ indoor_rh | float > high_hum_trigger_point | float and
+                 ventilation_effective and
+                 not is_night and
+                 not high_hum_max_exceeded }}
+        sequence:
+          - service: switch.turn_on
+            target:
+              entity_id: "{{ entity_fan }}"
+          # Fan stays on; T4 periodic trigger will re-evaluate.
+          # P2 (target achieved) or P6 (default off) will stop it.
+
+      # --- P5: AIR REFRESH CYCLE ---
+      - conditions:
+          - condition: template
+            value_template: "{{ refresh_due }}"
+        sequence:
+          - service: switch.turn_on
+            target:
+              entity_id: "{{ entity_fan }}"
+          - delay:
+              minutes: !input refresh_duration_minutes
+          - service: switch.turn_off
+            target:
+              entity_id: "{{ entity_fan }}"
+
+      # --- P6: DEFAULT — FAN OFF ---
+      # Catches: fan left on with no active reason, max runtime exceeded,
+      # ventilation no longer effective, or any other unmatched state.
+      - conditions:
+          - condition: template
+            value_template: "{{ fan_is_on }}"
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: "{{ entity_fan }}"
