@@ -27,7 +27,7 @@ blueprint:
       description: Smart plug controlling the bathroom ventilator.
       selector:
         entity:
-          domain: switch
+          domain: light
     humidity_sensor:
       name: Humidity Sensor
       description: Indoor bathroom humidity sensor.
@@ -396,7 +396,7 @@ action:
           - condition: template
             value_template: "{{ mold_risk }}"
         sequence:
-          - service: switch.turn_on
+          - service: light.turn_on
             target:
               entity_id: "{{ entity_fan }}"
           - service: persistent_notification.create
@@ -413,7 +413,7 @@ action:
           - condition: template
             value_template: "{{ fan_is_on and indoor_rh | float < thresh_target | float }}"
         sequence:
-          - service: switch.turn_off
+          - service: light.turn_off
             target:
               entity_id: "{{ entity_fan }}"
 
@@ -422,7 +422,7 @@ action:
           - condition: template
             value_template: "{{ shower_detected }}"
         sequence:
-          - service: switch.turn_on
+          - service: light.turn_on
             target:
               entity_id: "{{ entity_fan }}"
           # Minimum run: wait the guaranteed minimum time
@@ -452,7 +452,7 @@ action:
               sequence:
                 - delay:
                     minutes: 5
-          - service: switch.turn_off
+          - service: light.turn_off
             target:
               entity_id: "{{ entity_fan }}"
 
@@ -465,7 +465,7 @@ action:
                  not is_night and
                  not high_hum_max_exceeded }}
         sequence:
-          - service: switch.turn_on
+          - service: light.turn_on
             target:
               entity_id: "{{ entity_fan }}"
           # Fan stays on; T4 periodic trigger will re-evaluate.
@@ -476,12 +476,12 @@ action:
           - condition: template
             value_template: "{{ refresh_due }}"
         sequence:
-          - service: switch.turn_on
+          - service: light.turn_on
             target:
               entity_id: "{{ entity_fan }}"
           - delay:
               minutes: !input refresh_duration_minutes
-          - service: switch.turn_off
+          - service: light.turn_off
             target:
               entity_id: "{{ entity_fan }}"
 
@@ -492,7 +492,7 @@ action:
           - condition: template
             value_template: "{{ fan_is_on }}"
         sequence:
-          - service: switch.turn_off
+          - service: light.turn_off
             target:
               entity_id: "{{ entity_fan }}"
 
