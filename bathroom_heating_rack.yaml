@@ -1,7 +1,7 @@
 blueprint:
-  name: "Bathroom Heating Rack v1.0.3"
+  name: "Bathroom Heating Rack v1.0.4"
   description: >
-    **Version: 1.0.3** — Sensor validation no longer blocks on climate state='unknown' (Tuya Cloud integrations use 'unknown' as a normal operating state). v1.0.2 skipped set_preset_mode for integrations that reject 'none'. v1.0.1 fixed datetime arithmetic via as_datetime().
+    **Version: 1.0.4** — Idempotent set_hvac_mode now normalises 'unknown' → 'heat_cool' for Tuya Cloud devices (stops the heater from beeping every minute). v1.0.3 stopped blocking on climate state='unknown'. v1.0.2 skipped set_preset_mode for integrations that reject 'none'. v1.0.1 fixed datetime arithmetic via as_datetime().
 
     Pre-heats the bathroom heating rack for adult morning and kids bath
     routines using dynamic ΔT-based warmup, predictive motion override,
@@ -326,6 +326,11 @@ action:
 
       current_setpoint: "{{ state_attr(entity_climate, 'temperature') | float(7) }}"
       current_hvac_mode: "{{ states(entity_climate) }}"
+      # Tuya Cloud climate entities persistently report state='unknown' even when
+      # in heat_cool mode. Normalising 'unknown' → 'heat_cool' prevents the
+      # idempotent service-call check from firing set_hvac_mode every tick
+      # (which causes the device to beep each time).
+      current_hvac_mode_normalized: "{{ 'heat_cool' if current_hvac_mode == 'unknown' else current_hvac_mode }}"
       current_preset: "{{ state_attr(entity_climate, 'preset_mode') }}"
       fan_is_on: "{{ is_state(entity_fan, 'on') }}"
 
@@ -528,7 +533,7 @@ action:
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ current_hvac_mode != desired_mode }}"
+            value_template: "{{ current_hvac_mode_normalized != desired_mode }}"
         sequence:
           - service: climate.set_hvac_mode
             target:
