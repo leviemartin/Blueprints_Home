@@ -1,7 +1,7 @@
 blueprint:
-  name: "Bathroom Heating Rack v1.0.2"
+  name: "Bathroom Heating Rack v1.0.3"
   description: >
-    **Version: 1.0.2** — Skips climate.set_preset_mode when desired is 'none' (integrations with only ["eco"] in preset_modes reject 'none'). v1.0.1 fixed datetime arithmetic via as_datetime().
+    **Version: 1.0.3** — Sensor validation no longer blocks on climate state='unknown' (Tuya Cloud integrations use 'unknown' as a normal operating state). v1.0.2 skipped set_preset_mode for integrations that reject 'none'. v1.0.1 fixed datetime arithmetic via as_datetime().
 
     Pre-heats the bathroom heating rack for adult morning and kids bath
     routines using dynamic ΔT-based warmup, predictive motion override,
@@ -457,12 +457,18 @@ action:
   # =============================================
   # STEP 2: SENSOR VALIDATION
   # =============================================
+  # Only treat 'unavailable' as a true hard-stop. 'unknown' is NOT checked
+  # here because some integrations (notably Tuya Cloud climate entities)
+  # report state='unknown' as a normal operating state even when the device
+  # is online, temperatures are updating, and service calls succeed.
+  # Blocking on 'unknown' would prevent the priority waterfall from ever
+  # running against those devices.
   - choose:
       # Climate entity unavailable — hard stop
       - conditions:
           - condition: template
             value_template: >-
-              {{ states(entity_climate) in ['unavailable', 'unknown'] }}
+              {{ states(entity_climate) == 'unavailable' }}
         sequence:
           - service: persistent_notification.create
             data:
