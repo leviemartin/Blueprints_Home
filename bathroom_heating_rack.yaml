@@ -1,7 +1,7 @@
 blueprint:
-  name: "Bathroom Heating Rack v1.0.4"
+  name: "Bathroom Heating Rack v1.0.5"
   description: >
-    **Version: 1.0.4** — Idempotent set_hvac_mode now normalises 'unknown' → 'heat_cool' for Tuya Cloud devices (stops the heater from beeping every minute). v1.0.3 stopped blocking on climate state='unknown'. v1.0.2 skipped set_preset_mode for integrations that reject 'none'. v1.0.1 fixed datetime arithmetic via as_datetime().
+    **Version: 1.0.5** — P6 idle and P2 fan-pause now drive setpoint to a configurable idle_setpoint (default 7°C) so the heater does not continue warming the room at the last active-routine setpoint (energy waste bug). v1.0.4 normalised 'unknown'→'heat_cool' to stop per-tick beeping. v1.0.3 stopped blocking on state='unknown'. v1.0.2 skipped set_preset_mode for integrations that reject 'none'. v1.0.1 fixed datetime arithmetic via as_datetime().
 
     Pre-heats the bathroom heating rack for adult morning and kids bath
     routines using dynamic ΔT-based warmup, predictive motion override,
@@ -77,6 +77,12 @@ blueprint:
       default: 30
       selector:
         number: {min: 10, max: 120, step: 5, unit_of_measurement: "min"}
+    idle_setpoint:
+      name: Idle / Pause Setpoint (°C)
+      description: "Setpoint applied when no routine is active (P6 idle) and when the fan is running during a routine (P2 pause). Keeps the heater from warming the room outside active windows. Default 7°C matches typical device min_temp."
+      default: 7
+      selector:
+        number: {min: 5, max: 20, step: 0.5, unit_of_measurement: "°C"}
 
     # ----- MORNING A (PRIMARY) -----
     morning_a_days:
@@ -247,6 +253,7 @@ variables:
   # Settings
   boost_runtime_min: !input boost_runtime_min
   boost_target_temp: !input boost_target_temp
+  idle_setpoint: !input idle_setpoint
   warmup_base_min: !input warmup_base_min
   warmup_per_degree_min: !input warmup_per_degree_min
   warmup_min_minutes: !input warmup_min_minutes
@@ -524,7 +531,13 @@ action:
   - variables:
       desired_mode: "{% if vacation_active %}off{% else %}heat_cool{% endif %}"
       desired_preset: "{% if vacation_active %}none{% elif fan_is_on and (morning_active or evening_active or boost_active) %}eco{% elif boost_active or evening_active or morning_active %}none{% else %}eco{% endif %}"
-      desired_setpoint: "{% if vacation_active %}none{% elif fan_is_on and (morning_active or evening_active or boost_active) %}none{% elif boost_active %}{{ boost_target_temp | float }}{% elif evening_active %}{{ evening_temp | float }}{% elif morning_active %}{{ morning_temp | float }}{% else %}none{% endif %}"
+      # P2 (fan pause) and P6 (idle) drive the setpoint to `idle_setpoint` (default 7°C)
+      # rather than leaving the previous active-routine setpoint in place. Earlier
+      # versions left setpoint='none' for these states assuming preset=eco would
+      # impose a low frost-protect value; on the Tuya ECOSO device the explicit
+      # setpoint always wins regardless of preset, so we'd continue to heat to the
+      # previous target (e.g. 23°C from a boost) during idle. See v1.0.5 notes.
+      desired_setpoint: "{% if vacation_active %}none{% elif fan_is_on and (morning_active or evening_active or boost_active) %}{{ idle_setpoint | float }}{% elif boost_active %}{{ boost_target_temp | float }}{% elif evening_active %}{{ evening_temp | float }}{% elif morning_active %}{{ morning_temp | float }}{% else %}{{ idle_setpoint | float }}{% endif %}"
       active_priority: "{% if vacation_active %}P1_vacation{% elif fan_is_on and (morning_active or evening_active or boost_active) %}P2_fan_coord{% elif boost_active %}P3_boost{% elif evening_active %}P4_evening{% elif morning_active %}P5_morning{% else %}P6_idle{% endif %}"
 
   # =============================================
