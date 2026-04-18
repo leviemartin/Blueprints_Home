@@ -604,3 +604,38 @@ action:
                 Bathroom at {{ indoor_temp | round(1) }}°C
                 (target {{ desired_setpoint }}°C). {{ active_priority }}.
               notification_id: "heating_rack_target_reached"
+
+  # =============================================
+  # STEP 6: DEBUG NOTIFICATION (Manual Run Only)
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id | default('manual') == 'manual' }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Heating Rack Debug — {{ now().strftime('%H:%M:%S') }}"
+              message: >
+                **Indoor:** {{ indoor_temp | round(1) }}°C
+                | **Setpoint:** {{ current_setpoint }}°C
+                | **Mode:** {{ current_hvac_mode }}
+                | **Preset:** {{ current_preset | default('none') }}
+
+                **Fan:** {{ 'ON' if fan_is_on else 'OFF' }}
+                | **Vacation:** {{ vacation_active }}
+                | **Boost:** {{ 'ON' if boost_is_on else 'off' }} (age {{ boost_age_min }}m, expires {{ boost_runtime_min_int }}m)
+
+                **Today:** {{ today_dow }}
+
+                **Morning A:** days={{ ma_in_days }}, ΔT={{ ma_delta_T }}°C, warmup={{ ma_warmup_min }}m, auto_start={{ ma_auto_start_dt.strftime('%H:%M') }}, eff_start={{ ma_effective_start.strftime('%H:%M') }}, active={{ ma_active }}
+
+                **Morning B:** days={{ mb_in_days }}, active={{ mb_active }}
+
+                **Evening A:** days={{ ea_in_days }}, ΔT={{ ea_delta_T }}°C, warmup={{ ea_warmup_min }}m, auto_start={{ ea_auto_start_dt.strftime('%H:%M') }}, eff_start={{ ea_effective_start.strftime('%H:%M') }}, active={{ ea_active }}
+
+                **Evening B:** days={{ eb_in_days }}, active={{ eb_active }}
+
+                **→ Priority:** {{ active_priority }}
+                | **→ Desired:** mode={{ desired_mode }}, preset={{ desired_preset }}, setpoint={{ desired_setpoint }}
+              notification_id: "heating_rack_debug"
