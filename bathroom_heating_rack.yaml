@@ -558,3 +558,49 @@ action:
               entity_id: "{{ entity_climate }}"
             data:
               temperature: "{{ desired_setpoint | float }}"
+
+  # =============================================
+  # STEP 5: NOTIFICATIONS
+  # =============================================
+  - choose:
+      # Warmup started — transitioning to P3/P4/P5 from non-active
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ enable_notifications
+                 and active_priority in ['P3_boost','P4_evening','P5_morning']
+                 and (current_hvac_mode == 'off' or
+                      (current_preset | default('none')) == 'eco') }}
+        sequence:
+          - variables:
+              eta_delta: "{{ [0, desired_setpoint | float - indoor_temp | float] | max }}"
+              eta_min: >-
+                {{ [warmup_max_minutes | int,
+                    [warmup_min_minutes | int,
+                     (warmup_base_min | int) + (warmup_per_degree_min | int) * (eta_delta | float)] | max
+                   ] | min | int }}
+          - service: persistent_notification.create
+            data:
+              title: "Heating Rack — Warmup Started"
+              message: >
+                Priority: {{ active_priority }}.
+                Current {{ indoor_temp | round(1) }}°C → target
+                {{ desired_setpoint }}°C. ETA ~{{ eta_min }} min.
+              notification_id: "heating_rack_warmup_started"
+
+      # Target reached — within 0.5°C of desired while routine active
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ enable_notifications
+                 and active_priority in ['P3_boost','P4_evening','P5_morning']
+                 and desired_setpoint != 'none'
+                 and (indoor_temp | float - desired_setpoint | float) | abs < 0.5 }}
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Heating Rack — At Target"
+              message: >
+                Bathroom at {{ indoor_temp | round(1) }}°C
+                (target {{ desired_setpoint }}°C). {{ active_priority }}.
+              notification_id: "heating_rack_target_reached"
