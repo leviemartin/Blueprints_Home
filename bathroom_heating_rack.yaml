@@ -1,7 +1,7 @@
 blueprint:
-  name: "Bathroom Heating Rack v1.0.1"
+  name: "Bathroom Heating Rack v1.0.2"
   description: >
-    **Version: 1.0.1** — Fixed datetime arithmetic (wraps str-valued datetime vars with as_datetime()). Previous version crashed at action/1 with TypeError.
+    **Version: 1.0.2** — Skips climate.set_preset_mode when desired is 'none' (integrations with only ["eco"] in preset_modes reject 'none'). v1.0.1 fixed datetime arithmetic via as_datetime().
 
     Pre-heats the bathroom heating rack for adult morning and kids bath
     routines using dynamic ΔT-based warmup, predictive motion override,
@@ -530,17 +530,25 @@ action:
             data:
               hvac_mode: "{{ desired_mode }}"
 
+  # Set preset_mode only when we want a real preset (e.g. "eco").
+  # Skipping the service call when desired_preset == 'none' is an explicit
+  # workaround: many HA climate integrations (including generic_thermostat
+  # with only ["eco"] in preset_modes) reject set_preset_mode: 'none' with
+  # "not a valid preset". On those integrations, explicit setpoint changes
+  # (climate.set_temperature) automatically pull the thermostat out of the
+  # previous preset, so skipping here is safe.
   - choose:
       - conditions:
           - condition: template
             value_template: >-
-              {{ (current_preset | default('none')) != desired_preset }}
+              {{ desired_preset != 'none'
+                 and (current_preset | default('none')) != desired_preset }}
         sequence:
           - service: climate.set_preset_mode
             target:
               entity_id: "{{ entity_climate }}"
             data:
-              preset_mode: "{{ 'none' if desired_preset == 'none' else desired_preset }}"
+              preset_mode: "{{ desired_preset }}"
 
   - choose:
       - conditions:
