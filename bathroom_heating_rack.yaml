@@ -1,7 +1,7 @@
 blueprint:
-  name: "Bathroom Heating Rack v1.0.0"
+  name: "Bathroom Heating Rack v1.0.1"
   description: >
-    **Version: 1.0.0**
+    **Version: 1.0.1** — Fixed datetime arithmetic (wraps str-valued datetime vars with as_datetime()). Previous version crashed at action/1 with TypeError.
 
     Pre-heats the bathroom heating rack for adult morning and kids bath
     routines using dynamic ΔT-based warmup, predictive motion override,
