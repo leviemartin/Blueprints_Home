@@ -1,0 +1,277 @@
+blueprint:
+  name: "Bathroom Heating Rack v1.0.0"
+  description: >
+    **Version: 1.0.0**
+
+    Pre-heats the bathroom heating rack for adult morning and kids bath
+    routines using dynamic ΔT-based warmup, predictive motion override,
+    and ventilator coordination.
+
+    **Features:**
+    - Dual-slot routines per phase (e.g., weekday + weekend morning)
+    - Dynamic warmup: self-adjusts across seasons via indoor ΔT
+    - Predictive motion: hall → morning; stairs → evening
+    - Ad-hoc boost toggle with auto-expiry
+    - Ventilator coordination via eco preset (no heat eviction)
+    - Vacation / full-off toggle
+
+  domain: automation
+  input:
+    # ----- DEVICES -----
+    heating_climate:
+      name: Heating Rack Climate Entity
+      description: The climate entity wrapping the heating rack smart plug.
+      selector:
+        entity:
+          domain: climate
+    bathroom_temp_sensor:
+      name: Bathroom Temperature Sensor
+      description: Indoor bathroom temperature sensor (for ΔT-based warmup).
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    hall_motion:
+      name: Hall Motion Sensor (Morning Predictor)
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: motion
+    stairs_motion:
+      name: Stairs Motion Sensor (Evening Predictor)
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: motion
+    fan_switch:
+      name: Ventilator Switch
+      description: "The exhaust fan entity (coordination target). Matches bathroom_ventilator blueprint's light-domain convention."
+      selector:
+        entity:
+          domain: light
+
+    # ----- GLOBAL CONTROLS -----
+    vacation_off:
+      name: Vacation / Full-Off Toggle (Optional)
+      description: "Optional input_boolean. When ON, heating rack is forced off."
+      default: []
+      selector:
+        entity:
+          domain: input_boolean
+          multiple: true
+    boost_toggle:
+      name: Ad-hoc Boost Toggle
+      description: "Input boolean. When turned ON, heats to boost_target_temp for boost_runtime_min then auto-turns-off."
+      selector:
+        entity:
+          domain: input_boolean
+
+    # ----- BOOST SETTINGS -----
+    boost_target_temp:
+      name: Boost Target Temperature (°C)
+      default: 23
+      selector:
+        number: {min: 18, max: 28, step: 0.5, unit_of_measurement: "°C"}
+    boost_runtime_min:
+      name: Boost Runtime (min)
+      default: 30
+      selector:
+        number: {min: 10, max: 120, step: 5, unit_of_measurement: "min"}
+
+    # ----- MORNING A (PRIMARY) -----
+    morning_a_days:
+      name: Morning A Days
+      default: ["mon", "tue", "wed", "thu", "fri"]
+      selector:
+        select:
+          multiple: true
+          options:
+            - {label: Monday, value: mon}
+            - {label: Tuesday, value: tue}
+            - {label: Wednesday, value: wed}
+            - {label: Thursday, value: thu}
+            - {label: Friday, value: fri}
+            - {label: Saturday, value: sat}
+            - {label: Sunday, value: sun}
+    morning_a_target_warm:
+      name: Morning A Target-Warm Time
+      default: "06:45:00"
+      selector: {time: {}}
+    morning_a_hold_until:
+      name: Morning A Hold-Until Time
+      default: "08:00:00"
+      selector: {time: {}}
+    morning_a_target_temp:
+      name: Morning A Target Temperature (°C)
+      default: 23
+      selector:
+        number: {min: 18, max: 28, step: 0.5, unit_of_measurement: "°C"}
+
+    # ----- MORNING B (OPTIONAL) -----
+    morning_b_days:
+      name: Morning B Days (leave empty to disable)
+      default: []
+      selector:
+        select:
+          multiple: true
+          options:
+            - {label: Monday, value: mon}
+            - {label: Tuesday, value: tue}
+            - {label: Wednesday, value: wed}
+            - {label: Thursday, value: thu}
+            - {label: Friday, value: fri}
+            - {label: Saturday, value: sat}
+            - {label: Sunday, value: sun}
+    morning_b_target_warm:
+      name: Morning B Target-Warm Time
+      default: "08:30:00"
+      selector: {time: {}}
+    morning_b_hold_until:
+      name: Morning B Hold-Until Time
+      default: "10:00:00"
+      selector: {time: {}}
+    morning_b_target_temp:
+      name: Morning B Target Temperature (°C)
+      default: 23
+      selector:
+        number: {min: 18, max: 28, step: 0.5, unit_of_measurement: "°C"}
+
+    # ----- EVENING A (KIDS BATH) -----
+    evening_a_days:
+      name: Evening A (Kids Bath) Days
+      default: []
+      selector:
+        select:
+          multiple: true
+          options:
+            - {label: Monday, value: mon}
+            - {label: Tuesday, value: tue}
+            - {label: Wednesday, value: wed}
+            - {label: Thursday, value: thu}
+            - {label: Friday, value: fri}
+            - {label: Saturday, value: sat}
+            - {label: Sunday, value: sun}
+    evening_a_target_warm:
+      name: Evening A Target-Warm Time
+      default: "18:15:00"
+      selector: {time: {}}
+    evening_a_hold_until:
+      name: Evening A Hold-Until Time
+      default: "19:30:00"
+      selector: {time: {}}
+    evening_a_target_temp:
+      name: Evening A Target Temperature (°C)
+      default: 25
+      selector:
+        number: {min: 18, max: 28, step: 0.5, unit_of_measurement: "°C"}
+
+    # ----- EVENING B (OPTIONAL ADULT EVENING) -----
+    evening_b_days:
+      name: Evening B Days (leave empty to disable)
+      default: []
+      selector:
+        select:
+          multiple: true
+          options:
+            - {label: Monday, value: mon}
+            - {label: Tuesday, value: tue}
+            - {label: Wednesday, value: wed}
+            - {label: Thursday, value: thu}
+            - {label: Friday, value: fri}
+            - {label: Saturday, value: sat}
+            - {label: Sunday, value: sun}
+    evening_b_target_warm:
+      name: Evening B Target-Warm Time
+      default: "20:30:00"
+      selector: {time: {}}
+    evening_b_hold_until:
+      name: Evening B Hold-Until Time
+      default: "22:00:00"
+      selector: {time: {}}
+    evening_b_target_temp:
+      name: Evening B Target Temperature (°C)
+      default: 23
+      selector:
+        number: {min: 18, max: 28, step: 0.5, unit_of_measurement: "°C"}
+
+    # ----- WARMUP FORMULA TUNING -----
+    warmup_base_min:
+      name: Warmup Base Minutes
+      default: 10
+      selector:
+        number: {min: 5, max: 30, step: 1, unit_of_measurement: "min"}
+    warmup_per_degree_min:
+      name: Warmup Minutes per °C
+      default: 5
+      selector:
+        number: {min: 1, max: 15, step: 1, unit_of_measurement: "min/°C"}
+    warmup_min_minutes:
+      name: Warmup Floor (min)
+      default: 10
+      selector:
+        number: {min: 5, max: 30, step: 1, unit_of_measurement: "min"}
+    warmup_max_minutes:
+      name: Warmup Cap (min)
+      default: 60
+      selector:
+        number: {min: 20, max: 120, step: 5, unit_of_measurement: "min"}
+
+    # ----- BEHAVIOR TOGGLES -----
+    enable_predictive_motion:
+      name: Enable Predictive Motion Override
+      default: true
+      selector: {boolean: {}}
+    enable_notifications:
+      name: Enable Persistent Notifications
+      default: true
+      selector: {boolean: {}}
+
+mode: restart
+max_exceeded: silent
+
+# =============================================
+# TOP-LEVEL VARIABLES — !input pass-through
+# (matches bathroom_ventilator.yaml pattern; guarantees !input
+#  resolves at automation creation and is available everywhere below)
+# =============================================
+variables:
+  # Entity mappings
+  entity_climate: !input heating_climate
+  sensor_bathroom_temp: !input bathroom_temp_sensor
+  sensor_hall_motion: !input hall_motion
+  sensor_stairs_motion: !input stairs_motion
+  entity_fan: !input fan_switch
+  entity_vacation: !input vacation_off
+  entity_boost: !input boost_toggle
+
+  # Settings
+  boost_runtime_min: !input boost_runtime_min
+  boost_target_temp: !input boost_target_temp
+  warmup_base_min: !input warmup_base_min
+  warmup_per_degree_min: !input warmup_per_degree_min
+  warmup_min_minutes: !input warmup_min_minutes
+  warmup_max_minutes: !input warmup_max_minutes
+  enable_predictive_motion: !input enable_predictive_motion
+  enable_notifications: !input enable_notifications
+
+  # Routine slot inputs
+  morning_a_days: !input morning_a_days
+  morning_a_target_warm: !input morning_a_target_warm
+  morning_a_hold_until: !input morning_a_hold_until
+  morning_a_target_temp: !input morning_a_target_temp
+  morning_b_days: !input morning_b_days
+  morning_b_target_warm: !input morning_b_target_warm
+  morning_b_hold_until: !input morning_b_hold_until
+  morning_b_target_temp: !input morning_b_target_temp
+  evening_a_days: !input evening_a_days
+  evening_a_target_warm: !input evening_a_target_warm
+  evening_a_hold_until: !input evening_a_hold_until
+  evening_a_target_temp: !input evening_a_target_temp
+  evening_b_days: !input evening_b_days
+  evening_b_target_warm: !input evening_b_target_warm
+  evening_b_hold_until: !input evening_b_hold_until
+  evening_b_target_temp: !input evening_b_target_temp
+
+# Triggers and action will be added in later tasks.
+trigger: []
+action: []
