@@ -310,4 +310,37 @@ trigger:
   - platform: homeassistant
     event: start
     id: ha_start
-action: []
+action:
+  # =============================================
+  # STEP 1: COMPUTE LIVE STATE (inside action for trace visibility)
+  # =============================================
+  - variables:
+      # --- Live sensor reads ---
+      indoor_temp_primary: "{{ states(sensor_bathroom_temp) | float(-99) }}"
+      indoor_temp_fallback: "{{ state_attr(entity_climate, 'current_temperature') | float(-99) }}"
+      indoor_temp_has_primary: "{{ indoor_temp_primary | float(-99) > -50 }}"
+      indoor_temp_has_fallback: "{{ indoor_temp_fallback | float(-99) > -50 }}"
+      indoor_temp_both_unavailable: "{{ not indoor_temp_has_primary and not indoor_temp_has_fallback }}"
+      indoor_temp: >-
+        {% if indoor_temp_has_primary %}{{ indoor_temp_primary | float }}{% elif indoor_temp_has_fallback %}{{ indoor_temp_fallback | float }}{% else %}20{% endif %}
+
+      current_setpoint: "{{ state_attr(entity_climate, 'temperature') | float(7) }}"
+      current_hvac_mode: "{{ states(entity_climate) }}"
+      current_preset: "{{ state_attr(entity_climate, 'preset_mode') }}"
+      fan_is_on: "{{ is_state(entity_fan, 'on') }}"
+
+      # --- Time helpers ---
+      today_dow: "{{ now().strftime('%a') | lower }}"
+      now_dt: "{{ now() }}"
+
+      # --- Vacation (safely handle empty list default) ---
+      vacation_active: >-
+        {% if entity_vacation is iterable and entity_vacation | length > 0 %}{{ expand(entity_vacation) | selectattr('state','eq','on') | list | length > 0 }}{% else %}false{% endif %}
+
+      # --- Boost (stateless age-based expiry) ---
+      boost_runtime_min_int: "{{ (boost_runtime_min | float) | int }}"
+      boost_is_on: "{{ is_state(entity_boost, 'on') }}"
+      boost_age_min: >-
+        {% if states[entity_boost] %}{{ ((now() - states[entity_boost].last_changed).total_seconds() / 60) | int }}{% else %}0{% endif %}
+      boost_active: "{{ boost_is_on and boost_age_min < boost_runtime_min_int }}"
+      boost_expired: "{{ boost_is_on and boost_age_min >= boost_runtime_min_int }}"
