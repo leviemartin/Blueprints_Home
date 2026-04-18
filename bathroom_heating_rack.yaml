@@ -503,3 +503,58 @@ action:
           - service: input_boolean.turn_off
             target:
               entity_id: "{{ entity_boost }}"
+
+  # =============================================
+  # STEP 4: PRIORITY CHOOSE (P1–P6)
+  # Each branch resolves desired_mode, desired_preset, desired_setpoint
+  # via a nested variables block, then falls through to the idempotent
+  # service-call block at the end.
+  #
+  # NOTE: all desired_* templates are single-line to avoid embedded
+  # whitespace/newlines in the output string (which would break
+  # equality checks like `desired_setpoint != 'none'`).
+  # =============================================
+  - variables:
+      desired_mode: "{% if vacation_active %}off{% else %}heat_cool{% endif %}"
+      desired_preset: "{% if vacation_active %}none{% elif fan_is_on and (morning_active or evening_active or boost_active) %}eco{% elif boost_active or evening_active or morning_active %}none{% else %}eco{% endif %}"
+      desired_setpoint: "{% if vacation_active %}none{% elif fan_is_on and (morning_active or evening_active or boost_active) %}none{% elif boost_active %}{{ boost_target_temp | float }}{% elif evening_active %}{{ evening_temp | float }}{% elif morning_active %}{{ morning_temp | float }}{% else %}none{% endif %}"
+      active_priority: "{% if vacation_active %}P1_vacation{% elif fan_is_on and (morning_active or evening_active or boost_active) %}P2_fan_coord{% elif boost_active %}P3_boost{% elif evening_active %}P4_evening{% elif morning_active %}P5_morning{% else %}P6_idle{% endif %}"
+
+  # =============================================
+  # STEP 4b: IDEMPOTENT SERVICE CALLS
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ current_hvac_mode != desired_mode }}"
+        sequence:
+          - service: climate.set_hvac_mode
+            target:
+              entity_id: "{{ entity_climate }}"
+            data:
+              hvac_mode: "{{ desired_mode }}"
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ (current_preset | default('none')) != desired_preset }}
+        sequence:
+          - service: climate.set_preset_mode
+            target:
+              entity_id: "{{ entity_climate }}"
+            data:
+              preset_mode: "{{ 'none' if desired_preset == 'none' else desired_preset }}"
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ desired_setpoint != 'none'
+                 and (current_setpoint | float - desired_setpoint | float) | abs > 0.1 }}
+        sequence:
+          - service: climate.set_temperature
+            target:
+              entity_id: "{{ entity_climate }}"
+            data:
+              temperature: "{{ desired_setpoint | float }}"
