@@ -328,7 +328,50 @@ blueprint:
 mode: restart
 max_exceeded: silent
 
-# Triggers, variables, and action will be added in later tasks.
+# =============================================
+# TOP-LEVEL VARIABLES — !input pass-through
+# (matches bathroom_ventilator.yaml pattern; guarantees !input
+#  resolves at automation creation and is available everywhere below)
+# =============================================
+variables:
+  # Entity mappings
+  entity_climate: !input heating_climate
+  sensor_bathroom_temp: !input bathroom_temp_sensor
+  sensor_hall_motion: !input hall_motion
+  sensor_stairs_motion: !input stairs_motion
+  entity_fan: !input fan_switch
+  entity_vacation: !input vacation_off
+  entity_boost: !input boost_toggle
+
+  # Settings
+  boost_runtime_min: !input boost_runtime_min
+  boost_target_temp: !input boost_target_temp
+  warmup_base_min: !input warmup_base_min
+  warmup_per_degree_min: !input warmup_per_degree_min
+  warmup_min_minutes: !input warmup_min_minutes
+  warmup_max_minutes: !input warmup_max_minutes
+  enable_predictive_motion: !input enable_predictive_motion
+  enable_notifications: !input enable_notifications
+
+  # Routine slot inputs
+  morning_a_days: !input morning_a_days
+  morning_a_target_warm: !input morning_a_target_warm
+  morning_a_hold_until: !input morning_a_hold_until
+  morning_a_target_temp: !input morning_a_target_temp
+  morning_b_days: !input morning_b_days
+  morning_b_target_warm: !input morning_b_target_warm
+  morning_b_hold_until: !input morning_b_hold_until
+  morning_b_target_temp: !input morning_b_target_temp
+  evening_a_days: !input evening_a_days
+  evening_a_target_warm: !input evening_a_target_warm
+  evening_a_hold_until: !input evening_a_hold_until
+  evening_a_target_temp: !input evening_a_target_temp
+  evening_b_days: !input evening_b_days
+  evening_b_target_warm: !input evening_b_target_warm
+  evening_b_hold_until: !input evening_b_hold_until
+  evening_b_target_temp: !input evening_b_target_temp
+
+# Triggers and action will be added in later tasks.
 trigger: []
 action: []
 ```
@@ -418,36 +461,28 @@ git commit -m "feat(heating-rack): add 7 triggers (periodic, motions, toggles, f
 ## Task 4: Add live-state variables and vacation/boost state
 
 **Files:**
-- Modify: `bathroom_heating_rack.yaml` (replace `action: []` with first block)
+- Modify: `bathroom_heating_rack.yaml` (replace `action: []` with first variables block)
 
-- [ ] **Step 1: Replace `action: []` with the initial variables block**
+**Note:** `!input` pass-through is already defined at the top-level `variables:` block in Task 2 (above `trigger:`). Action-level variables here only compute derived state from live sensors — this keeps them inside `action:` so any template failure shows up in HA traces.
+
+- [ ] **Step 1: Replace `action: []` with the live-state variables block**
 
 Replace `action: []` with:
 
 ```yaml
 action:
   # =============================================
-  # STEP 1: COMPUTE VARIABLES
+  # STEP 1: COMPUTE LIVE STATE (inside action for trace visibility)
   # =============================================
   - variables:
-      # --- Entity mappings (for readable templates below) ---
-      entity_climate: !input heating_climate
-      sensor_bathroom_temp: !input bathroom_temp_sensor
-      sensor_hall_motion: !input hall_motion
-      sensor_stairs_motion: !input stairs_motion
-      entity_fan: !input fan_switch
-      entity_vacation: !input vacation_off
-      entity_boost: !input boost_toggle
-
-      # --- Live sensor reads (with fallbacks) ---
+      # --- Live sensor reads ---
       indoor_temp_primary: "{{ states(sensor_bathroom_temp) | float(-99) }}"
-      indoor_temp_fallback: "{{ state_attr(entity_climate, 'current_temperature') | float(20) }}"
+      indoor_temp_fallback: "{{ state_attr(entity_climate, 'current_temperature') | float(-99) }}"
+      indoor_temp_has_primary: "{{ indoor_temp_primary | float(-99) > -50 }}"
+      indoor_temp_has_fallback: "{{ indoor_temp_fallback | float(-99) > -50 }}"
+      indoor_temp_both_unavailable: "{{ not indoor_temp_has_primary and not indoor_temp_has_fallback }}"
       indoor_temp: >-
-        {% if indoor_temp_primary | float(-99) > -50 %}
-          {{ indoor_temp_primary | float }}
-        {% else %}
-          {{ indoor_temp_fallback | float }}
-        {% endif %}
+        {% if indoor_temp_has_primary %}{{ indoor_temp_primary | float }}{% elif indoor_temp_has_fallback %}{{ indoor_temp_fallback | float }}{% else %}20{% endif %}
 
       current_setpoint: "{{ state_attr(entity_climate, 'temperature') | float(7) }}"
       current_hvac_mode: "{{ states(entity_climate) }}"
@@ -460,67 +495,28 @@ action:
 
       # --- Vacation (safely handle empty list default) ---
       vacation_active: >-
-        {% if entity_vacation is iterable and entity_vacation | length > 0 %}
-          {{ expand(entity_vacation) | selectattr('state','eq','on') | list | length > 0 }}
-        {% else %}
-          false
-        {% endif %}
+        {% if entity_vacation is iterable and entity_vacation | length > 0 %}{{ expand(entity_vacation) | selectattr('state','eq','on') | list | length > 0 }}{% else %}false{% endif %}
 
       # --- Boost (stateless age-based expiry) ---
       boost_runtime_min_int: "{{ (boost_runtime_min | float) | int }}"
       boost_is_on: "{{ is_state(entity_boost, 'on') }}"
       boost_age_min: >-
-        {{ ((now() - states[entity_boost].last_changed).total_seconds() / 60) | int }}
+        {% if states[entity_boost] %}{{ ((now() - states[entity_boost].last_changed).total_seconds() / 60) | int }}{% else %}0{% endif %}
       boost_active: "{{ boost_is_on and boost_age_min < boost_runtime_min_int }}"
       boost_expired: "{{ boost_is_on and boost_age_min >= boost_runtime_min_int }}"
 ```
 
-The `!input boost_runtime_min` is pulled via `!input` implicitly — references to `boost_runtime_min` inside Jinja come from a blueprint variable already named by `!input`. To make that explicit (and avoid `!input` scope confusion — see `bathroom_ventilator.yaml` for the pattern), we'll add `!input` pass-through variables in Task 5's preamble.
-
-- [ ] **Step 2: Add `!input` pass-through variables at the TOP of the action block (before the other variable block)**
-
-Prepend to the `action:` block, above the existing `- variables:` block:
-
-```yaml
-  # ----- !input pass-through (avoids Jinja2 !input scope issues) -----
-  - variables:
-      boost_runtime_min: !input boost_runtime_min
-      boost_target_temp: !input boost_target_temp
-      warmup_base_min: !input warmup_base_min
-      warmup_per_degree_min: !input warmup_per_degree_min
-      warmup_min_minutes: !input warmup_min_minutes
-      warmup_max_minutes: !input warmup_max_minutes
-      enable_predictive_motion: !input enable_predictive_motion
-      enable_notifications: !input enable_notifications
-      morning_a_days: !input morning_a_days
-      morning_a_target_warm: !input morning_a_target_warm
-      morning_a_hold_until: !input morning_a_hold_until
-      morning_a_target_temp: !input morning_a_target_temp
-      morning_b_days: !input morning_b_days
-      morning_b_target_warm: !input morning_b_target_warm
-      morning_b_hold_until: !input morning_b_hold_until
-      morning_b_target_temp: !input morning_b_target_temp
-      evening_a_days: !input evening_a_days
-      evening_a_target_warm: !input evening_a_target_warm
-      evening_a_hold_until: !input evening_a_hold_until
-      evening_a_target_temp: !input evening_a_target_temp
-      evening_b_days: !input evening_b_days
-      evening_b_target_warm: !input evening_b_target_warm
-      evening_b_hold_until: !input evening_b_hold_until
-      evening_b_target_temp: !input evening_b_target_temp
-```
-
-- [ ] **Step 3: Validate YAML**
+- [ ] **Step 2: Validate YAML**
 
 ```bash
 python3 -c "import yaml; yaml.safe_load(open('bathroom_heating_rack.yaml'))"
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add bathroom_heating_rack.yaml
-git commit -m "feat(heating-rack): add live-state vars and vacation/boost state"
+git commit -m "feat(heating-rack): add live-state variables and vacation/boost state"
 ```
 
 ---
@@ -553,7 +549,9 @@ After the previous `- variables:` block (the one ending with `boost_expired:`), 
         {{ ma_target_warm_dt - timedelta(minutes=ma_warmup_min | int) }}
       ma_motion_lead_dt: >-
         {{ ma_target_warm_dt - timedelta(minutes=(warmup_max_minutes | int) + 30) }}
-      ma_motion_last: "{{ states[sensor_hall_motion].last_changed }}"
+      # Fallback to yesterday-midnight when motion sensor is missing — guarantees motion_in_lead=false
+      ma_motion_last: >-
+        {% if states[sensor_hall_motion] %}{{ states[sensor_hall_motion].last_changed }}{% else %}{{ today_at('00:00:00') - timedelta(days=1) }}{% endif %}
       ma_motion_in_lead: >-
         {{ enable_predictive_motion and
            ma_motion_last > ma_motion_lead_dt and
@@ -581,7 +579,8 @@ After the previous `- variables:` block (the one ending with `boost_expired:`), 
            ] | min | int }}
       mb_auto_start_dt: "{{ mb_target_warm_dt - timedelta(minutes=mb_warmup_min | int) }}"
       mb_motion_lead_dt: "{{ mb_target_warm_dt - timedelta(minutes=(warmup_max_minutes | int) + 30) }}"
-      mb_motion_last: "{{ states[sensor_hall_motion].last_changed }}"
+      mb_motion_last: >-
+        {% if states[sensor_hall_motion] %}{{ states[sensor_hall_motion].last_changed }}{% else %}{{ today_at('00:00:00') - timedelta(days=1) }}{% endif %}
       mb_motion_in_lead: >-
         {{ enable_predictive_motion and
            mb_motion_last > mb_motion_lead_dt and
@@ -603,7 +602,8 @@ After the previous `- variables:` block (the one ending with `boost_expired:`), 
            ] | min | int }}
       ea_auto_start_dt: "{{ ea_target_warm_dt - timedelta(minutes=ea_warmup_min | int) }}"
       ea_motion_lead_dt: "{{ ea_target_warm_dt - timedelta(minutes=(warmup_max_minutes | int) + 30) }}"
-      ea_motion_last: "{{ states[sensor_stairs_motion].last_changed }}"
+      ea_motion_last: >-
+        {% if states[sensor_stairs_motion] %}{{ states[sensor_stairs_motion].last_changed }}{% else %}{{ today_at('00:00:00') - timedelta(days=1) }}{% endif %}
       ea_motion_in_lead: >-
         {{ enable_predictive_motion and
            ea_motion_last > ea_motion_lead_dt and
@@ -625,7 +625,8 @@ After the previous `- variables:` block (the one ending with `boost_expired:`), 
            ] | min | int }}
       eb_auto_start_dt: "{{ eb_target_warm_dt - timedelta(minutes=eb_warmup_min | int) }}"
       eb_motion_lead_dt: "{{ eb_target_warm_dt - timedelta(minutes=(warmup_max_minutes | int) + 30) }}"
-      eb_motion_last: "{{ states[sensor_stairs_motion].last_changed }}"
+      eb_motion_last: >-
+        {% if states[sensor_stairs_motion] %}{{ states[sensor_stairs_motion].last_changed }}{% else %}{{ today_at('00:00:00') - timedelta(days=1) }}{% endif %}
       eb_motion_in_lead: >-
         {{ enable_predictive_motion and
            eb_motion_last > eb_motion_lead_dt and
@@ -696,6 +697,7 @@ After the third `- variables:` block, add:
   # STEP 2: SENSOR VALIDATION
   # =============================================
   - choose:
+      # Climate entity unavailable — hard stop
       - conditions:
           - condition: template
             value_template: >-
@@ -705,10 +707,25 @@ After the third `- variables:` block, add:
             data:
               title: "Heating Rack — Climate Unavailable"
               message: >
-                climate.heatingrack_bathroom is {{ states(entity_climate) }}.
+                {{ entity_climate }} is {{ states(entity_climate) }}.
                 Holding current state.
               notification_id: "heating_rack_climate_unavailable"
           - stop: "Climate entity unavailable"
+
+      # Both primary temp sensor AND climate.current_temperature unavailable — soft warn, continue
+      - conditions:
+          - condition: template
+            value_template: "{{ indoor_temp_both_unavailable }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Heating Rack — Temperature Sensor Warning"
+              message: >
+                Both {{ sensor_bathroom_temp }} and
+                {{ entity_climate }}.current_temperature are unavailable.
+                Warmup formula is using 20°C as a fallback — ΔT-based
+                lead time will be inaccurate until a sensor returns.
+              notification_id: "heating_rack_sensor_warning"
 
   # =============================================
   # STEP 3: BOOST EXPIRY CLEANUP
@@ -753,40 +770,16 @@ After the boost-expiry cleanup block, append:
   # Each branch resolves desired_mode, desired_preset, desired_setpoint
   # via a nested variables block, then falls through to the idempotent
   # service-call block at the end.
+  #
+  # NOTE: all desired_* templates are single-line to avoid embedded
+  # whitespace/newlines in the output string (which would break
+  # equality checks like `desired_setpoint != 'none'`).
   # =============================================
   - variables:
-      desired_mode: >-
-        {% if vacation_active %}off
-        {% elif fan_is_on and (morning_active or evening_active or boost_active) %}heat_cool
-        {% elif boost_active %}heat_cool
-        {% elif evening_active %}heat_cool
-        {% elif morning_active %}heat_cool
-        {% else %}heat_cool
-        {% endif %}
-      desired_preset: >-
-        {% if vacation_active %}none
-        {% elif fan_is_on and (morning_active or evening_active or boost_active) %}eco
-        {% elif boost_active %}none
-        {% elif evening_active %}none
-        {% elif morning_active %}none
-        {% else %}eco
-        {% endif %}
-      desired_setpoint: >-
-        {% if vacation_active %}none
-        {% elif fan_is_on and (morning_active or evening_active or boost_active) %}none
-        {% elif boost_active %}{{ boost_target_temp | float }}
-        {% elif evening_active %}{{ evening_temp | float }}
-        {% elif morning_active %}{{ morning_temp | float }}
-        {% else %}none
-        {% endif %}
-      active_priority: >-
-        {% if vacation_active %}P1_vacation
-        {% elif fan_is_on and (morning_active or evening_active or boost_active) %}P2_fan_coord
-        {% elif boost_active %}P3_boost
-        {% elif evening_active %}P4_evening
-        {% elif morning_active %}P5_morning
-        {% else %}P6_idle
-        {% endif %}
+      desired_mode: "{% if vacation_active %}off{% else %}heat_cool{% endif %}"
+      desired_preset: "{% if vacation_active %}none{% elif fan_is_on and (morning_active or evening_active or boost_active) %}eco{% elif boost_active or evening_active or morning_active %}none{% else %}eco{% endif %}"
+      desired_setpoint: "{% if vacation_active %}none{% elif fan_is_on and (morning_active or evening_active or boost_active) %}none{% elif boost_active %}{{ boost_target_temp | float }}{% elif evening_active %}{{ evening_temp | float }}{% elif morning_active %}{{ morning_temp | float }}{% else %}none{% endif %}"
+      active_priority: "{% if vacation_active %}P1_vacation{% elif fan_is_on and (morning_active or evening_active or boost_active) %}P2_fan_coord{% elif boost_active %}P3_boost{% elif evening_active %}P4_evening{% elif morning_active %}P5_morning{% else %}P6_idle{% endif %}"
 
   # =============================================
   # STEP 4b: IDEMPOTENT SERVICE CALLS
@@ -1179,7 +1172,18 @@ All spec sections covered.
 
 **3. Type consistency:** Variable names used consistently across tasks. `entity_climate`, `boost_toggle`, `ma_active`, etc. are named in Task 4/5 and referenced by the same names in Tasks 7/9. Jinja `timedelta` and `today_at` are both valid HA template helpers.
 
-**One known risk flagged in the plan:** HA `climate.set_preset_mode` may reject `"none"` as an explicit preset name depending on integration — some integrations require calling `set_preset_mode` with a specific preset (like `"eco"`) or omitting the call. Task 11 Step 7 validates this live. If it fails, the fix is to change the idempotent preset-clear branch to call `set_hvac_mode: heat_cool` without `set_preset_mode` when desired is `"none"`.
+**Fixes applied after triple-check:**
+
+1. **Top-level `variables:` block** added to the Task 2 scaffold for all `!input` pass-through. Matches the proven pattern from `bathroom_ventilator.yaml` — `!input` resolves at automation-creation time and is guaranteed available everywhere below. Removed the duplicate action-level pass-through from the original Task 4 Step 2.
+2. **Motion-sensor unavailability guard** added to all four slots in Task 5: if the motion entity is missing, `motion_last` falls back to `yesterday 00:00`, which is guaranteed to be before any `motion_lead_dt` → `motion_in_lead = false` → pure time-based auto_start applies.
+3. **Both-temp-sensors-unavailable notification** added as a second branch in Task 6 sensor validation. Does not `stop:` — blueprint continues with 20°C fallback but the user is warned.
+4. **Single-lined Jinja conditionals** in Task 7 for `desired_mode` / `desired_preset` / `desired_setpoint` / `active_priority`. Eliminates embedded whitespace/newlines that could break `!= 'none'` equality checks.
+5. **`boost_age_min` guard** added for the case where the boost input_boolean somehow returns `None` (entity missing during first automation run).
+
+**Remaining risks to validate live in Task 11:**
+
+- **`climate.set_preset_mode` with `preset_mode: 'none'`** may be rejected by some climate integrations. If Task 11 Step 7 fails, fall back to "skip preset call when desired is 'none'" — then HA retains the previous preset, which is benign because the next real preset transition will overwrite it.
+- **Target-reached notification re-fires every minute while at target.** Deterministic ID overwrites, so not visible spam, but the notification timestamp refreshes. Acceptable for v1; could add transition-only guard later if annoying.
 
 ---
 
