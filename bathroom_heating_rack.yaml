@@ -457,3 +457,49 @@ action:
         {% if ma_active %}{{ morning_a_target_temp | float }}{% else %}{{ morning_b_target_temp | float }}{% endif %}
       evening_temp: >-
         {% if ea_active %}{{ evening_a_target_temp | float }}{% else %}{{ evening_b_target_temp | float }}{% endif %}
+
+  # =============================================
+  # STEP 2: SENSOR VALIDATION
+  # =============================================
+  - choose:
+      # Climate entity unavailable — hard stop
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ states(entity_climate) in ['unavailable', 'unknown'] }}
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Heating Rack — Climate Unavailable"
+              message: >
+                {{ entity_climate }} is {{ states(entity_climate) }}.
+                Holding current state.
+              notification_id: "heating_rack_climate_unavailable"
+          - stop: "Climate entity unavailable"
+
+      # Both primary temp sensor AND climate.current_temperature unavailable — soft warn, continue
+      - conditions:
+          - condition: template
+            value_template: "{{ indoor_temp_both_unavailable }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Heating Rack — Temperature Sensor Warning"
+              message: >
+                Both {{ sensor_bathroom_temp }} and
+                {{ entity_climate }}.current_temperature are unavailable.
+                Warmup formula is using 20°C as a fallback — ΔT-based
+                lead time will be inaccurate until a sensor returns.
+              notification_id: "heating_rack_sensor_warning"
+
+  # =============================================
+  # STEP 3: BOOST EXPIRY CLEANUP
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ boost_expired }}"
+        sequence:
+          - service: input_boolean.turn_off
+            target:
+              entity_id: "{{ entity_boost }}"
