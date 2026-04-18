@@ -100,4 +100,36 @@ An intelligent bathroom exhaust fan automation using dew point comparison for op
 `https://raw.githubusercontent.com/leviemartin/Blueprints_Home/main/bathroom_ventilator.yaml`
 
 ---
+
+## Bathroom Heating Rack Blueprint
+
+### Overview
+Pre-heats a bathroom heating rack for scheduled routines (adult morning, kids bath) using a dynamic **ΔT-based warmup formula** that self-adjusts across seasons — no calendar boundaries needed. Predictive motion in the hall (morning) or on the stairs (evening) pulls the warmup start forward when someone is up early. Coordinates with the exhaust fan via `preset=eco` to avoid evicting freshly heated air during showers.
+
+### Features
+*   **🌡️ Dynamic Warmup:** Computes lead time from the current indoor-to-target temperature gap, so cold winter mornings get a longer pre-heat than warm summer mornings without any calendar configuration.
+*   **📅 Dual-Slot Routines:** Primary + optional secondary slot per phase (e.g., Morning A = Mon–Fri 06:45, Morning B = Sat–Sun 08:30). Evening A for kids bath, Evening B for an optional adult evening.
+*   **🏃 Predictive Motion Override:** Hall motion (morning) and stairs motion (evening) within a calculated lead window start the warmup immediately — useful when you're up before the scheduled time.
+*   **⚡ Ad-hoc Boost Toggle:** Flip an `input_boolean` for an instant N-minute heat-up at a configurable boost temperature. Auto-expires cleanly.
+*   **🌀 Ventilator Coordination:** Pauses active heating (via `preset=eco`) while the exhaust fan is running — no point heating air that's being evicted.
+*   **🏖️ Vacation Mode:** Optional `input_boolean` cleanly disables the whole blueprint.
+*   **🪶 Idempotent:** Evaluates every minute for precise timing, but only sends climate service calls on actual state transitions — ~4–10 service calls/day.
+*   **🔍 Debug-Friendly:** Manual "Run" produces a persistent notification dumping all computed state (ΔT, warmup, each slot's auto_start / effective_start / active flags, winning priority).
+
+### Requirements
+*   `climate` entity wrapping the heating rack (e.g., a `generic_thermostat` over a smart plug + bathroom temp sensor)
+*   Bathroom temperature sensor (e.g., Aqara)
+*   Hall + stairs motion sensors for predictive start (e.g., Philips Hue)
+*   Ventilator switch entity (for coordination — matches bathroom_ventilator blueprint's light-domain convention)
+*   Two `input_boolean` helpers: one for Ad-hoc Boost (required), one for Vacation (optional)
+
+### Installation
+1. Click the button below to import this blueprint into your Home Assistant instance:
+
+[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fleviemartin%2FBlueprints_Home%2Fmain%2Fbathroom_heating_rack.yaml)
+
+2. Or manually copy this URL into the Blueprints configuration:
+`https://raw.githubusercontent.com/leviemartin/Blueprints_Home/main/bathroom_heating_rack.yaml`
+
+---
 *Created by Martin Levie (Gemini CLI Agent)*
