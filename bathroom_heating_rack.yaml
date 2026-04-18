@@ -360,26 +360,22 @@ action:
              (warmup_base_min | int) + (warmup_per_degree_min | int) * (ma_delta_T | float)] | max
            ] | min | int }}
       ma_auto_start_dt: >-
-        {{ ma_target_warm_dt - timedelta(minutes=ma_warmup_min | int) }}
+        {{ as_datetime(ma_target_warm_dt) - timedelta(minutes=ma_warmup_min | int) }}
       ma_motion_lead_dt: >-
-        {{ ma_target_warm_dt - timedelta(minutes=(warmup_max_minutes | int) + 30) }}
+        {{ as_datetime(ma_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int) + 30) }}
       # Fallback to yesterday-midnight when motion sensor is missing — guarantees motion_in_lead=false
       ma_motion_last: >-
         {% if states[sensor_hall_motion] %}{{ states[sensor_hall_motion].last_changed }}{% else %}{{ today_at('00:00:00') - timedelta(days=1) }}{% endif %}
       ma_motion_in_lead: >-
         {{ enable_predictive_motion and
-           ma_motion_last > ma_motion_lead_dt and
-           ma_motion_last < ma_target_warm_dt }}
+           as_datetime(ma_motion_last) > as_datetime(ma_motion_lead_dt) and
+           as_datetime(ma_motion_last) < as_datetime(ma_target_warm_dt) }}
       ma_effective_start: >-
-        {% if ma_motion_in_lead %}
-          {{ [ma_auto_start_dt, ma_motion_last] | min }}
-        {% else %}
-          {{ ma_auto_start_dt }}
-        {% endif %}
+        {% if ma_motion_in_lead %}{{ [as_datetime(ma_auto_start_dt), as_datetime(ma_motion_last)] | min }}{% else %}{{ ma_auto_start_dt }}{% endif %}
       ma_active: >-
         {{ ma_in_days and
-           ma_effective_start <= now_dt and
-           now_dt < ma_hold_until_dt }}
+           as_datetime(ma_effective_start) <= as_datetime(now_dt) and
+           as_datetime(now_dt) < as_datetime(ma_hold_until_dt) }}
 
       # ----- MORNING B -----
       mb_in_days: "{{ today_dow in morning_b_days }}"
@@ -391,18 +387,18 @@ action:
             [warmup_min_minutes | int,
              (warmup_base_min | int) + (warmup_per_degree_min | int) * (mb_delta_T | float)] | max
            ] | min | int }}
-      mb_auto_start_dt: "{{ mb_target_warm_dt - timedelta(minutes=mb_warmup_min | int) }}"
-      mb_motion_lead_dt: "{{ mb_target_warm_dt - timedelta(minutes=(warmup_max_minutes | int) + 30) }}"
+      mb_auto_start_dt: "{{ as_datetime(mb_target_warm_dt) - timedelta(minutes=mb_warmup_min | int) }}"
+      mb_motion_lead_dt: "{{ as_datetime(mb_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int) + 30) }}"
       mb_motion_last: >-
         {% if states[sensor_hall_motion] %}{{ states[sensor_hall_motion].last_changed }}{% else %}{{ today_at('00:00:00') - timedelta(days=1) }}{% endif %}
       mb_motion_in_lead: >-
         {{ enable_predictive_motion and
-           mb_motion_last > mb_motion_lead_dt and
-           mb_motion_last < mb_target_warm_dt }}
+           as_datetime(mb_motion_last) > as_datetime(mb_motion_lead_dt) and
+           as_datetime(mb_motion_last) < as_datetime(mb_target_warm_dt) }}
       mb_effective_start: >-
-        {% if mb_motion_in_lead %}{{ [mb_auto_start_dt, mb_motion_last] | min }}{% else %}{{ mb_auto_start_dt }}{% endif %}
+        {% if mb_motion_in_lead %}{{ [as_datetime(mb_auto_start_dt), as_datetime(mb_motion_last)] | min }}{% else %}{{ mb_auto_start_dt }}{% endif %}
       mb_active: >-
-        {{ mb_in_days and mb_effective_start <= now_dt and now_dt < mb_hold_until_dt }}
+        {{ mb_in_days and as_datetime(mb_effective_start) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(mb_hold_until_dt) }}
 
       # ----- EVENING A -----
       ea_in_days: "{{ today_dow in evening_a_days }}"
@@ -414,18 +410,18 @@ action:
             [warmup_min_minutes | int,
              (warmup_base_min | int) + (warmup_per_degree_min | int) * (ea_delta_T | float)] | max
            ] | min | int }}
-      ea_auto_start_dt: "{{ ea_target_warm_dt - timedelta(minutes=ea_warmup_min | int) }}"
-      ea_motion_lead_dt: "{{ ea_target_warm_dt - timedelta(minutes=(warmup_max_minutes | int) + 30) }}"
+      ea_auto_start_dt: "{{ as_datetime(ea_target_warm_dt) - timedelta(minutes=ea_warmup_min | int) }}"
+      ea_motion_lead_dt: "{{ as_datetime(ea_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int) + 30) }}"
       ea_motion_last: >-
         {% if states[sensor_stairs_motion] %}{{ states[sensor_stairs_motion].last_changed }}{% else %}{{ today_at('00:00:00') - timedelta(days=1) }}{% endif %}
       ea_motion_in_lead: >-
         {{ enable_predictive_motion and
-           ea_motion_last > ea_motion_lead_dt and
-           ea_motion_last < ea_target_warm_dt }}
+           as_datetime(ea_motion_last) > as_datetime(ea_motion_lead_dt) and
+           as_datetime(ea_motion_last) < as_datetime(ea_target_warm_dt) }}
       ea_effective_start: >-
-        {% if ea_motion_in_lead %}{{ [ea_auto_start_dt, ea_motion_last] | min }}{% else %}{{ ea_auto_start_dt }}{% endif %}
+        {% if ea_motion_in_lead %}{{ [as_datetime(ea_auto_start_dt), as_datetime(ea_motion_last)] | min }}{% else %}{{ ea_auto_start_dt }}{% endif %}
       ea_active: >-
-        {{ ea_in_days and ea_effective_start <= now_dt and now_dt < ea_hold_until_dt }}
+        {{ ea_in_days and as_datetime(ea_effective_start) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(ea_hold_until_dt) }}
 
       # ----- EVENING B -----
       eb_in_days: "{{ today_dow in evening_b_days }}"
@@ -437,18 +433,18 @@ action:
             [warmup_min_minutes | int,
              (warmup_base_min | int) + (warmup_per_degree_min | int) * (eb_delta_T | float)] | max
            ] | min | int }}
-      eb_auto_start_dt: "{{ eb_target_warm_dt - timedelta(minutes=eb_warmup_min | int) }}"
-      eb_motion_lead_dt: "{{ eb_target_warm_dt - timedelta(minutes=(warmup_max_minutes | int) + 30) }}"
+      eb_auto_start_dt: "{{ as_datetime(eb_target_warm_dt) - timedelta(minutes=eb_warmup_min | int) }}"
+      eb_motion_lead_dt: "{{ as_datetime(eb_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int) + 30) }}"
       eb_motion_last: >-
         {% if states[sensor_stairs_motion] %}{{ states[sensor_stairs_motion].last_changed }}{% else %}{{ today_at('00:00:00') - timedelta(days=1) }}{% endif %}
       eb_motion_in_lead: >-
         {{ enable_predictive_motion and
-           eb_motion_last > eb_motion_lead_dt and
-           eb_motion_last < eb_target_warm_dt }}
+           as_datetime(eb_motion_last) > as_datetime(eb_motion_lead_dt) and
+           as_datetime(eb_motion_last) < as_datetime(eb_target_warm_dt) }}
       eb_effective_start: >-
-        {% if eb_motion_in_lead %}{{ [eb_auto_start_dt, eb_motion_last] | min }}{% else %}{{ eb_auto_start_dt }}{% endif %}
+        {% if eb_motion_in_lead %}{{ [as_datetime(eb_auto_start_dt), as_datetime(eb_motion_last)] | min }}{% else %}{{ eb_auto_start_dt }}{% endif %}
       eb_active: >-
-        {{ eb_in_days and eb_effective_start <= now_dt and now_dt < eb_hold_until_dt }}
+        {{ eb_in_days and as_datetime(eb_effective_start) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(eb_hold_until_dt) }}
 
       # ----- AGGREGATES -----
       morning_active: "{{ ma_active or mb_active }}"
@@ -628,11 +624,11 @@ action:
 
                 **Today:** {{ today_dow }}
 
-                **Morning A:** days={{ ma_in_days }}, ΔT={{ ma_delta_T }}°C, warmup={{ ma_warmup_min }}m, auto_start={{ ma_auto_start_dt.strftime('%H:%M') }}, eff_start={{ ma_effective_start.strftime('%H:%M') }}, active={{ ma_active }}
+                **Morning A:** days={{ ma_in_days }}, ΔT={{ ma_delta_T }}°C, warmup={{ ma_warmup_min }}m, auto_start={{ as_datetime(ma_auto_start_dt).strftime('%H:%M') }}, eff_start={{ as_datetime(ma_effective_start).strftime('%H:%M') }}, active={{ ma_active }}
 
                 **Morning B:** days={{ mb_in_days }}, active={{ mb_active }}
 
-                **Evening A:** days={{ ea_in_days }}, ΔT={{ ea_delta_T }}°C, warmup={{ ea_warmup_min }}m, auto_start={{ ea_auto_start_dt.strftime('%H:%M') }}, eff_start={{ ea_effective_start.strftime('%H:%M') }}, active={{ ea_active }}
+                **Evening A:** days={{ ea_in_days }}, ΔT={{ ea_delta_T }}°C, warmup={{ ea_warmup_min }}m, auto_start={{ as_datetime(ea_auto_start_dt).strftime('%H:%M') }}, eff_start={{ as_datetime(ea_effective_start).strftime('%H:%M') }}, active={{ ea_active }}
 
                 **Evening B:** days={{ eb_in_days }}, active={{ eb_active }}
 
