@@ -273,5 +273,41 @@ variables:
   evening_b_target_temp: !input evening_b_target_temp
 
 # Triggers and action will be added in later tasks.
-trigger: []
+trigger:
+  # T1: Periodic 1-minute tick for dynamic auto_start + boost expiry
+  - platform: time_pattern
+    minutes: "/1"
+    id: periodic
+
+  # T2: Hall motion (morning predictive accelerator)
+  - platform: state
+    entity_id: !input hall_motion
+    to: "on"
+    id: hall_motion_on
+
+  # T3: Stairs motion (evening predictive accelerator)
+  - platform: state
+    entity_id: !input stairs_motion
+    to: "on"
+    id: stairs_motion_on
+
+  # T4: Boost toggle state change
+  - platform: state
+    entity_id: !input boost_toggle
+    id: boost_change
+
+  # T5: Vacation toggle state change
+  - platform: state
+    entity_id: !input vacation_off
+    id: vacation_change
+
+  # T6: Fan state change (ventilator coordination)
+  - platform: state
+    entity_id: !input fan_switch
+    id: fan_change
+
+  # T7: HA restart
+  - platform: homeassistant
+    event: start
+    id: ha_start
 action: []
