@@ -40,3 +40,20 @@ auto_start    = target_warm − warmup_min minutes
 
 ## Testing & Debugging
 Manual "Run" in HA produces a persistent notification dumping all computed variables (indoor temp, ΔT, warmup_min, each slot's auto_start / effective_start / active flags, current priority winner, service-call decisions).
+
+## Mobile Push Notifications (v1.1.0+)
+
+In addition to the persistent notifications always shown inside Home Assistant, the blueprint can fan out a subset of events to any number of HA Companion `notify.mobile_app_*` services (or other `notify.*` services) via the `notify_targets` multi-select input.
+
+**Input:** `notify_targets` — list of full notify service names (e.g. `notify.mobile_app_martin`). Default is empty (push disabled).
+
+**Events that push** (when `notify_targets` is non-empty):
+1. **Climate unavailable** — hard error, automation halts. Fires unconditionally.
+2. **Temperature sensor warning** — both primary sensor and `climate.current_temperature` unavailable; warmup formula falls back to 20°C and lead time becomes inaccurate. Fires unconditionally.
+3. **Warmup started** — transition into an active routine (P3 boost / P4 evening / P5 morning). Gated by the existing `enable_notifications` input (push and persistent share the same gate for this event).
+
+**Events that do NOT push** (stay persistent-notification-only):
+- Target reached — fires on many consecutive minute ticks while within 0.5°C of setpoint; pushing would be spam.
+- Debug (manual-run dump) — only fires on a manual `automation.trigger` call, when the user is already at the HA UI.
+
+**Failure isolation:** if a single target in the list is mistyped or its device is logged out, that iteration errors in the automation trace but the remaining targets still receive the push and the automation does not halt.
