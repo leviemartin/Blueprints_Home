@@ -37,27 +37,27 @@ The five events are statically classified into push and persistent-only channels
 |---|---|---|
 | `climate_unavailable` | ✅ always | ✅ |
 | `sensor_warning` | ✅ always | ✅ |
-| `warmup_started` | ✅ gated¹ | ✅ |
-| `target_reached` | ✅ gated¹ | ❌ |
-| `debug` (manual-run dump) | ✅ gated¹ | ❌ |
+| `warmup_started` | ✅ gated by `enable_notifications` | ✅ |
+| `target_reached` | ✅ gated by `enable_notifications` | ❌ |
+| `debug` (manual-run dump) | ✅ gated by manual-trigger check | ❌ |
 
-¹ Gated by the existing `enable_notifications` input; see D3. Hard errors (`climate_unavailable`, `sensor_warning`) bypass the gate in v1.0.5 and continue to do so in v1.1.0.
+The two hard errors (`climate_unavailable`, `sensor_warning`) fire unconditionally in v1.0.5 and continue to do so in v1.1.0. The `debug` event is gated by `trigger.id | default('manual') == 'manual'` (line 642 in v1.0.5) — not by `enable_notifications`.
 
-Rationale: push is reserved for events the user would want to see on a locked phone. `target_reached` fires predictably every morning and would be spam. `debug` only fires during manual runs when the user is already at the HA UI.
+Rationale: push is reserved for events the user would want to see on a locked phone. `target_reached` can fire on many consecutive one-minute ticks while the bathroom temperature sits within 0.5°C of the setpoint (no edge detection in v1.0.5; see lines 620–626) — pushing it would be sustained spam even though persisting it in HA is cheap. `debug` only fires on a manual run when the user is already at the HA UI.
 
 ### D3. Gating relationship to `enable_notifications`
 
-The existing `enable_notifications` input keeps its current semantics (gates persistent-notification creation for the three gated events: warmup_started, target_reached, debug). The new `notify_targets` input is the push gate — an empty list disables all push, a non-empty list enables push for the three push-classified events regardless of the `enable_notifications` state.
+The existing `enable_notifications` input keeps its current semantics: it gates the persistent-notification creation for exactly **two** events — `warmup_started` and `target_reached`. It does NOT gate `debug` (manual-trigger gated), nor either hard error (unconditional). The new `notify_targets` input is the push gate — an empty list disables all push, a non-empty list enables push for the three push-classified events regardless of the `enable_notifications` state.
 
-This separation allows decluttering the HA dashboard (set `enable_notifications=false`) while still receiving phone pushes, or vice versa. Crucially, hard errors (`climate_unavailable`, `sensor_warning`) currently fire a persistent_notification unconditionally — they will continue to do so, and they additionally push when `notify_targets` is non-empty.
+This separation allows decluttering the HA dashboard (set `enable_notifications=false`) while still receiving phone pushes, or vice versa. Hard errors (`climate_unavailable`, `sensor_warning`) fire a persistent_notification unconditionally in v1.0.5; they will continue to do so, and they additionally push when `notify_targets` is non-empty.
 
 ### D4. Implementation pattern: inline parallel fan-out
 
-Each of the three push events gets an inline `repeat.for_each` block placed immediately after its existing `persistent_notification.create` step, inside the same `sequence`. No shared helper sub-sequences; no event-bus indirection. The three sites are:
+Each of the three push events gets an inline `repeat.for_each` block placed immediately after its existing `persistent_notification.create` step, inside the same `sequence`. No shared helper sub-sequences; no event-bus indirection. The three sites, with placement constraints:
 
-- `heating_rack_climate_unavailable` (around YAML line 485)
-- `heating_rack_sensor_warning` (around YAML line 499)
-- `heating_rack_warmup_started` (around YAML line 610)
+- **`heating_rack_climate_unavailable`** (persistent_notification at line ~485): the fan-out block must be inserted **between** the `persistent_notification.create` step and the subsequent `stop: "Climate entity unavailable"` step (line ~492). If placed after the `stop:`, the push never fires.
+- **`heating_rack_sensor_warning`** (persistent_notification at line ~499): the fan-out block goes immediately after the persistent_notification step. This branch has no `stop:` — flow continues normally to STEP 3 afterwards.
+- **`heating_rack_warmup_started`** (persistent_notification at line ~610): the fan-out block goes immediately after the persistent_notification step. Crucially, this must remain **below** the nested `- variables: ... eta_min: ...` block (lines 603–609) because the push template references `{{ eta_min }}`.
 
 Rationale: fan-out is 4 YAML lines per event × 3 events = ~12 added lines total. Keeping the push call co-located with the triggering branch is more auditable than indirection through `event.fire` → handler automation. Abstraction cost is not justified at this event count and single push backend.
 
@@ -69,11 +69,14 @@ Push messages are plain title/message pairs with no `actions` key. Rationale: th
 
 ### New input
 
+Placed adjacent to the existing `enable_notifications` input (around line 230 in v1.0.5) so the two notification-related inputs sit together in the HA UI import form:
+
 ```yaml
 notify_targets:
   name: Mobile Push Targets
   description: >-
-    List of notify services to push high-priority events to (e.g.,
+    List of notify services to push high-priority events to. Enter the
+    full service name including the `notify.` prefix (e.g.,
     notify.mobile_app_martin). Leave empty to disable push. Events that
     push: climate unavailable, sensor warning, warmup started.
   default: []
@@ -110,13 +113,15 @@ The `condition: template` short-circuits the empty-list case so `repeat.for_each
 
 ### Push payloads
 
+Variable names below match the existing blueprint (e.g., `entity_climate`, `sensor_bathroom_temp`, `indoor_temp`, `active_priority`, `desired_setpoint`, `eta_min`). Titles mirror the existing persistent-notification titles exactly.
+
 | Site | Title | Message |
 |---|---|---|
-| `climate_unavailable` | `Heating Rack — Unavailable` | `Climate entity {{ heating_climate }} is unavailable. Holding current state.` |
-| `sensor_warning` | `Heating Rack — Sensor Warning` | `Bathroom temp sensor stale/missing. Lead time will be inaccurate until a sensor returns.` |
-| `warmup_started` | `Heating Rack — Warmup Started` | `{{ active_priority }}: heating to {{ desired_setpoint }}°C. ETA ~{{ eta_min }} min.` |
+| `climate_unavailable` | `Heating Rack — Climate Unavailable` | `{{ entity_climate }} is {{ states(entity_climate) }}. Holding current state.` |
+| `sensor_warning` | `Heating Rack — Temperature Sensor Warning` | `Both {{ sensor_bathroom_temp }} and {{ entity_climate }}.current_temperature are unavailable. Warmup using 20°C fallback — ETA inaccurate until a sensor returns.` |
+| `warmup_started` | `Heating Rack — Warmup Started` | `{{ active_priority }}: {{ indoor_temp | round(1) }}°C → {{ desired_setpoint }}°C. ETA ~{{ eta_min }} min.` |
 
-Messages mirror the persistent-notification text but are trimmed to <120 chars for mobile notification-shade legibility. No emojis per project convention.
+Messages mirror the existing persistent-notification text, lightly trimmed so each fits into a mobile notification-shade preview (roughly ≤120 visible chars after templating). No emojis.
 
 ### Version bump
 
@@ -127,13 +132,16 @@ The blueprint `name:` header string (and any `description:` line that includes a
 - **Empty `notify_targets`:** `condition: template` evaluates false; the repeat block is skipped. Zero service calls, zero trace noise. Default behavior.
 - **One bad service name** (e.g., `notify.mobile_app_typo`): that iteration of `repeat.for_each` logs an error in the automation trace. Subsequent iterations proceed normally. Other configured targets still receive the push. Automation does not halt.
 - **All service names bad:** every iteration errors, persistent_notification still fires (fan-out is after, not before, the persistent step). Automation completes.
+- **Missing `notify.` prefix** (e.g., user enters `mobile_app_martin`): HA rejects as an unknown service at call time. Same behavior as a typo — logged, skipped, other targets unaffected. The input description explicitly reminds the user to include the `notify.` prefix.
+- **Notification permission not granted on the mobile device** (Android 13+ runtime prompt, iOS first-launch prompt): the HA Companion app silently drops the notification. From the blueprint's perspective the service call succeeds — no error in the automation trace — but the user sees nothing on the phone. This is user-side configuration, not a blueprint issue; document in README so a user who sees no pushes can check app settings first.
 - **HA Companion app logged out on a target device:** same as bad service name — error is logged in the trace, automation continues. User observes no push on that device until re-login.
 - **Extreme list length (>20 targets):** no practical concern; four devices is the current ceiling. `repeat.for_each` is synchronous but the service calls are fire-and-forget at the HA level.
+- **Duplicate target** (user adds `notify.mobile_app_martin` twice): both iterations run, device receives two identical pushes. Annoying but not broken. No defensive dedup in v1.1.0.
 
 ## Testing plan
 
 1. **YAML load** — run the `!input`-aware safe loader from the handoff cheatsheet. Must print `OK`.
-2. **Reimport in HA** — the blueprint definition updates; the existing automation instance (`automation.bathroom_heating_rack_v1_0_0`) survives.
+2. **Reimport + HA restart** — in the HA UI, overwrite the blueprint from the local YAML path. Then **restart Home Assistant** (project convention per `CLAUDE.md`; blueprints are cached aggressively and logic changes do not take effect without a restart). The existing automation instance (`automation.bathroom_heating_rack_v1_0_0`) survives the reimport; the new `notify_targets` input appears with its default (empty list), so current behavior is unchanged until the user populates it.
 3. **Default-empty sanity** — manually trigger via `hass-cli`; verify persistent debug notification appears, no push sent, no error in trace.
 4. **Single-target smoke** — populate `notify_targets=[notify.mobile_app_martin]`; manually trigger. Phone receives nothing (debug is persistent-only), persistent debug still appears.
 5. **Real push: warmup_started** — set `morning_a_time` to `now + 2 min` with today's weekday in `morning_a_days`; wait. Phone receives `Heating Rack — Warmup Started` push AND persistent_notification fires. Restore inputs.
