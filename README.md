@@ -115,6 +115,7 @@ Pre-heats a bathroom heating rack for scheduled routines (adult morning, kids ba
 *   **🏖️ Vacation Mode:** Optional `input_boolean` cleanly disables the whole blueprint.
 *   **🪶 Idempotent:** Evaluates every minute for precise timing, but only sends climate service calls on actual state transitions — ~4–10 service calls/day.
 *   **🔍 Debug-Friendly:** Manual "Run" produces a persistent notification dumping all computed state (ΔT, warmup, each slot's auto_start / effective_start / active flags, winning priority).
+*   **📱 Mobile Push (v1.1.0+):** Opt-in push notifications via HA Companion (`notify.mobile_app_*`) for three high-signal events — climate unavailable, temperature-sensor warning, and warmup started. Multi-target fan-out; empty list disables push. Per-user opt-in via the `Mobile Push Targets` input; all five in-HA persistent notifications still fire.
 
 ### Requirements
 *   `climate` entity wrapping the heating rack (e.g., a `generic_thermostat` over a smart plug + bathroom temp sensor)
