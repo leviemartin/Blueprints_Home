@@ -1,7 +1,7 @@
 blueprint:
-  name: "Bathroom Heating Rack v1.0.5"
+  name: "Bathroom Heating Rack v1.1.0"
   description: >
-    **Version: 1.0.5** — P6 idle and P2 fan-pause now drive setpoint to a configurable idle_setpoint (default 7°C) so the heater does not continue warming the room at the last active-routine setpoint (energy waste bug). v1.0.4 normalised 'unknown'→'heat_cool' to stop per-tick beeping. v1.0.3 stopped blocking on state='unknown'. v1.0.2 skipped set_preset_mode for integrations that reject 'none'. v1.0.1 fixed datetime arithmetic via as_datetime().
+    **Version: 1.1.0** — Adds opt-in mobile push via the new `notify_targets` multi-select input. Push fires for three events: climate unavailable, sensor warning, and warmup started; the other two events (target reached, debug) stay persistent-notification-only. Empty `notify_targets` disables push entirely — existing deployments see no behavior change until the input is populated. v1.0.5 drove idle/pause setpoint to `idle_setpoint` (default 7°C) so the heater stops warming during idle. v1.0.4 normalised 'unknown'→'heat_cool' to stop per-tick beeping. v1.0.3 stopped blocking on state='unknown'. v1.0.2 skipped set_preset_mode for integrations that reject 'none'. v1.0.1 fixed datetime arithmetic via as_datetime().
 
     Pre-heats the bathroom heating rack for adult morning and kids bath
     routines using dynamic ΔT-based warmup, predictive motion override,
@@ -231,6 +231,17 @@ blueprint:
       name: Enable Persistent Notifications
       default: true
       selector: {boolean: {}}
+    notify_targets:
+      name: Mobile Push Targets
+      description: >-
+        List of notify services to push high-priority events to. Enter the
+        full service name including the `notify.` prefix (e.g.,
+        notify.mobile_app_martin). Leave empty to disable push. Events that
+        push: climate unavailable, sensor warning, warmup started.
+      default: []
+      selector:
+        text:
+          multiple: true
 
 mode: restart
 max_exceeded: silent
@@ -260,6 +271,7 @@ variables:
   warmup_max_minutes: !input warmup_max_minutes
   enable_predictive_motion: !input enable_predictive_motion
   enable_notifications: !input enable_notifications
+  notify_targets: !input notify_targets
 
   # Routine slot inputs
   morning_a_days: !input morning_a_days
@@ -489,6 +501,15 @@ action:
                 {{ entity_climate }} is {{ states(entity_climate) }}.
                 Holding current state.
               notification_id: "heating_rack_climate_unavailable"
+          - repeat:
+              for_each: "{{ notify_targets }}"
+              sequence:
+                - service: "{{ repeat.item }}"
+                  data:
+                    title: "Heating Rack — Climate Unavailable"
+                    message: >-
+                      {{ entity_climate }} is {{ states(entity_climate) }}.
+                      Holding current state.
           - stop: "Climate entity unavailable"
 
       # Both primary temp sensor AND climate.current_temperature unavailable — soft warn, continue
@@ -505,6 +526,17 @@ action:
                 Warmup formula is using 20°C as a fallback — ΔT-based
                 lead time will be inaccurate until a sensor returns.
               notification_id: "heating_rack_sensor_warning"
+          - repeat:
+              for_each: "{{ notify_targets }}"
+              sequence:
+                - service: "{{ repeat.item }}"
+                  data:
+                    title: "Heating Rack — Temperature Sensor Warning"
+                    message: >-
+                      Both {{ sensor_bathroom_temp }} and
+                      {{ entity_climate }}.current_temperature are
+                      unavailable. Warmup using 20°C fallback — ETA
+                      inaccurate until a sensor returns.
 
   # =============================================
   # STEP 3: BOOST EXPIRY CLEANUP
@@ -615,6 +647,15 @@ action:
                 Current {{ indoor_temp | round(1) }}°C → target
                 {{ desired_setpoint }}°C. ETA ~{{ eta_min }} min.
               notification_id: "heating_rack_warmup_started"
+          - repeat:
+              for_each: "{{ notify_targets }}"
+              sequence:
+                - service: "{{ repeat.item }}"
+                  data:
+                    title: "Heating Rack — Warmup Started"
+                    message: >-
+                      {{ active_priority }}: {{ indoor_temp | round(1) }}°C
+                      → {{ desired_setpoint }}°C. ETA ~{{ eta_min }} min.
 
       # Target reached — within 0.5°C of desired while routine active
       - conditions:
