@@ -35,21 +35,25 @@ The five events are statically classified into push and persistent-only channels
 
 | Event | Persistent | Push |
 |---|---|---|
-| `climate_unavailable` | ✅ always | ✅ |
-| `sensor_warning` | ✅ always | ✅ |
-| `warmup_started` | ✅ gated by `enable_notifications` | ✅ |
+| `climate_unavailable` | ✅ always | ✅ always |
+| `sensor_warning` | ✅ always | ✅ always |
+| `warmup_started` | ✅ gated by `enable_notifications` | ✅ gated by `enable_notifications` |
 | `target_reached` | ✅ gated by `enable_notifications` | ❌ |
 | `debug` (manual-run dump) | ✅ gated by manual-trigger check | ❌ |
 
-The two hard errors (`climate_unavailable`, `sensor_warning`) fire unconditionally in v1.0.5 and continue to do so in v1.1.0. The `debug` event is gated by `trigger.id | default('manual') == 'manual'` (line 642 in v1.0.5) — not by `enable_notifications`.
+The two hard errors (`climate_unavailable`, `sensor_warning`) fire unconditionally in v1.0.5 and continue to do so in v1.1.0. The `debug` event is gated by `trigger.id | default('manual') == 'manual'` (line 642 in v1.0.5) — not by `enable_notifications`. For `warmup_started`, the push fan-out lives **inside** the same `- conditions:`-gated sequence as the persistent_notification, so push inherits the `enable_notifications` gate; see D3.
 
 Rationale: push is reserved for events the user would want to see on a locked phone. `target_reached` can fire on many consecutive one-minute ticks while the bathroom temperature sits within 0.5°C of the setpoint (no edge detection in v1.0.5; see lines 620–626) — pushing it would be sustained spam even though persisting it in HA is cheap. `debug` only fires on a manual run when the user is already at the HA UI.
 
 ### D3. Gating relationship to `enable_notifications`
 
-The existing `enable_notifications` input keeps its current semantics: it gates the persistent-notification creation for exactly **two** events — `warmup_started` and `target_reached`. It does NOT gate `debug` (manual-trigger gated), nor either hard error (unconditional). The new `notify_targets` input is the push gate — an empty list disables all push, a non-empty list enables push for the three push-classified events regardless of the `enable_notifications` state.
+The existing `enable_notifications` input keeps its current semantics: it gates the **branch entry** for the `warmup_started` and `target_reached` events (their `- conditions:` include `enable_notifications` at lines 598 and 623 of v1.0.5). The new push fan-out for `warmup_started` is placed inside that same branch, so push inherits the same gate — when `enable_notifications=false`, neither persistent nor push fires for warmup_started.
 
-This separation allows decluttering the HA dashboard (set `enable_notifications=false`) while still receiving phone pushes, or vice versa. Hard errors (`climate_unavailable`, `sensor_warning`) fire a persistent_notification unconditionally in v1.0.5; they will continue to do so, and they additionally push when `notify_targets` is non-empty.
+For the two hard errors (`climate_unavailable`, `sensor_warning`), the branch is not gated by `enable_notifications` at all in v1.0.5, and we don't change that in v1.1.0 — persistent and push both fire unconditionally.
+
+The new `notify_targets` input is the additional push gate. An empty list disables all push (including hard-error push); a non-empty list enables push for the three push-classified events, subject to each event's existing gate (unconditional for hard errors, `enable_notifications` for warmup_started).
+
+**Design note on coupling:** an alternative design places the push fan-out outside the `enable_notifications`-gated branch so the two channels can be controlled independently (push-on-but-dashboard-quiet, or vice versa). We explicitly chose coupling: a user who sets `enable_notifications=false` is stating "I don't want heating-rack notifications," and it is simpler — and matches intuition — for push to follow that same intent rather than requiring two separate toggles to achieve silence.
 
 ### D4. Implementation pattern: inline parallel fan-out
 

@@ -576,6 +576,10 @@ Expected: the most recent trace timestamp is within the last minute, and `err=OK
 
 **Why:** Real end-to-end verification that push reaches the user's phone via `notify.mobile_app_martin` on a real routine transition.
 
+- [ ] **Step 14.0: Verify `enable_notifications` is `true` (required precondition)**
+
+`warmup_started` push inherits the existing `enable_notifications` gate (spec D3). If this input is off, the whole branch is skipped and no push — or persistent — fires. Check the automation edit view and confirm `Enable Persistent Notifications` is on. If it is off, turn it on before proceeding.
+
 - [ ] **Step 14.1: Populate `notify_targets` in the HA UI**
 
 In the HA UI: **Settings → Automations & Scenes → `Bathroom Heating Rack v1.1.0` automation → Edit**. In the `Mobile Push Targets` field, add `notify.mobile_app_martin` (as a single entry in the growable list). Save.
@@ -614,7 +618,7 @@ In the same automation edit view, set `morning_a_target_warm` time to `(current 
 
 - [ ] **Step 14.4: Wait 2–3 minutes, then check your phone**
 
-Expected on the phone: one push notification titled `Heating Rack — Warmup Started` with a body like `P5_morning: 17.8°C → 23°C. ETA ~12 min.`
+Expected on the phone: **exactly one** push notification titled `Heating Rack — Warmup Started` with a body like `P5_morning: 17.8°C → 23°C. ETA ~12 min.`. If subsequent pushes arrive every minute (e.g. titled `Heating Rack — At Target`), the fan-out was misplaced under the `target_reached` branch — stop and investigate before proceeding.
 
 Expected in HA: a persistent_notification with the same title also appears.
 
@@ -710,9 +714,9 @@ In the HA UI, remove `notify.mobile_app_does_not_exist` from the list. Save.
 
 **Note:** This path is low-probability in normal operation. If reproducing it is hard (e.g., sensors are reliably up), skip this task and accept the unit-level verification from Task 1's YAML load.
 
-- [ ] **Step 17.1: Point `bathroom_temp_sensor` at a non-existent entity**
+- [ ] **Step 17.1: Record the original `bathroom_temp_sensor` value, then point it at a non-existent entity**
 
-In the HA UI automation edit view, change `bathroom_temp_sensor` to `sensor.nonexistent_test_sensor`. Save.
+First: in the HA UI automation edit view, open the `bathroom_temp_sensor` field and **write down its current value** (expected: `sensor.bathroom_temperature`). If the test is aborted before Step 17.4, you will need this to restore it. Then change the field to `sensor.nonexistent_test_sensor` and save.
 
 - [ ] **Step 17.2: Manually trigger the automation**
 
@@ -775,9 +779,9 @@ Expected: the three most-recent traces (each one-minute tick) all show `err=OK`.
 
 **Why:** Close the loop so the next session knows the feature is live and the Tuya beep-mute investigation is the next open work item.
 
-- [ ] **Step 19.1: Append a session note**
+- [ ] **Step 19.1: Write a new session note**
 
-Add a short section to `docs/superpowers/session-notes/2026-04-19-heating-rack-wrap.md` (or create a new `2026-04-19-v1.1.0-shipped.md` if preferred). One paragraph covering: v1.1.0 live, push verified on N devices, known-open item is Tuya beep-mute (LocalTuya investigation).
+Create `docs/superpowers/session-notes/2026-04-19-v1.1.0-shipped.md`. Do NOT edit the existing `2026-04-19-heating-rack-wrap.md` — that is the previous session's handoff and should stay immutable for history. The new note should be one paragraph covering: v1.1.0 live, push verified on N devices, test tasks that ran clean vs. skipped (e.g., sensor_warning), and known-open item is Tuya beep-mute via LocalTuya (next workstream).
 
 - [ ] **Step 19.2: Commit the note**
 
