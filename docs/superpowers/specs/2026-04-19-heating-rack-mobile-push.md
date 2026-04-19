@@ -98,8 +98,6 @@ notify_targets: !input notify_targets
 ### Fan-out block (repeated at three sites)
 
 ```yaml
-- condition: template
-  value_template: "{{ notify_targets | count > 0 }}"
 - repeat:
     for_each: "{{ notify_targets }}"
     sequence:
@@ -109,7 +107,7 @@ notify_targets: !input notify_targets
           message: "<event-specific>"
 ```
 
-The `condition: template` short-circuits the empty-list case so `repeat.for_each` does not iterate over nothing — cheap guard that also keeps automation traces clean.
+No inline `- condition:` guard. In Home Assistant action sequences, a failing `condition:` step halts the rest of the enclosing sequence — which would silently skip the trailing `- stop:` step in the `climate_unavailable` branch and break its hard-stop semantics. The simpler alternative: `repeat.for_each` on an empty list is a clean no-op in HA (zero iterations, no error, one trace line). The minor trace noise is worth the consistency of a single 5-line pattern across all three sites that is safe to drop anywhere in an action sequence.
 
 ### Push payloads
 
@@ -129,7 +127,7 @@ The blueprint `name:` header string (and any `description:` line that includes a
 
 ## Failure modes
 
-- **Empty `notify_targets`:** `condition: template` evaluates false; the repeat block is skipped. Zero service calls, zero trace noise. Default behavior.
+- **Empty `notify_targets`:** `repeat.for_each` iterates zero times. Zero service calls. One trace line showing the zero-iteration repeat. Default behavior.
 - **One bad service name** (e.g., `notify.mobile_app_typo`): that iteration of `repeat.for_each` logs an error in the automation trace. Subsequent iterations proceed normally. Other configured targets still receive the push. Automation does not halt.
 - **All service names bad:** every iteration errors, persistent_notification still fires (fan-out is after, not before, the persistent step). Automation completes.
 - **Missing `notify.` prefix** (e.g., user enters `mobile_app_martin`): HA rejects as an unknown service at call time. Same behavior as a typo — logged, skipped, other targets unaffected. The input description explicitly reminds the user to include the `notify.` prefix.
