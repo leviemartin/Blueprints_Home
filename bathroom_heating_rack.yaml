@@ -1,7 +1,7 @@
 blueprint:
-  name: "Bathroom Heating Rack v1.1.0"
+  name: "Bathroom Heating Rack v1.1.1"
   description: >
-    **Version: 1.1.0** — Adds opt-in mobile push via the new `notify_targets` multi-select input. Push fires for three events: climate unavailable, sensor warning, and warmup started; the other two events (target reached, debug) stay persistent-notification-only. Empty `notify_targets` disables push entirely — existing deployments see no behavior change until the input is populated. v1.0.5 drove idle/pause setpoint to `idle_setpoint` (default 7°C) so the heater stops warming during idle. v1.0.4 normalised 'unknown'→'heat_cool' to stop per-tick beeping. v1.0.3 stopped blocking on state='unknown'. v1.0.2 skipped set_preset_mode for integrations that reject 'none'. v1.0.1 fixed datetime arithmetic via as_datetime().
+    **Version: 1.1.1** — Boost now beats fan coordination in the priority waterfall. Previously, tapping the boost toggle while the exhaust fan was running silently demoted the request to a P2 fan-pause (setpoint stayed at idle_setpoint, no heating). The user-visible symptom was "boost button does nothing during/after showers." v1.1.1 reorders precedence: vacation > **boost** > fan_coord(morning/evening only) > evening > morning > idle, so explicit user intent wins over automatic heat-saving. Fan coordination still pauses the scheduled P4/P5 auto routines during active ventilation. v1.1.0 added opt-in mobile push via `notify_targets`. v1.0.5 drove idle/pause setpoint to `idle_setpoint` (default 7°C). v1.0.4 normalised 'unknown'→'heat_cool' to stop per-tick beeping. v1.0.3 stopped blocking on state='unknown'. v1.0.2 skipped set_preset_mode for integrations that reject 'none'. v1.0.1 fixed datetime arithmetic via as_datetime().
 
     Pre-heats the bathroom heating rack for adult morning and kids bath
     routines using dynamic ΔT-based warmup, predictive motion override,
@@ -559,18 +559,25 @@ action:
   # NOTE: all desired_* templates are single-line to avoid embedded
   # whitespace/newlines in the output string (which would break
   # equality checks like `desired_setpoint != 'none'`).
+  #
+  # Precedence (v1.1.1+): P1 vacation > P3 boost > P2 fan_coord > P4 evening
+  # > P5 morning > P6 idle. Boost beats fan_coord because a user tapping
+  # boost is explicit intent that should win over the automatic heat-saving
+  # fan pause. Fan_coord still pauses P4/P5 auto routines during active
+  # ventilation. P2/P3 labels are historical — the numeric suffix no
+  # longer reflects the evaluation order.
   # =============================================
   - variables:
       desired_mode: "{% if vacation_active %}off{% else %}heat_cool{% endif %}"
-      desired_preset: "{% if vacation_active %}none{% elif fan_is_on and (morning_active or evening_active or boost_active) %}eco{% elif boost_active or evening_active or morning_active %}none{% else %}eco{% endif %}"
+      desired_preset: "{% if vacation_active %}none{% elif boost_active %}none{% elif fan_is_on and (morning_active or evening_active) %}eco{% elif evening_active or morning_active %}none{% else %}eco{% endif %}"
       # P2 (fan pause) and P6 (idle) drive the setpoint to `idle_setpoint` (default 7°C)
       # rather than leaving the previous active-routine setpoint in place. Earlier
       # versions left setpoint='none' for these states assuming preset=eco would
       # impose a low frost-protect value; on the Tuya ECOSO device the explicit
       # setpoint always wins regardless of preset, so we'd continue to heat to the
       # previous target (e.g. 23°C from a boost) during idle. See v1.0.5 notes.
-      desired_setpoint: "{% if vacation_active %}none{% elif fan_is_on and (morning_active or evening_active or boost_active) %}{{ idle_setpoint | float }}{% elif boost_active %}{{ boost_target_temp | float }}{% elif evening_active %}{{ evening_temp | float }}{% elif morning_active %}{{ morning_temp | float }}{% else %}{{ idle_setpoint | float }}{% endif %}"
-      active_priority: "{% if vacation_active %}P1_vacation{% elif fan_is_on and (morning_active or evening_active or boost_active) %}P2_fan_coord{% elif boost_active %}P3_boost{% elif evening_active %}P4_evening{% elif morning_active %}P5_morning{% else %}P6_idle{% endif %}"
+      desired_setpoint: "{% if vacation_active %}none{% elif boost_active %}{{ boost_target_temp | float }}{% elif fan_is_on and (morning_active or evening_active) %}{{ idle_setpoint | float }}{% elif evening_active %}{{ evening_temp | float }}{% elif morning_active %}{{ morning_temp | float }}{% else %}{{ idle_setpoint | float }}{% endif %}"
+      active_priority: "{% if vacation_active %}P1_vacation{% elif boost_active %}P3_boost{% elif fan_is_on and (morning_active or evening_active) %}P2_fan_coord{% elif evening_active %}P4_evening{% elif morning_active %}P5_morning{% else %}P6_idle{% endif %}"
 
   # =============================================
   # STEP 4b: IDEMPOTENT SERVICE CALLS

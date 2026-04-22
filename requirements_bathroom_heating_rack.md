@@ -30,13 +30,15 @@ warmup_min    = clamp(
 auto_start    = target_warm − warmup_min minutes
 ```
 
-## Priority Order
+## Priority Order (v1.1.1+)
 1. Vacation / Off (highest)
-2. Ventilator coordination (pause via eco)
-3. Ad-hoc Boost
+2. Ad-hoc Boost (explicit user intent — beats fan coordination)
+3. Ventilator coordination (pause via eco; applies to scheduled P4/P5 routines only)
 4. Evening Routine (A or B)
 5. Morning Routine (A or B)
 6. Idle (default — mode=heat_cool, preset=eco)
+
+Prior to v1.1.1, fan coordination was evaluated before Boost. Tapping the boost toggle while the exhaust fan was running silently demoted the request to a fan-pause (setpoint pinned to `idle_setpoint`, no heating). v1.1.1 reorders the waterfall so an explicit user Boost overrides automatic fan coordination. Scheduled P4/P5 routines remain fan-paused because those don't represent an explicit user action. The labels `P2_fan_coord` and `P3_boost` are historical — the numeric suffix no longer reflects evaluation order.
 
 ## Testing & Debugging
 Manual "Run" in HA produces a persistent notification dumping all computed variables (indoor temp, ΔT, warmup_min, each slot's auto_start / effective_start / active flags, current priority winner, service-call decisions).
