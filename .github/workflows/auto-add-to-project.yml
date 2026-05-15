@@ -16,7 +16,7 @@ jobs:
     name: Add issue to project
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/add-to-project@v1
+      - uses: actions/add-to-project@v2
         with:
           # User-level Projects v2 URL (substituted per-repo during Phase 5 propagation)
           project-url: https://github.com/users/leviemartin/projects/3
