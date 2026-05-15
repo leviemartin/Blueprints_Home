@@ -1,0 +1,32 @@
+name: ADR proposal
+description: Architectural decision needing record (becomes docs/decisions/NNNN-<slug>.md on close)
+title: "[adr] <decision>"
+labels: ["type:adr"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: The situation forcing a decision.
+    validations:
+      required: true
+  - type: textarea
+    id: decision
+    attributes:
+      label: Decision
+      description: What was decided (one paragraph).
+    validations:
+      required: true
+  - type: textarea
+    id: consequences
+    attributes:
+      label: Consequences
+      description: What changes because of this decision; risks accepted.
+    validations:
+      required: true
+  - type: input
+    id: file_path
+    attributes:
+      label: Destination file
+      description: Will become docs/decisions/<NNNN>-<slug>.md on close. Fill in the next number from the repo's docs/decisions/ folder.
+      placeholder: "docs/decisions/NNNN-<slug>.md"

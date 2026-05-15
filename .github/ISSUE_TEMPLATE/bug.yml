@@ -1,0 +1,24 @@
+name: Bug
+description: Defect found in code or infra
+title: "[bug] <symptom>"
+labels: ["type:bug"]
+body:
+  - type: textarea
+    id: symptom
+    attributes:
+      label: Symptom
+      description: What you observed (not what you expected).
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Minimal steps to reproduce. Commands + expected vs actual output.
+    validations:
+      required: true
+  - type: textarea
+    id: rca
+    attributes:
+      label: Root cause (when known)
+      description: Fill in once diagnosed. Leave blank initially.

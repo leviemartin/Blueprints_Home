@@ -1,0 +1,24 @@
+name: Auto-add to AI Portfolio project
+on:
+  issues:
+    types:
+      - opened
+      - reopened
+      - transferred
+      - labeled
+
+permissions:
+  issues: read
+  pull-requests: read
+
+jobs:
+  add-to-project:
+    name: Add issue to project
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/add-to-project@v1
+        with:
+          # User-level Projects v2 URL (substituted per-repo during Phase 5 propagation)
+          project-url: https://github.com/users/leviemartin/projects/3
+          # PAT with `repo` + `project` scopes (set per repo as PROJECT_PAT secret in Phase 5)
+          github-token: ${{ secrets.PROJECT_PAT }}

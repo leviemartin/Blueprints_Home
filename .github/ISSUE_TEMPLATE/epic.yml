@@ -1,0 +1,39 @@
+name: Epic (Initiative)
+description: A multi-session initiative tracker (replaces horizons)
+title: "[epic] <initiative name>"
+labels: ["type:epic", "status:in-progress"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What this initiative achieves. One paragraph.
+    validations:
+      required: true
+  - type: textarea
+    id: spec_link
+    attributes:
+      label: Spec & plan links
+      description: Markdown links to the design spec and (when available) the implementation plan(s).
+      placeholder: |
+        - Spec: docs/specs/2026-XX-XX-<slug>-design.md
+        - Plan: docs/plans/2026-XX-XX-<slug>-plan.md
+  - type: textarea
+    id: phases
+    attributes:
+      label: Phases checklist
+      description: Markdown checklist of phases. Sub-issues fill in the per-session detail.
+      placeholder: |
+        - [ ] Phase 1A: <name>
+        - [ ] Phase 1B: <name>
+  - type: textarea
+    id: drift
+    attributes:
+      label: Drift assessment (cumulative)
+      description: Append-only log of what changed in scope/approach across sessions. Replaces the horizon's drift section.
+  - type: input
+    id: size_cap
+    attributes:
+      label: Size cap
+      description: Soft cap = 80 sub-issues; hard cap = 100 (GitHub limit). If sessions are approaching 80, split this Epic — finish current phase, close this Epic, open a new Epic referencing it as "follows from #N".
+      value: "80 soft / 100 hard — split protocol applies"

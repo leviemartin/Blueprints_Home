@@ -1,0 +1,53 @@
+name: Session
+description: A single Claude Code session (one paste-and-go kickoff)
+title: "[session] <project>: <phase> — <slug>"
+labels: ["type:session", "status:queued"]
+body:
+  - type: input
+    id: parent_epic
+    attributes:
+      label: Parent Epic
+      description: Issue number of the Initiative this session belongs to (e.g., "#42"). Blank if this is a standalone session.
+      placeholder: "#NN"
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Phase
+      description: Which phase of the parent Initiative does this session execute?
+      options:
+        - 1A
+        - 1B
+        - 1C
+        - 2A
+        - 2B
+        - one-off
+        - other
+    validations:
+      required: false
+  - type: textarea
+    id: kickoff
+    attributes:
+      label: Paste-and-go kickoff
+      description: The prompt content for the new Claude Code session. Keep under ~400 words; link to spec/plan for full context.
+      placeholder: |
+        ═══ COPY FROM HERE ═══
+
+        Read first:
+        - `docs/specs/...`
+        - `docs/plans/...`
+
+        Locked invariants:
+        - ...
+
+        First move:
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Files this session will touch
+      description: List paths or globs. Used by review-incoming Truth Gate.
+      placeholder: |
+        - docs/specs/2026-XX-XX-feature-design.md
+        - src/components/Foo.tsx

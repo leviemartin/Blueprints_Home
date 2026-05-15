@@ -1,0 +1,35 @@
+name: Research request
+description: One-off research / learning task (handled by start-research skill)
+title: "[research] <topic>"
+labels: ["type:research"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question / scope
+      description: What you want to know, in one paragraph.
+    validations:
+      required: true
+  - type: dropdown
+    id: depth
+    attributes:
+      label: Depth
+      options:
+        - quick (<30 min, inline fetch)
+        - medium (1-2 hr, research-validate)
+        - deep (multi-session, deep-research)
+    validations:
+      required: true
+  - type: textarea
+    id: success
+    attributes:
+      label: What "answered" looks like
+      description: Verifiable success criteria.
+    validations:
+      required: true
+  - type: input
+    id: output
+    attributes:
+      label: Output location
+      description: Where the research artifact will land (default — docs/research/<YYYY-MM-DD>-<slug>-research.md in this repo).
+      placeholder: "docs/research/<YYYY-MM-DD>-<slug>-research.md"
