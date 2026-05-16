@@ -1,0 +1,142 @@
+name: Sync label to AI Portfolio project field
+# Mirrors Issue labels into the AI Portfolio v2 board's built-in Status and Type
+# fields, so the board's Status column actually shows the lifecycle state.
+# Auto-add-to-project.yml ADDS items; this workflow SYNCS field values.
+# See leviemartin/martin-ai-playbooks#55 for the gap this closes.
+
+on:
+  issues:
+    types:
+      - opened
+      - reopened
+      - labeled
+      - unlabeled
+
+permissions:
+  issues: read
+
+jobs:
+  sync:
+    name: Sync status and type labels to project fields
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync via GraphQL
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_PAT }}
+          # IDs probed live from project #3 on 2026-05-16. If the project is
+          # re-created or fields are re-keyed, re-probe via:
+          #   gh api graphql -f query='query { user(login: "leviemartin")
+          #     { projectV2(number: 3) { id fields(first: 30)
+          #     { nodes { ... on ProjectV2SingleSelectField { id name options { id name } } } } } } }'
+          PROJECT_ID: PVT_kwHOBdS9mc4BX0PW
+          STATUS_FIELD_ID: PVTSSF_lAHOBdS9mc4BX0PWzhS-hQM
+          TYPE_FIELD_ID: PVTSSF_lAHOBdS9mc4BX0PWzhS-hjo
+          ISSUE_NODE_ID: ${{ github.event.issue.node_id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_REPO: ${{ github.repository }}
+        run: |
+          set -u
+
+          # Status option IDs (label suffix -> project option ID)
+          declare -A STATUS_OPTS=(
+            [queued]=bf4aaa3a
+            [in-progress]=c943ac31
+            [between]=ce577a9b
+            [blocked]=106a240a
+            [paused]=5803832a
+            [done]=6697a22d
+          )
+
+          # Type option IDs
+          declare -A TYPE_OPTS=(
+            [epic]=a1a48b5e
+            [session]=da99d371
+            [research]=0587d1fb
+            [bug]=02f765cf
+            [chore]=60c611f1
+            [adr]=72cf9416
+          )
+
+          # 1) Resolve project item ID for this Issue. Newly-opened Issues may
+          #    not yet have a project item (auto-add-to-project also fires on
+          #    'opened' but may race); in that case skip — the next 'labeled'
+          #    event will catch up.
+          ITEM_ID=$(gh api graphql -f query="
+            query(\$id: ID!) {
+              node(id: \$id) {
+                ... on Issue {
+                  projectItems(first: 20) {
+                    nodes {
+                      id
+                      project { id }
+                    }
+                  }
+                }
+              }
+            }" -F id="$ISSUE_NODE_ID" \
+            --jq ".data.node.projectItems.nodes[] | select(.project.id == \"$PROJECT_ID\") | .id" | head -1)
+
+          if [ -z "$ITEM_ID" ]; then
+            echo "Issue #$ISSUE_NUMBER not on project #3 yet — likely racing with auto-add-to-project. Skipping; next label event will sync."
+            exit 0
+          fi
+          echo "Project item ID: $ITEM_ID"
+
+          # 2) Pull current labels via REST
+          LABELS=$(gh api "repos/$ISSUE_REPO/issues/$ISSUE_NUMBER" --jq '.labels[].name')
+          echo "Current labels:"
+          echo "$LABELS" | sed 's/^/  /'
+
+          # Helper: set or clear a single-select field based on a label prefix
+          sync_field() {
+            local prefix="$1"      # e.g. "status"
+            local field_id="$2"    # PVTSSF_...
+            local -n opts="$3"     # associative array name (bash -n nameref)
+
+            local label_value
+            label_value=$(echo "$LABELS" | grep -m1 "^${prefix}:" | sed "s/^${prefix}://" || true)
+
+            if [ -z "$label_value" ]; then
+              echo "No ${prefix}: label — clearing field"
+              gh api graphql -f query='
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!) {
+                  clearProjectV2ItemFieldValue(input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                  }) { projectV2Item { id } }
+                }' \
+                -F projectId="$PROJECT_ID" \
+                -F itemId="$ITEM_ID" \
+                -F fieldId="$field_id" \
+                --jq '.data.clearProjectV2ItemFieldValue.projectV2Item.id' \
+                || echo "clear failed (field may already be empty)"
+              return 0
+            fi
+
+            local opt_id="${opts[$label_value]:-}"
+            if [ -z "$opt_id" ]; then
+              echo "Unknown ${prefix} value '${label_value}' — skipping (not in option map)"
+              return 0
+            fi
+
+            echo "Setting ${prefix} -> ${label_value} (option ${opt_id})"
+            gh api graphql -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { singleSelectOptionId: $optionId }
+                }) { projectV2Item { id } }
+              }' \
+              -F projectId="$PROJECT_ID" \
+              -F itemId="$ITEM_ID" \
+              -F fieldId="$field_id" \
+              -F optionId="$opt_id" \
+              --jq '.data.updateProjectV2ItemFieldValue.projectV2Item.id'
+          }
+
+          sync_field "status" "$STATUS_FIELD_ID" STATUS_OPTS
+          sync_field "type" "$TYPE_FIELD_ID" TYPE_OPTS
+          echo "Done."
