@@ -11,6 +11,7 @@ on:
       - reopened
       - labeled
       - unlabeled
+      - closed
 
 permissions:
   issues: read
@@ -137,6 +138,32 @@ jobs:
               --jq '.data.updateProjectV2ItemFieldValue.projectV2Item.id'
           }
 
-          sync_field "status" "$STATUS_FIELD_ID" STATUS_OPTS
+          # 3) State-aware Status sync.
+          # If issue is closed, force Status -> done (overrides label-based mapping).
+          # Otherwise sync Status from the status: label as before.
+          # Type sync is state-independent — always label-driven.
+          ISSUE_STATE=$(gh api "repos/$ISSUE_REPO/issues/$ISSUE_NUMBER" --jq '.state')
+          echo "Issue state: $ISSUE_STATE"
+
+          if [ "$ISSUE_STATE" = "closed" ]; then
+            echo "Issue closed — setting Status -> done (overrides label-based sync)"
+            gh api graphql -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { singleSelectOptionId: $optionId }
+                }) { projectV2Item { id } }
+              }' \
+              -F projectId="$PROJECT_ID" \
+              -F itemId="$ITEM_ID" \
+              -F fieldId="$STATUS_FIELD_ID" \
+              -F optionId="${STATUS_OPTS[done]}" \
+              --jq '.data.updateProjectV2ItemFieldValue.projectV2Item.id'
+          else
+            sync_field "status" "$STATUS_FIELD_ID" STATUS_OPTS
+          fi
+
           sync_field "type" "$TYPE_FIELD_ID" TYPE_OPTS
           echo "Done."
