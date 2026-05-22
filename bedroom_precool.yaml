@@ -548,3 +548,195 @@ action:
         {% else %}
           false
         {% endif %}
+
+  # =============================================
+  # STEP 2b: FORECAST FETCH (periodic, ~every 15 min during DAY-OFF)
+  # weather.get_forecasts is the PLURAL current action — the singular
+  # weather.get_forecast was deprecated. Fetched into a response
+  # variable, then forecast_max is templated from it.
+  # =============================================
+  - variables:
+      # Fetch only near a 15-minute boundary (minute mod 15 == 0) AND only
+      # during the daytime wake -> bedtime window — the forecast result is
+      # consumed by DAY_OFF alone, so fetching it overnight is pure waste.
+      # Between fetches the live outdoor sensor carries the prediction.
+      forecast_fetch_due: >-
+        {{ (now().minute | int) % 15 == 0
+           and now().strftime('%H:%M:%S') >= wake_time
+           and now().strftime('%H:%M:%S') < bedtime }}
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ forecast_fetch_due }}"
+        sequence:
+          # continue_on_error: a weather-entity failure must not abort the
+          # whole action run — the forecast_daily_fallback -> outdoor_now
+          # chain below handles a missing/empty response.
+          - service: weather.get_forecasts
+            continue_on_error: true
+            target:
+              entity_id: "{{ weather_entity }}"
+            data:
+              type: hourly
+            response_variable: hourly_forecast_resp
+  - variables:
+      # Source the forecast list straight from the service response_variable —
+      # a response_variable has well-defined run scope, so no choose-branch
+      # variable leaks across the boundary. On a non-fetch tick the fetch
+      # branch never ran, so hourly_forecast_resp is simply undefined; the
+      # `is defined` guard then yields the empty-list path. Filter forecast
+      # entries to the window now -> bedtime, take the max temperature.
+      forecast_list_safe: >-
+        {{ hourly_forecast_resp[weather_entity].forecast
+           if hourly_forecast_resp is defined
+              and hourly_forecast_resp is mapping
+              and weather_entity in hourly_forecast_resp
+              and hourly_forecast_resp[weather_entity].forecast is defined
+           else [] }}
+      bedtime_dt: >-
+        {% set bt = today_at(bedtime) %}
+        {{ bt if bt >= now() else bt + timedelta(days=1) }}
+      forecast_window_temps: >-
+        {% set ns = namespace(vals=[]) %}
+        {% for f in forecast_list_safe %}
+          {% set ts = f.datetime | default(none) %}
+          {% set tp = f.temperature | default(none) %}
+          {% if ts is not none and tp is not none %}
+            {% set fdt = as_datetime(ts) %}
+            {% if fdt is not none and fdt >= now() and fdt <= bedtime_dt %}
+              {% set ns.vals = ns.vals + [tp | float] %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.vals }}
+      forecast_daily_fallback: >-
+        {% set d = state_attr(weather_entity, 'forecast') %}
+        {% if d is iterable and d is not string and d | length > 0 %}
+          {{ d[0].temperature | float(outdoor_now | float) }}
+        {% else %}
+          {{ outdoor_now | float }}
+        {% endif %}
+      forecast_max: >-
+        {% if forecast_window_temps | length > 0 %}
+          {{ forecast_window_temps | max }}
+        {% else %}
+          {{ [forecast_daily_fallback | float, outdoor_now | float] | max }}
+        {% endif %}
+
+  # =============================================
+  # STEP 2c: PREDICTION & PHASE VARIABLES
+  # =============================================
+  - variables:
+      # --- Solar-gain factor (0..1 from sun elevation + azimuth) ---
+      sun_elevation: "{{ state_attr(sun_entity, 'elevation') | float(0) }}"
+      sun_azimuth: "{{ state_attr(sun_entity, 'azimuth') | float(0) }}"
+      solar_elevation_factor: >-
+        {{ [1.0, [0.0, (sun_elevation | float) / 35.0] | max] | min }}
+      solar_azimuth_ok: >-
+        {% if not solar_afternoon_only %}
+          true
+        {% else %}
+          {{ sun_azimuth | float >= 180 and sun_azimuth | float <= 300 }}
+        {% endif %}
+      solar_load: >-
+        {% if sun_elevation | float <= 0 or not solar_azimuth_ok %}
+          0
+        {% else %}
+          {{ solar_elevation_factor | float | round(3) }}
+        {% endif %}
+      # --- Lead-time inputs ---
+      delta_in: "{{ [0, warmest_bedroom | float - ideal_temp | float] | max }}"
+      outdoor_for_lead: "{{ [forecast_max | float, outdoor_now | float] | max }}"
+      delta_out: "{{ [0, outdoor_for_lead | float - ideal_temp | float] | max }}"
+      # --- Auto-learn bias: read the helper every tick when enabled ---
+      lead_bias_entity: >-
+        {% if lead_bias_helper is iterable and lead_bias_helper is not string
+              and lead_bias_helper | length > 0 %}
+          {{ lead_bias_helper[0] }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
+      lead_bias_configured: "{{ lead_bias_entity != '' }}"
+      lead_bias: >-
+        {% if enable_auto_learn and lead_bias_configured %}
+          {{ states(lead_bias_entity) | float(0) }}
+        {% else %}
+          0
+        {% endif %}
+      # --- Lead-time formula (transparent linear blend), then clamp ---
+      lead_raw: >-
+        {{ (base_minutes | float)
+           + (k_indoor | float) * (delta_in | float)
+           + (k_outdoor | float) * (delta_out | float)
+           + (solar_max_minutes | float) * (solar_load | float)
+           + (safety_margin_minutes | float)
+           + (lead_bias | float) }}
+      lead: "{{ [[lead_raw | float, 0] | max, lead_cap_minutes | float] | min | round(0) | int }}"
+      # --- Cool-day skip gate (consulted in DAY-OFF only) ---
+      cooling_needed: >-
+        {{ warmest_bedroom | float > ideal_temp | float
+           or forecast_max | float > skip_threshold | float }}
+      # --- Schedule boundaries as time-of-day strings (HH:MM:SS).
+      # Phase derivation compares time-of-day so the overnight window
+      # (bedtime -> wake, spanning midnight) is handled without any
+      # date arithmetic. turn_on is the only moving boundary; it is
+      # carried as a same-day datetime purely for the debug dump. ---
+      now_tod: "{{ now().strftime('%H:%M:%S') }}"
+      wake_tod: "{{ wake_time }}"
+      bedtime_tod: "{{ bedtime }}"
+      lock_tod: >-
+        {{ (today_at(bedtime) - timedelta(minutes=1)).strftime('%H:%M:%S') }}
+      deep_tod: "{{ deep_night_check }}"
+      deep_end_tod: >-
+        {{ (today_at(deep_night_check) + timedelta(minutes=10)).strftime('%H:%M:%S') }}
+      turn_on_dt: "{{ today_at(bedtime) - timedelta(minutes=lead | int) }}"
+      turn_on_tod: "{{ turn_on_dt.strftime('%H:%M:%S') }}"
+      # --- Phase derivation (all time-of-day string comparisons) ---
+      # The "day side" of the schedule runs wake -> bedtime_lock.
+      on_day_side: "{{ wake_tod <= now_tod and now_tod < lock_tod }}"
+      in_lock_window: "{{ lock_tod <= now_tod and now_tod < bedtime_tod }}"
+      in_deep_check: "{{ deep_tod <= now_tod and now_tod < deep_end_tod }}"
+      in_deep_hold: "{{ deep_end_tod <= now_tod and now_tod < wake_tod }}"
+      # NIGHT_HOLD is the phase-derivation else branch (after bedtime, before
+      # the deep-night check) — no explicit variable is needed for it.
+      # PRECOOL begins only when cooling is needed AND now >= turn_on;
+      # once the AC is running it STAYS PRECOOL (one-way latch) even if a
+      # recomputed lead pushes turn_on later. The running AC IS the
+      # persisted "PRECOOL has started" bit — stateless and restart-safe.
+      precool_started: "{{ (cooling_needed and now_tod >= turn_on_tod) or ac_is_running }}"
+      in_precool_window: "{{ on_day_side and precool_started }}"
+      in_day_off: "{{ on_day_side and not precool_started }}"
+      # Single-lined: a folded scalar leaves trailing whitespace between a
+      # token and the next tag, and this value feeds == comparisons.
+      phase: "{% if in_lock_window %}BEDTIME_LOCK{% elif in_precool_window %}PRECOOL{% elif in_deep_check %}DEEP_NIGHT_CHECK{% elif in_deep_hold %}DEEP_HOLD{% elif in_day_off %}DAY_OFF{% else %}NIGHT_HOLD{% endif %}"
+      # --- PRECOOL sub-state ---
+      precool_substate: >-
+        {% if warmest_bedroom | float > ideal_temp | float %}DRIVE{% else %}HOLD{% endif %}
+      # --- Setpoints, all clamped to the AC's discovered min/max ---
+      effective_drive: >-
+        {{ [[drive_setpoint | float, ac_min_temp | float] | max,
+            ac_max_temp | float] | min }}
+      maintaining_setpoint: >-
+        {{ [[ideal_temp | float - hall_offset | float, ac_min_temp | float] | max,
+            ac_max_temp | float] | min }}
+      # --- Cool vs dry mode (only chosen while beeps are free) ---
+      # Single-lined: this value feeds == comparisons and hvac_mode:; a
+      # folded scalar would leave trailing whitespace on the rendered token.
+      # The dry branch additionally requires the AC to advertise 'dry' in its
+      # discovered hvac_modes — otherwise it falls through to cool.
+      desired_mode: "{% if not enable_dry_mode %}cool{% elif warmest_bedroom | float > ideal_temp | float + tolerance | float %}cool{% elif room_humidity | float > humidity_threshold | float and 'dry' in ac_hvac_modes %}dry{% else %}cool{% endif %}"
+      # --- Fan modes discovered from the entity ---
+      fan_high: >-
+        {% set m = ac_fan_modes %}
+        {% set ns = namespace(found='') %}
+        {% for c in ['Power', 'Turbo', 'High', 'high', '4', '3'] if c in m %}
+          {% if ns.found == '' %}{% set ns.found = c %}{% endif %}
+        {% endfor %}
+        {{ ns.found if ns.found != '' else (m[-1] if m | length > 0 else 'high') }}
+      fan_normal: >-
+        {% set m = ac_fan_modes %}
+        {% set ns = namespace(found='') %}
+        {% for c in ['Mid', 'Medium', 'mid', 'medium', 'Auto', 'auto', '2'] if c in m %}
+          {% if ns.found == '' %}{% set ns.found = c %}{% endif %}
+        {% endfor %}
+        {{ ns.found if ns.found != '' else (m[0] if m | length > 0 else 'auto') }}
