@@ -5,3 +5,5 @@ gha-creds-*.json
 .idea/
 .vscode/
 ruvector.db
+.firecrawl/
+agentdb.rvf*
