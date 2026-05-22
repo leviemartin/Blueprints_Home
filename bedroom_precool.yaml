@@ -855,3 +855,110 @@ action:
                 If inside the deep-night check window the blueprint will
                 correct upward.
               notification_id: "bedroom_precool_overcool_fault"
+
+  # =============================================
+  # STEP 6: PHASE DISPATCH — exactly one phase acts.
+  # Each acting branch resolves desired setpoint/mode/fan, then issues
+  # only idempotent service calls (a stray call is a stray beep).
+  # NIGHT_HOLD and DEEP_HOLD are deliberately EMPTY (zero service calls).
+  #
+  # The whole 6-branch dispatch is gated on is_real_trigger: a manual "Run"
+  # has no trigger.id, so it computes everything and shows the STEP 8 debug
+  # dump but NEVER actuates the AC nor double-applies the BEDTIME_LOCK
+  # auto-learn write. STEP 1-5, 7 and 8 are unchanged on a manual Run.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_real_trigger }}"
+        sequence:
+          - choose:
+              # ---------- DAY_OFF: ensure the AC is off ----------
+              - conditions:
+                  - condition: template
+                    value_template: "{{ phase == 'DAY_OFF' }}"
+                sequence:
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ ac_is_running }}"
+                        sequence:
+                          - service: climate.turn_off
+                            target:
+                              entity_id: "{{ ac_climate }}"
+
+              # ---------- PRECOOL: closed-loop drive / hold ----------
+              - conditions:
+                  - condition: template
+                    value_template: "{{ phase == 'PRECOOL' }}"
+                sequence:
+                  - variables:
+                      precool_setpoint: >-
+                        {% if precool_substate == 'DRIVE' %}
+                          {{ effective_drive | float }}
+                        {% else %}
+                          {{ maintaining_setpoint | float }}
+                        {% endif %}
+                      precool_fan: >-
+                        {% if precool_substate == 'DRIVE' %}
+                          {{ fan_high }}
+                        {% else %}
+                          {{ fan_normal }}
+                        {% endif %}
+                  # 1. Ensure the unit is running and in the desired mode.
+                  #    set_hvac_mode fails on a powered-off LG unit, so turn_on
+                  #    first when off, then set the mode while it is running.
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ not ac_is_running }}"
+                        sequence:
+                          - service: climate.turn_on
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                  # Mode guard intentionally omits the `ac_is_running` precondition:
+                  # ac_is_running was captured in STEP 2 before this branch's
+                  # climate.turn_on ran, so on a first-tick-from-off it is stale
+                  # `false`. climate.turn_on always precedes this call when the unit
+                  # was off, so the unit IS on by now; the stale current_hvac_mode
+                  # ('off') still differs from desired_mode ('cool'), so the mode is
+                  # set the same tick instead of waiting for the next minute.
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: >-
+                              {{ current_hvac_mode != desired_mode }}
+                        sequence:
+                          - service: climate.set_hvac_mode
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              hvac_mode: "{{ desired_mode }}"
+                  # 2. Then set the temperature (separate, sequenced call).
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: >-
+                              {{ (not current_setpoint_known)
+                                 or (current_setpoint | float - precool_setpoint | float)
+                                    | abs > 0.1 }}
+                        sequence:
+                          - service: climate.set_temperature
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              temperature: "{{ precool_setpoint | float }}"
+                  # 3. Fan, only if fan control is enabled and there is a delta.
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: >-
+                              {{ enable_fan_control
+                                 and ac_fan_modes | length > 0
+                                 and current_fan != precool_fan }}
+                        sequence:
+                          - service: climate.set_fan_mode
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              fan_mode: "{{ precool_fan }}"
