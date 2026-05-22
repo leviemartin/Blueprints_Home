@@ -962,3 +962,125 @@ action:
                               entity_id: "{{ ac_climate }}"
                             data:
                               fan_mode: "{{ precool_fan }}"
+
+              # ---------- BEDTIME_LOCK: one locking command + auto-learn write ----------
+              - conditions:
+                  - condition: template
+                    value_template: "{{ phase == 'BEDTIME_LOCK' }}"
+                sequence:
+                  # Only act on an already-running AC (cool-day no-op otherwise).
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ ac_is_running }}"
+                        sequence:
+                          # Lock the maintaining setpoint (mode first, then temp).
+                          - choose:
+                              - conditions:
+                                  - condition: template
+                                    value_template: "{{ current_hvac_mode != desired_mode }}"
+                                sequence:
+                                  - service: climate.set_hvac_mode
+                                    target:
+                                      entity_id: "{{ ac_climate }}"
+                                    data:
+                                      hvac_mode: "{{ desired_mode }}"
+                          - choose:
+                              - conditions:
+                                  - condition: template
+                                    value_template: >-
+                                      {{ (not current_setpoint_known)
+                                         or (current_setpoint | float
+                                             - maintaining_setpoint | float)
+                                            | abs > 0.1 }}
+                                sequence:
+                                  - service: climate.set_temperature
+                                    target:
+                                      entity_id: "{{ ac_climate }}"
+                                    data:
+                                      temperature: "{{ maintaining_setpoint | float }}"
+                          - choose:
+                              - conditions:
+                                  - condition: template
+                                    value_template: >-
+                                      {{ enable_fan_control
+                                         and ac_fan_modes | length > 0
+                                         and current_fan != fan_normal }}
+                                sequence:
+                                  - service: climate.set_fan_mode
+                                    target:
+                                      entity_id: "{{ ac_climate }}"
+                                    data:
+                                      fan_mode: "{{ fan_normal }}"
+                          # Auto-learn helper write — beep-free (an input_number,
+                          # not the AC). Only on a cooling night (AC running).
+                          - choose:
+                              - conditions:
+                                  - condition: template
+                                    value_template: "{{ enable_auto_learn and lead_bias_configured }}"
+                                sequence:
+                                  - variables:
+                                      bedtime_error: "{{ warmest_bedroom | float - ideal_temp | float }}"
+                                      new_bias_raw: >-
+                                        {{ (lead_bias | float)
+                                           + (learn_gain | float)
+                                             * (bedtime_error | float)
+                                             * (k_indoor | float) }}
+                                      # round(0) | int — the lead_bias_helper input_number
+                                      # is created with step 1, so the written value must be
+                                      # a whole number to match the helper's step.
+                                      new_bias: "{{ [[new_bias_raw | float, -60] | max, 120] | min | round(0) | int }}"
+                                  - service: input_number.set_value
+                                    target:
+                                      entity_id: "{{ lead_bias_entity }}"
+                                    data:
+                                      value: "{{ new_bias | float }}"
+
+              # ---------- DEEP_NIGHT_CHECK: at most one corrective command ----------
+              - conditions:
+                  - condition: template
+                    value_template: "{{ phase == 'DEEP_NIGHT_CHECK' }}"
+                sequence:
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ ac_is_running }}"
+                        sequence:
+                          - variables:
+                              deep_drift: "{{ warmest_bedroom | float - ideal_temp | float }}"
+                              # Target is derived from the STABLE maintaining_setpoint —
+                              # NOT the moving current_setpoint. The periodic trigger runs
+                              # this branch ~10 times across the 10-minute window;
+                              # maintaining_setpoint is deterministic on every tick, so the
+                              # abs(current_setpoint - deep_target_setpoint) > 0.1
+                              # idempotency guard genuinely caps the correction at exactly
+                              # one climate.set_temperature call. Single-lined to avoid a
+                              # folded-scalar trailing-whitespace artifact.
+                              deep_target_setpoint: "{% if deep_drift | float > tolerance | float %}{{ [[maintaining_setpoint | float - correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min }}{% elif deep_drift | float < (0 - tolerance | float) %}{{ [[maintaining_setpoint | float + correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min }}{% else %}{{ maintaining_setpoint | float }}{% endif %}"
+                          - choose:
+                              - conditions:
+                                  - condition: template
+                                    value_template: >-
+                                      {{ current_setpoint_known
+                                         and (deep_drift | float | abs) > (tolerance | float)
+                                         and (current_setpoint | float
+                                              - deep_target_setpoint | float)
+                                             | abs > 0.1 }}
+                                sequence:
+                                  - service: climate.set_temperature
+                                    target:
+                                      entity_id: "{{ ac_climate }}"
+                                    data:
+                                      temperature: "{{ deep_target_setpoint | float }}"
+
+              # ---------- NIGHT_HOLD: deliberately empty (zero service calls) ----------
+              - conditions:
+                  - condition: template
+                    value_template: "{{ phase == 'NIGHT_HOLD' }}"
+                sequence: []
+
+              # ---------- DEEP_HOLD: deliberately empty (zero service calls) ----------
+              - conditions:
+                  - condition: template
+                    value_template: "{{ phase == 'DEEP_HOLD' }}"
+                sequence: []
