@@ -1,0 +1,214 @@
+blueprint:
+  name: "Bedroom Sleep Pre-Cool v1.0.0"
+  description: >
+    **Version: 1.0.0**
+
+    Predictive pre-cooling of bedrooms via a single hall LG air conditioner.
+    Reaches an ideal sleep temperature by a fixed bedtime, then holds the room
+    quietly overnight within a strict beep budget, with a self-learning
+    lead-time prediction.
+
+    LG ACs beep on every command sent over ThinQ — a firmware tone that cannot
+    be silenced in software. This blueprint therefore treats AC commands as a
+    scarce resource after bedtime: it adjusts freely *before* bedtime, locks a
+    maintaining setpoint *at* bedtime, permits at most one corrective command at
+    a deep-night checkpoint, and turns the AC off at wake.
+
+    The AC is in the hall, not the bedrooms — cold air migrates through open
+    doors. Cooling is therefore indirect and laggy, so the turn-on time is
+    *predicted* from indoor gap, hourly weather forecast, and solar gain, with a
+    self-learning bias that auto-corrects from each night's observed outcome.
+
+    **Features:**
+    - 6-phase stateless daily state machine (DAY-OFF, PRECOOL, BEDTIME-LOCK,
+      NIGHT-HOLD, DEEP-NIGHT-CHECK, DEEP-HOLD)
+    - Predictive turn-on: transparent linear lead-time formula
+      (indoor gap + forecast outdoor + solar) recomputed every minute
+    - Self-learning lead-time bias persisted in an input_number helper
+    - Closed-loop pre-cool on the warmest bedroom (DRIVE / HOLD sub-states)
+    - Strict beep budget: 0-2 commands after bedtime
+    - Opt-in humidity-aware dry mode (default off — cool is the proven path)
+    - Idempotent service calls — a stray command is a stray beep
+    - Vacation toggle, manual-run debug notification
+
+    **Requirements:**
+    - Home Assistant Core 2025.7+ (LG ThinQ set_temperature fix, PR #147008)
+    - One LG AC connected via the LG ThinQ integration (a `climate` entity)
+    - Bedroom temperature sensors (e.g., Aqara) — the control target
+    - An outdoor temperature sensor
+    - A weather entity that provides an HOURLY forecast — Met.no or Open-Meteo
+      (Buienradar has no hourly forecast and will not work)
+    - An input_number helper to persist the self-learned lead-time bias
+
+  domain: automation
+  input:
+    # =======================================================
+    # GROUP 1 — DEVICES & SENSORS
+    # =======================================================
+    ac_climate:
+      name: LG AC Climate Entity
+      description: The climate entity for the hall LG air conditioner (LG ThinQ integration).
+      selector:
+        entity:
+          domain: climate
+    bedroom_temp_sensors:
+      name: Bedroom Temperature Sensors
+      description: >
+        One or more in-room temperature sensors (e.g., Aqara). These are the
+        control target — the blueprint cools until the warmest bedroom reaches
+        the ideal temperature.
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+          multiple: true
+    bedroom_humidity_sensors:
+      name: Bedroom Humidity Sensors (Optional)
+      description: >
+        In-room humidity sensors. Only used when Enable Dry Mode is on; drives
+        the cool-vs-dry choice. Leave empty if not using dry mode.
+      default: []
+      selector:
+        entity:
+          domain: sensor
+          device_class: humidity
+          multiple: true
+    outdoor_temp_sensor:
+      name: Outdoor Temperature Sensor
+      description: An outdoor temperature sensor entity — heat-load term and forecast fallback.
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    weather_entity:
+      name: Weather Entity (hourly forecast)
+      description: >
+        A weather entity that supports an HOURLY forecast — Met.no (HA default,
+        keyless) or Open-Meteo. Buienradar provides only a daily forecast and
+        must NOT be used here. The forecast anticipates the evening heat load.
+      selector:
+        entity:
+          domain: weather
+    sun_entity:
+      name: Sun Entity
+      description: The built-in sun entity — provides the solar-gain term. Leave as the default.
+      default: sun.sun
+      selector:
+        entity:
+          domain: sun
+    lead_bias_helper:
+      name: Lead-Time Bias Helper (input_number)
+      description: >
+        An input_number helper the blueprint uses to persist its self-learned
+        lead-time correction (minutes) across restarts. Create one via
+        Settings -> Devices & Services -> Helpers -> Number, range roughly
+        -60 to 120, step 1. Required when Enable Auto-Learn is on.
+      default: []
+      selector:
+        entity:
+          domain: input_number
+          multiple: true
+    ac_sound_switch:
+      name: AC Sound Switch (Optional)
+      description: >
+        The switch entity for the LG AC beep sound, if exposed. The blueprint
+        keeps it muted. Leave empty if not available.
+      default: []
+      selector:
+        entity:
+          domain: switch
+          multiple: true
+
+    # =======================================================
+    # GROUP 2 — TARGET TEMPERATURES
+    # =======================================================
+    ideal_temp:
+      name: Ideal Sleep Temperature (°C)
+      description: >
+        The target temperature for the warmest bedroom by bedtime. 19 °C is
+        within the recommended child sleep range (16-20 °C, The Lullaby Trust).
+        The minimum is a 16 °C child-safety floor.
+      default: 19.0
+      selector:
+        number:
+          min: 16.0
+          max: 25.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    hall_offset:
+      name: Hall Cooling Offset (°C)
+      description: >
+        How much colder the hall AC must hold than the bedroom ideal, to push
+        cold air through the doorway. Indirect room-to-room cooling is
+        thermally weak, so this is typically 3-6 °C. Tune it using the overnight
+        drift reported in the debug notification.
+      default: 3.0
+      selector:
+        number:
+          min: 0.0
+          max: 10.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    drive_setpoint:
+      name: Drive Setpoint (°C)
+      description: >
+        The aggressive hall setpoint used while actively driving the bedrooms
+        down (DRIVE sub-state). Set this to the AC's minimum for the fastest
+        pre-cool — it is clamped to the AC's real min_temp at runtime.
+      default: 16.0
+      selector:
+        number:
+          min: 14.0
+          max: 22.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    tolerance:
+      name: Drift Tolerance (°C)
+      description: >
+        The dead band around the ideal temperature for the deep-night check
+        and the cool-vs-dry decision. A drift larger than this triggers the
+        single deep-night correction.
+      default: 1.5
+      selector:
+        number:
+          min: 0.5
+          max: 4.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    correction_step:
+      name: Deep-Night Correction Step (°C)
+      description: How far to nudge the hall setpoint at the single deep-night corrective command.
+      default: 1.5
+      selector:
+        number:
+          min: 0.5
+          max: 4.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    skip_threshold:
+      name: Cool-Day Skip Threshold (°C)
+      description: >
+        If the forecast peak stays below this and the bedrooms are already at
+        or below ideal, the AC never starts — the mild-day skip.
+      default: 22.0
+      selector:
+        number:
+          min: 16.0
+          max: 28.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    humidity_threshold:
+      name: Humidity Threshold (%)
+      description: >
+        Above this room humidity, dry mode is preferred over cool — only when
+        Enable Dry Mode is on and the temperature gap is small.
+      default: 65
+      selector:
+        number:
+          min: 40
+          max: 80
+          step: 1
+          unit_of_measurement: "%"
+
+# Remaining input groups (3-6), mode, variables, triggers and action
+# are added in later tasks.
