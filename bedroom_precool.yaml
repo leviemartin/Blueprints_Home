@@ -384,3 +384,68 @@ blueprint:
       default: true
       selector:
         boolean: {}
+
+mode: restart
+max_exceeded: silent
+
+# =============================================
+# TOP-LEVEL VARIABLES — !input pass-through
+# (matches bathroom_heating_rack / lg_ac_climate; guarantees every
+#  !input resolves at automation-creation time and is available
+#  everywhere below — including the action block)
+# =============================================
+variables:
+  # --- Group 1: devices & sensors ---
+  ac_climate: !input ac_climate
+  bedroom_temp_sensors: !input bedroom_temp_sensors
+  bedroom_humidity_sensors: !input bedroom_humidity_sensors
+  outdoor_temp_sensor: !input outdoor_temp_sensor
+  weather_entity: !input weather_entity
+  sun_entity: !input sun_entity
+  lead_bias_helper: !input lead_bias_helper
+  ac_sound_switch: !input ac_sound_switch
+  # --- Group 2: target temperatures ---
+  ideal_temp: !input ideal_temp
+  hall_offset: !input hall_offset
+  drive_setpoint: !input drive_setpoint
+  tolerance: !input tolerance
+  correction_step: !input correction_step
+  skip_threshold: !input skip_threshold
+  humidity_threshold: !input humidity_threshold
+  # --- Group 3: schedule ---
+  bedtime: !input bedtime
+  wake_time: !input wake_time
+  deep_night_check: !input deep_night_check
+  # --- Group 4: prediction tuning ---
+  base_minutes: !input base_minutes
+  k_indoor: !input k_indoor
+  k_outdoor: !input k_outdoor
+  solar_max_minutes: !input solar_max_minutes
+  safety_margin_minutes: !input safety_margin_minutes
+  lead_cap_minutes: !input lead_cap_minutes
+  solar_afternoon_only: !input solar_afternoon_only
+  learn_gain: !input learn_gain
+  # --- Group 5: behaviour ---
+  sensor_strategy: !input sensor_strategy
+  enable_fan_control: !input enable_fan_control
+  enable_dry_mode: !input enable_dry_mode
+  enable_auto_learn: !input enable_auto_learn
+  # --- Group 6: global controls ---
+  vacation_toggle: !input vacation_toggle
+  enable_notifications: !input enable_notifications
+
+trigger:
+  # T1: Periodic 1-minute tick — phase derivation, prediction, transitions
+  - platform: time_pattern
+    minutes: "/1"
+    id: periodic
+  # T2: Vacation toggle state change — instant disable / re-enable
+  - platform: state
+    entity_id: !input vacation_toggle
+    id: vacation_change
+  # T3: HA restart — reconcile phase after a restart
+  - platform: homeassistant
+    event: start
+    id: ha_start
+
+action: []
