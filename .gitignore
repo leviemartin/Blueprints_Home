@@ -4,3 +4,4 @@ gha-creds-*.json
 *.swp
 .idea/
 .vscode/
+ruvector.db
