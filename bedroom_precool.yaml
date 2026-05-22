@@ -210,5 +210,177 @@ blueprint:
           step: 1
           unit_of_measurement: "%"
 
-# Remaining input groups (3-6), mode, variables, triggers and action
-# are added in later tasks.
+    # =======================================================
+    # GROUP 3 — SCHEDULE
+    # =======================================================
+    bedtime:
+      name: Bedtime
+      description: The time the warmest bedroom should be at the ideal temperature.
+      default: "19:30:00"
+      selector:
+        time: {}
+    wake_time:
+      name: Wake Time
+      description: The time the AC is turned off in the morning.
+      default: "07:15:00"
+      selector:
+        time: {}
+    deep_night_check:
+      name: Deep-Night Check Time
+      description: >
+        The single overnight checkpoint (e.g., 01:00). If the warmest bedroom
+        has drifted outside ideal +/- tolerance, one corrective command fires
+        within a fixed 10-minute window after this time.
+      default: "01:00:00"
+      selector:
+        time: {}
+
+    # =======================================================
+    # GROUP 4 — PREDICTION TUNING
+    # =======================================================
+    base_minutes:
+      name: Base Lead Minutes
+      description: The fixed baseline lead time before any temperature or solar terms are added.
+      default: 20
+      selector:
+        number:
+          min: 0
+          max: 120
+          step: 1
+          unit_of_measurement: "min"
+    k_indoor:
+      name: Indoor Coefficient (min per °C)
+      description: >
+        Lead minutes added per °C the warmest bedroom is above ideal. This is
+        the dominant term — the indoor gap is what the AC must actually close.
+      default: 15
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 1
+          unit_of_measurement: "min/°C"
+    k_outdoor:
+      name: Outdoor Coefficient (min per °C)
+      description: >
+        Lead minutes added per °C the outdoor peak is above ideal. Deliberately
+        small — outdoor heat is a secondary leak correction, not a co-equal term.
+      default: 1.0
+      selector:
+        number:
+          min: 0
+          max: 15
+          step: 0.5
+          unit_of_measurement: "min/°C"
+    solar_max_minutes:
+      name: Solar Maximum Minutes
+      description: The maximum lead contribution from solar gain, at peak radiant load.
+      default: 45
+      selector:
+        number:
+          min: 0
+          max: 120
+          step: 1
+          unit_of_measurement: "min"
+    safety_margin_minutes:
+      name: Safety Margin Minutes
+      description: >
+        A fixed early bias. Starting early is cheap; missing bedtime is not —
+        so the estimate is biased early.
+      default: 25
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 1
+          unit_of_measurement: "min"
+    lead_cap_minutes:
+      name: Lead Cap Minutes
+      description: The hard upper bound on total lead time — the earliest the AC can ever start before bedtime.
+      default: 240
+      selector:
+        number:
+          min: 60
+          max: 360
+          step: 10
+          unit_of_measurement: "min"
+    solar_afternoon_only:
+      name: Solar — Afternoon Azimuths Only
+      description: >
+        When on, solar gain only contributes for post-solar-noon sun positions
+        (azimuth roughly 180-300°), capturing the low evening sun on west-facing
+        bedrooms while ignoring the morning sun.
+      default: true
+      selector:
+        boolean: {}
+    learn_gain:
+      name: Auto-Learn Gain
+      description: >
+        How aggressively the lead-time bias self-corrects each night. Higher
+        converges faster but overshoots more. 0.4 converges over ~3-6 nights.
+      default: 0.4
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.05
+
+    # =======================================================
+    # GROUP 5 — BEHAVIOUR
+    # =======================================================
+    sensor_strategy:
+      name: Bedroom Sensor Strategy
+      description: >
+        How to aggregate multiple bedroom sensors. 'max' (the warmest room)
+        guarantees every room reaches ideal; 'average' is gentler but can leave
+        the warmest room above ideal.
+      default: "max"
+      selector:
+        select:
+          options:
+            - label: "Warmest room (max)"
+              value: "max"
+            - label: "Average of rooms"
+              value: "average"
+    enable_fan_control:
+      name: Enable Fan Control
+      description: When on, the blueprint sets a high fan while driving and a normal fan while holding.
+      default: true
+      selector:
+        boolean: {}
+    enable_dry_mode:
+      name: Enable Dry Mode
+      description: >
+        When on, the blueprint may pick dry mode over cool when the room is
+        humid and the temperature gap is small. Default OFF — LG dry-mode
+        target-temperature behaviour is model-dependent; enable only after
+        verifying on the actual unit.
+      default: false
+      selector:
+        boolean: {}
+    enable_auto_learn:
+      name: Enable Auto-Learn
+      description: >
+        When on, the blueprint reads and updates the lead-time bias helper,
+        self-correcting the prediction from each cooling night's outcome.
+      default: true
+      selector:
+        boolean: {}
+
+    # =======================================================
+    # GROUP 6 — GLOBAL CONTROLS
+    # =======================================================
+    vacation_toggle:
+      name: Vacation Toggle (Optional)
+      description: "Optional input_boolean. When ON, the AC is forced off and the blueprint stands down."
+      default: []
+      selector:
+        entity:
+          domain: input_boolean
+          multiple: true
+    enable_notifications:
+      name: Enable Persistent Notifications
+      description: When on, fault and status persistent notifications are created.
+      default: true
+      selector:
+        boolean: {}
