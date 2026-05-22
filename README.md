@@ -132,5 +132,39 @@ Pre-heats a bathroom heating rack for scheduled routines (adult morning, kids ba
 2. Or manually copy this URL into the Blueprints configuration:
 `https://raw.githubusercontent.com/leviemartin/Blueprints_Home/main/bathroom_heating_rack.yaml`
 
+## Bedroom Sleep Pre-Cool Blueprint
+
+### Overview
+Predictive pre-cooling of bedrooms via a single LG air conditioner in the upstairs hall. The blueprint brings the warmest bedroom to an ideal sleep temperature (default 19 °C) by a fixed bedtime, then holds the room quietly overnight while issuing the absolute minimum number of commands — because LG ACs beep on every command and the tone cannot be silenced in software. The AC cools the hall indirectly through open doors, so the turn-on time is *predicted* from the indoor gap, an hourly weather forecast, and solar gain, with a self-learning bias that auto-corrects from each night's result.
+
+### Features
+*   **🧊 6-Phase State Machine:** A stateless daily cycle — DAY-OFF, PRECOOL, BEDTIME-LOCK, NIGHT-HOLD, DEEP-NIGHT-CHECK, DEEP-HOLD — derived from the clock every minute, overnight-wrap-aware.
+*   **🔮 Predictive Turn-On:** A transparent linear lead-time formula (indoor gap + forecast outdoor + solar load) recomputed each minute decides when to start cooling so the room hits target by bedtime.
+*   **🧠 Self-Learning Bias:** One scalar — the lead-time bias — is persisted in an `input_number` helper and auto-corrected from each cooling night's outcome. Converges over ~3–6 nights.
+*   **🔇 Strict Beep Budget:** Unlimited commands before bedtime; at most 0–2 after. NIGHT-HOLD and DEEP-HOLD issue zero commands; every climate call is idempotency-guarded.
+*   **🌡️ Closed-Loop Pre-Cool:** DRIVE / HOLD sub-states cool the hall as hard as the AC allows until the warmest bedroom reaches ideal.
+*   **💧 Opt-In Dry Mode:** Humidity-aware `dry` mode, default off — `cool` is the proven path; enable `dry` only after verifying it on the unit.
+*   **🛡️ Child-Safe:** `ideal_temp` is bounded ≥ 16 °C; a sub-16 °C bedroom reading raises an overcooling fault. Every setpoint is clamped to the AC's discovered limits.
+*   **🔍 Debug-Friendly:** Manual "Run" produces a persistent notification dumping every prediction variable for easy calibration.
+
+### Requirements
+*   **Home Assistant Core 2025.7+** (LG ThinQ `set_temperature` fix, PR #147008)
+*   One LG air conditioner connected via the LG ThinQ integration (a `climate` entity)
+*   Bedroom temperature sensors (e.g., Aqara) — the control target
+*   An outdoor temperature sensor
+*   A weather entity with an **hourly** forecast — Met.no or Open-Meteo (**not Buienradar** — it has no hourly forecast)
+*   An `input_number` helper to persist the self-learned lead-time bias
+*   Optional: an `input_boolean` for the vacation toggle; the AC's sound `switch`
+
+See `requirements_bedroom_precool.md` for the detailed design.
+
+### Installation
+1. Click the button below to import this blueprint into your Home Assistant instance:
+
+[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fleviemartin%2FBlueprints_Home%2Fmain%2Fbedroom_precool.yaml)
+
+2. Or manually copy this URL into the Blueprints configuration:
+`https://raw.githubusercontent.com/leviemartin/Blueprints_Home/main/bedroom_precool.yaml`
+
 ---
 *Created by Martin Levie (Gemini CLI Agent)*

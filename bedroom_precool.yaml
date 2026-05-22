@@ -1,0 +1,1178 @@
+blueprint:
+  name: "Bedroom Sleep Pre-Cool v1.0.0"
+  description: >
+    **Version: 1.0.0**
+
+    Predictive pre-cooling of bedrooms via a single hall LG air conditioner.
+    Reaches an ideal sleep temperature by a fixed bedtime, then holds the room
+    quietly overnight within a strict beep budget, with a self-learning
+    lead-time prediction.
+
+    LG ACs beep on every command sent over ThinQ — a firmware tone that cannot
+    be silenced in software. This blueprint therefore treats AC commands as a
+    scarce resource after bedtime: it adjusts freely *before* bedtime, locks a
+    maintaining setpoint *at* bedtime, permits at most one corrective command at
+    a deep-night checkpoint, and turns the AC off at wake.
+
+    The AC is in the hall, not the bedrooms — cold air migrates through open
+    doors. Cooling is therefore indirect and laggy, so the turn-on time is
+    *predicted* from indoor gap, hourly weather forecast, and solar gain, with a
+    self-learning bias that auto-corrects from each night's observed outcome.
+
+    **Features:**
+    - 6-phase stateless daily state machine (DAY-OFF, PRECOOL, BEDTIME-LOCK,
+      NIGHT-HOLD, DEEP-NIGHT-CHECK, DEEP-HOLD)
+    - Predictive turn-on: transparent linear lead-time formula
+      (indoor gap + forecast outdoor + solar) recomputed every minute
+    - Self-learning lead-time bias persisted in an input_number helper
+    - Closed-loop pre-cool on the warmest bedroom (DRIVE / HOLD sub-states)
+    - Strict beep budget: 0-2 commands after bedtime
+    - Opt-in humidity-aware dry mode (default off — cool is the proven path)
+    - Idempotent service calls — a stray command is a stray beep
+    - Vacation toggle, manual-run debug notification
+
+    **Requirements:**
+    - Home Assistant Core 2025.7+ (LG ThinQ set_temperature fix, PR #147008)
+    - One LG AC connected via the LG ThinQ integration (a `climate` entity)
+    - Bedroom temperature sensors (e.g., Aqara) — the control target
+    - An outdoor temperature sensor
+    - A weather entity that provides an HOURLY forecast — Met.no or Open-Meteo
+      (Buienradar has no hourly forecast and will not work)
+    - An input_number helper to persist the self-learned lead-time bias
+
+  domain: automation
+  input:
+    # =======================================================
+    # GROUP 1 — DEVICES & SENSORS
+    # =======================================================
+    ac_climate:
+      name: LG AC Climate Entity
+      description: The climate entity for the hall LG air conditioner (LG ThinQ integration).
+      selector:
+        entity:
+          domain: climate
+    bedroom_temp_sensors:
+      name: Bedroom Temperature Sensors
+      description: >
+        One or more in-room temperature sensors (e.g., Aqara). These are the
+        control target — the blueprint cools until the warmest bedroom reaches
+        the ideal temperature.
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+          multiple: true
+    bedroom_humidity_sensors:
+      name: Bedroom Humidity Sensors (Optional)
+      description: >
+        In-room humidity sensors. Only used when Enable Dry Mode is on; drives
+        the cool-vs-dry choice. Leave empty if not using dry mode.
+      default: []
+      selector:
+        entity:
+          domain: sensor
+          device_class: humidity
+          multiple: true
+    outdoor_temp_sensor:
+      name: Outdoor Temperature Sensor
+      description: An outdoor temperature sensor entity — heat-load term and forecast fallback.
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    weather_entity:
+      name: Weather Entity (hourly forecast)
+      description: >
+        A weather entity that supports an HOURLY forecast — Met.no (HA default,
+        keyless) or Open-Meteo. Buienradar provides only a daily forecast and
+        must NOT be used here. The forecast anticipates the evening heat load.
+      selector:
+        entity:
+          domain: weather
+    sun_entity:
+      name: Sun Entity
+      description: The built-in sun entity — provides the solar-gain term. Leave as the default.
+      default: sun.sun
+      selector:
+        entity:
+          domain: sun
+    lead_bias_helper:
+      name: Lead-Time Bias Helper (input_number)
+      description: >
+        An input_number helper the blueprint uses to persist its self-learned
+        lead-time correction (minutes) across restarts. Create one via
+        Settings -> Devices & Services -> Helpers -> Number, range roughly
+        -60 to 120, step 1. Required when Enable Auto-Learn is on.
+      default: []
+      selector:
+        entity:
+          domain: input_number
+          multiple: true
+    ac_sound_switch:
+      name: AC Sound Switch (Optional)
+      description: >
+        The switch entity for the LG AC beep sound, if exposed. The blueprint
+        keeps it muted. Leave empty if not available.
+      default: []
+      selector:
+        entity:
+          domain: switch
+          multiple: true
+
+    # =======================================================
+    # GROUP 2 — TARGET TEMPERATURES
+    # =======================================================
+    ideal_temp:
+      name: Ideal Sleep Temperature (°C)
+      description: >
+        The target temperature for the warmest bedroom by bedtime. 19 °C is
+        within the recommended child sleep range (16-20 °C, The Lullaby Trust).
+        The minimum is a 16 °C child-safety floor.
+      default: 19.0
+      selector:
+        number:
+          min: 16.0
+          max: 25.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    hall_offset:
+      name: Hall Cooling Offset (°C)
+      description: >
+        How much colder the hall AC must hold than the bedroom ideal, to push
+        cold air through the doorway. Indirect room-to-room cooling is
+        thermally weak, so this is typically 3-6 °C. Tune it using the overnight
+        drift reported in the debug notification.
+      default: 3.0
+      selector:
+        number:
+          min: 0.0
+          max: 10.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    drive_setpoint:
+      name: Drive Setpoint (°C)
+      description: >
+        The aggressive hall setpoint used while actively driving the bedrooms
+        down (DRIVE sub-state). Set this to the AC's minimum for the fastest
+        pre-cool — it is clamped to the AC's real min_temp at runtime.
+      default: 16.0
+      selector:
+        number:
+          min: 14.0
+          max: 22.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    tolerance:
+      name: Drift Tolerance (°C)
+      description: >
+        The dead band around the ideal temperature for the deep-night check
+        and the cool-vs-dry decision. A drift larger than this triggers the
+        single deep-night correction.
+      default: 1.5
+      selector:
+        number:
+          min: 0.5
+          max: 4.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    correction_step:
+      name: Deep-Night Correction Step (°C)
+      description: How far to nudge the hall setpoint at the single deep-night corrective command.
+      default: 1.5
+      selector:
+        number:
+          min: 0.5
+          max: 4.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    skip_threshold:
+      name: Cool-Day Skip Threshold (°C)
+      description: >
+        If the forecast peak stays below this and the bedrooms are already at
+        or below ideal, the AC never starts — the mild-day skip.
+      default: 22.0
+      selector:
+        number:
+          min: 16.0
+          max: 28.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    humidity_threshold:
+      name: Humidity Threshold (%)
+      description: >
+        Above this room humidity, dry mode is preferred over cool — only when
+        Enable Dry Mode is on and the temperature gap is small.
+      default: 65
+      selector:
+        number:
+          min: 40
+          max: 80
+          step: 1
+          unit_of_measurement: "%"
+
+    # =======================================================
+    # GROUP 3 — SCHEDULE
+    # =======================================================
+    bedtime:
+      name: Bedtime
+      description: The time the warmest bedroom should be at the ideal temperature.
+      default: "19:30:00"
+      selector:
+        time: {}
+    wake_time:
+      name: Wake Time
+      description: The time the AC is turned off in the morning.
+      default: "07:15:00"
+      selector:
+        time: {}
+    deep_night_check:
+      name: Deep-Night Check Time
+      description: >
+        The single overnight checkpoint (e.g., 01:00). If the warmest bedroom
+        has drifted outside ideal +/- tolerance, one corrective command fires
+        within a fixed 10-minute window after this time.
+      default: "01:00:00"
+      selector:
+        time: {}
+
+    # =======================================================
+    # GROUP 4 — PREDICTION TUNING
+    # =======================================================
+    base_minutes:
+      name: Base Lead Minutes
+      description: The fixed baseline lead time before any temperature or solar terms are added.
+      default: 20
+      selector:
+        number:
+          min: 0
+          max: 120
+          step: 1
+          unit_of_measurement: "min"
+    k_indoor:
+      name: Indoor Coefficient (min per °C)
+      description: >
+        Lead minutes added per °C the warmest bedroom is above ideal. This is
+        the dominant term — the indoor gap is what the AC must actually close.
+      default: 15
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 1
+          unit_of_measurement: "min/°C"
+    k_outdoor:
+      name: Outdoor Coefficient (min per °C)
+      description: >
+        Lead minutes added per °C the outdoor peak is above ideal. Deliberately
+        small — outdoor heat is a secondary leak correction, not a co-equal term.
+      default: 1.0
+      selector:
+        number:
+          min: 0
+          max: 15
+          step: 0.5
+          unit_of_measurement: "min/°C"
+    solar_max_minutes:
+      name: Solar Maximum Minutes
+      description: The maximum lead contribution from solar gain, at peak radiant load.
+      default: 45
+      selector:
+        number:
+          min: 0
+          max: 120
+          step: 1
+          unit_of_measurement: "min"
+    safety_margin_minutes:
+      name: Safety Margin Minutes
+      description: >
+        A fixed early bias. Starting early is cheap; missing bedtime is not —
+        so the estimate is biased early.
+      default: 25
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 1
+          unit_of_measurement: "min"
+    lead_cap_minutes:
+      name: Lead Cap Minutes
+      description: The hard upper bound on total lead time — the earliest the AC can ever start before bedtime.
+      default: 240
+      selector:
+        number:
+          min: 60
+          max: 360
+          step: 10
+          unit_of_measurement: "min"
+    solar_afternoon_only:
+      name: Solar — Afternoon Azimuths Only
+      description: >
+        When on, solar gain only contributes for post-solar-noon sun positions
+        (azimuth roughly 180-300°), capturing the low evening sun on west-facing
+        bedrooms while ignoring the morning sun.
+      default: true
+      selector:
+        boolean: {}
+    learn_gain:
+      name: Auto-Learn Gain
+      description: >
+        How aggressively the lead-time bias self-corrects each night. Higher
+        converges faster but overshoots more. 0.4 converges over ~3-6 nights.
+      default: 0.4
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.05
+
+    # =======================================================
+    # GROUP 5 — BEHAVIOUR
+    # =======================================================
+    sensor_strategy:
+      name: Bedroom Sensor Strategy
+      description: >
+        How to aggregate multiple bedroom sensors. 'max' (the warmest room)
+        guarantees every room reaches ideal; 'average' is gentler but can leave
+        the warmest room above ideal.
+      default: "max"
+      selector:
+        select:
+          options:
+            - label: "Warmest room (max)"
+              value: "max"
+            - label: "Average of rooms"
+              value: "average"
+    enable_fan_control:
+      name: Enable Fan Control
+      description: When on, the blueprint sets a high fan while driving and a normal fan while holding.
+      default: true
+      selector:
+        boolean: {}
+    enable_dry_mode:
+      name: Enable Dry Mode
+      description: >
+        When on, the blueprint may pick dry mode over cool when the room is
+        humid and the temperature gap is small. Default OFF — LG dry-mode
+        target-temperature behaviour is model-dependent; enable only after
+        verifying on the actual unit.
+      default: false
+      selector:
+        boolean: {}
+    enable_auto_learn:
+      name: Enable Auto-Learn
+      description: >
+        When on, the blueprint reads and updates the lead-time bias helper,
+        self-correcting the prediction from each cooling night's outcome.
+      default: true
+      selector:
+        boolean: {}
+
+    # =======================================================
+    # GROUP 6 — GLOBAL CONTROLS
+    # =======================================================
+    vacation_toggle:
+      name: Vacation Toggle (Optional)
+      description: "Optional input_boolean. When ON, the AC is forced off and the blueprint stands down."
+      default: []
+      selector:
+        entity:
+          domain: input_boolean
+          multiple: true
+    enable_notifications:
+      name: Enable Persistent Notifications
+      description: When on, fault and status persistent notifications are created.
+      default: true
+      selector:
+        boolean: {}
+
+mode: restart
+max_exceeded: silent
+
+# =============================================
+# TOP-LEVEL VARIABLES — !input pass-through
+# (matches bathroom_heating_rack / lg_ac_climate; guarantees every
+#  !input resolves at automation-creation time and is available
+#  everywhere below — including the action block)
+# =============================================
+variables:
+  # --- Group 1: devices & sensors ---
+  ac_climate: !input ac_climate
+  bedroom_temp_sensors: !input bedroom_temp_sensors
+  bedroom_humidity_sensors: !input bedroom_humidity_sensors
+  outdoor_temp_sensor: !input outdoor_temp_sensor
+  weather_entity: !input weather_entity
+  sun_entity: !input sun_entity
+  lead_bias_helper: !input lead_bias_helper
+  ac_sound_switch: !input ac_sound_switch
+  # --- Group 2: target temperatures ---
+  ideal_temp: !input ideal_temp
+  hall_offset: !input hall_offset
+  drive_setpoint: !input drive_setpoint
+  tolerance: !input tolerance
+  correction_step: !input correction_step
+  skip_threshold: !input skip_threshold
+  humidity_threshold: !input humidity_threshold
+  # --- Group 3: schedule ---
+  bedtime: !input bedtime
+  wake_time: !input wake_time
+  deep_night_check: !input deep_night_check
+  # --- Group 4: prediction tuning ---
+  base_minutes: !input base_minutes
+  k_indoor: !input k_indoor
+  k_outdoor: !input k_outdoor
+  solar_max_minutes: !input solar_max_minutes
+  safety_margin_minutes: !input safety_margin_minutes
+  lead_cap_minutes: !input lead_cap_minutes
+  solar_afternoon_only: !input solar_afternoon_only
+  learn_gain: !input learn_gain
+  # --- Group 5: behaviour ---
+  sensor_strategy: !input sensor_strategy
+  enable_fan_control: !input enable_fan_control
+  enable_dry_mode: !input enable_dry_mode
+  enable_auto_learn: !input enable_auto_learn
+  # --- Group 6: global controls ---
+  vacation_toggle: !input vacation_toggle
+  enable_notifications: !input enable_notifications
+
+trigger:
+  # T1: Periodic 1-minute tick — phase derivation, prediction, transitions
+  - platform: time_pattern
+    minutes: "/1"
+    id: periodic
+  # T2: Vacation toggle state change — instant disable / re-enable
+  - platform: state
+    entity_id: !input vacation_toggle
+    id: vacation_change
+  # T3: HA restart — reconcile phase after a restart
+  - platform: homeassistant
+    event: start
+    id: ha_start
+
+action:
+  # =============================================
+  # STEP 1: MUTE SOUND SWITCH (standalone pre-step)
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ ac_sound_switch not in [[], none, ''] and
+                 expand(ac_sound_switch) | selectattr('state', 'eq', 'on')
+                 | list | count > 0 }}
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: "{{ ac_sound_switch }}"
+
+  # =============================================
+  # STEP 2a: LIVE-STATE VARIABLES
+  # All variables computed inside action: so HA generates a trace
+  # entry on any template failure.
+  # =============================================
+  - variables:
+      now_dt: "{{ now() }}"
+      # True only on a real trigger (periodic / vacation_change / ha_start);
+      # a manual "Run" has no trigger.id. STEP 6's phase dispatch is gated on
+      # this so a manual Run is debug-inspect-only — it never actuates the AC
+      # nor double-applies the BEDTIME_LOCK auto-learn write. Matches the
+      # STEP 8 debug gate's `trigger.id | default('manual')` logic.
+      is_real_trigger: "{{ trigger.id is defined }}"
+      # --- Bedroom temperature aggregation (skip unavailable sensors) ---
+      bedroom_valid_temps: >-
+        {% set ns = namespace(vals=[]) %}
+        {% for s in bedroom_temp_sensors %}
+          {% set v = states(s) %}
+          {% if v not in ['unavailable', 'unknown', 'none', none]
+                and v | float(none) is not none %}
+            {% set ns.vals = ns.vals + [v | float] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.vals }}
+      bedroom_sensors_ok: "{{ bedroom_valid_temps | length > 0 }}"
+      warmest_bedroom: >-
+        {% if bedroom_valid_temps | length == 0 %}
+          {{ ideal_temp | float }}
+        {% elif sensor_strategy == 'average' %}
+          {{ ((bedroom_valid_temps | sum) / (bedroom_valid_temps | length)) | round(2) }}
+        {% else %}
+          {{ bedroom_valid_temps | max }}
+        {% endif %}
+      coldest_bedroom: >-
+        {% if bedroom_valid_temps | length == 0 %}
+          {{ ideal_temp | float }}
+        {% else %}
+          {{ bedroom_valid_temps | min }}
+        {% endif %}
+      # --- Bedroom humidity (only meaningful when dry mode enabled) ---
+      bedroom_valid_humidity: >-
+        {% set ns = namespace(vals=[]) %}
+        {% for s in bedroom_humidity_sensors %}
+          {% set v = states(s) %}
+          {% if v not in ['unavailable', 'unknown', 'none', none]
+                and v | float(none) is not none %}
+            {% set ns.vals = ns.vals + [v | float] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.vals }}
+      room_humidity: >-
+        {% if bedroom_valid_humidity | length == 0 %}
+          0
+        {% else %}
+          {{ bedroom_valid_humidity | max }}
+        {% endif %}
+      # --- Outdoor live reading ---
+      outdoor_now_raw: "{{ states(outdoor_temp_sensor) }}"
+      outdoor_now_ok: >-
+        {{ outdoor_now_raw not in ['unavailable', 'unknown', 'none', none]
+           and outdoor_now_raw | float(none) is not none }}
+      outdoor_now: "{{ outdoor_now_raw | float(ideal_temp | float) }}"
+      # --- AC live state ---
+      current_hvac_mode: "{{ states(ac_climate) }}"
+      ac_unavailable: "{{ current_hvac_mode in ['unavailable', 'unknown'] }}"
+      ac_is_running: "{{ current_hvac_mode not in ['off', 'unavailable', 'unknown'] }}"
+      # LG returns null setpoints in some non-cool modes — guard the read.
+      current_setpoint_raw: "{{ state_attr(ac_climate, 'temperature') }}"
+      current_setpoint_known: "{{ current_setpoint_raw not in [none, 'none', 'unknown', 'unavailable'] }}"
+      current_setpoint: "{{ current_setpoint_raw | float(ideal_temp | float) }}"
+      current_fan: "{{ state_attr(ac_climate, 'fan_modes') and state_attr(ac_climate, 'fan_mode') or 'unknown' }}"
+      # --- AC capability discovery (never hard-code) ---
+      ac_min_temp: "{{ state_attr(ac_climate, 'min_temp') | float(16) }}"
+      ac_max_temp: "{{ state_attr(ac_climate, 'max_temp') | float(30) }}"
+      ac_fan_modes: "{{ state_attr(ac_climate, 'fan_modes') | default([], true) }}"
+      ac_hvac_modes: "{{ state_attr(ac_climate, 'hvac_modes') | default([], true) }}"
+      # --- Vacation ---
+      vacation_active: >-
+        {% if vacation_toggle is iterable and vacation_toggle | length > 0 %}
+          {{ expand(vacation_toggle) | selectattr('state', 'eq', 'on')
+             | list | length > 0 }}
+        {% else %}
+          false
+        {% endif %}
+
+  # =============================================
+  # STEP 2b: FORECAST FETCH (periodic, ~every 15 min during DAY-OFF)
+  # weather.get_forecasts is the PLURAL current action — the singular
+  # weather.get_forecast was deprecated. Fetched into a response
+  # variable, then forecast_max is templated from it.
+  # =============================================
+  - variables:
+      # Fetch only near a 15-minute boundary (minute mod 15 == 0) AND only
+      # during the daytime wake -> bedtime window — the forecast result is
+      # consumed by DAY_OFF alone, so fetching it overnight is pure waste.
+      # Between fetches the live outdoor sensor carries the prediction.
+      forecast_fetch_due: >-
+        {{ (now().minute | int) % 15 == 0
+           and now().strftime('%H:%M:%S') >= wake_time
+           and now().strftime('%H:%M:%S') < bedtime }}
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ forecast_fetch_due }}"
+        sequence:
+          # continue_on_error: a weather-entity failure must not abort the
+          # whole action run — the forecast_daily_fallback -> outdoor_now
+          # chain below handles a missing/empty response.
+          - service: weather.get_forecasts
+            continue_on_error: true
+            target:
+              entity_id: "{{ weather_entity }}"
+            data:
+              type: hourly
+            response_variable: hourly_forecast_resp
+  - variables:
+      # Source the forecast list straight from the service response_variable —
+      # a response_variable has well-defined run scope, so no choose-branch
+      # variable leaks across the boundary. On a non-fetch tick the fetch
+      # branch never ran, so hourly_forecast_resp is simply undefined; the
+      # `is defined` guard then yields the empty-list path. Filter forecast
+      # entries to the window now -> bedtime, take the max temperature.
+      forecast_list_safe: >-
+        {{ hourly_forecast_resp[weather_entity].forecast
+           if hourly_forecast_resp is defined
+              and hourly_forecast_resp is mapping
+              and weather_entity in hourly_forecast_resp
+              and hourly_forecast_resp[weather_entity].forecast is defined
+           else [] }}
+      bedtime_dt: >-
+        {% set bt = today_at(bedtime) %}
+        {{ bt if bt >= now() else bt + timedelta(days=1) }}
+      forecast_window_temps: >-
+        {% set ns = namespace(vals=[]) %}
+        {% for f in forecast_list_safe %}
+          {% set ts = f.datetime | default(none) %}
+          {% set tp = f.temperature | default(none) %}
+          {% if ts is not none and tp is not none %}
+            {% set fdt = as_datetime(ts) %}
+            {% if fdt is not none and fdt >= now() and fdt <= bedtime_dt %}
+              {% set ns.vals = ns.vals + [tp | float] %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.vals }}
+      forecast_daily_fallback: >-
+        {% set d = state_attr(weather_entity, 'forecast') %}
+        {% if d is iterable and d is not string and d | length > 0 %}
+          {{ d[0].temperature | float(outdoor_now | float) }}
+        {% else %}
+          {{ outdoor_now | float }}
+        {% endif %}
+      forecast_max: >-
+        {% if forecast_window_temps | length > 0 %}
+          {{ forecast_window_temps | max }}
+        {% else %}
+          {{ [forecast_daily_fallback | float, outdoor_now | float] | max }}
+        {% endif %}
+
+  # =============================================
+  # STEP 2c: PREDICTION & PHASE VARIABLES
+  # =============================================
+  - variables:
+      # --- Solar-gain factor (0..1 from sun elevation + azimuth) ---
+      sun_elevation: "{{ state_attr(sun_entity, 'elevation') | float(0) }}"
+      sun_azimuth: "{{ state_attr(sun_entity, 'azimuth') | float(0) }}"
+      solar_elevation_factor: >-
+        {{ [1.0, [0.0, (sun_elevation | float) / 35.0] | max] | min }}
+      solar_azimuth_ok: >-
+        {% if not solar_afternoon_only %}
+          true
+        {% else %}
+          {{ sun_azimuth | float >= 180 and sun_azimuth | float <= 300 }}
+        {% endif %}
+      solar_load: >-
+        {% if sun_elevation | float <= 0 or not solar_azimuth_ok %}
+          0
+        {% else %}
+          {{ solar_elevation_factor | float | round(3) }}
+        {% endif %}
+      # --- Lead-time inputs ---
+      delta_in: "{{ [0, warmest_bedroom | float - ideal_temp | float] | max }}"
+      outdoor_for_lead: "{{ [forecast_max | float, outdoor_now | float] | max }}"
+      delta_out: "{{ [0, outdoor_for_lead | float - ideal_temp | float] | max }}"
+      # --- Auto-learn bias: read the helper every tick when enabled ---
+      lead_bias_entity: >-
+        {% if lead_bias_helper is iterable and lead_bias_helper is not string
+              and lead_bias_helper | length > 0 %}
+          {{ lead_bias_helper[0] }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
+      lead_bias_configured: "{{ lead_bias_entity != '' }}"
+      lead_bias: >-
+        {% if enable_auto_learn and lead_bias_configured %}
+          {{ states(lead_bias_entity) | float(0) }}
+        {% else %}
+          0
+        {% endif %}
+      # --- Lead-time formula (transparent linear blend), then clamp ---
+      lead_raw: >-
+        {{ (base_minutes | float)
+           + (k_indoor | float) * (delta_in | float)
+           + (k_outdoor | float) * (delta_out | float)
+           + (solar_max_minutes | float) * (solar_load | float)
+           + (safety_margin_minutes | float)
+           + (lead_bias | float) }}
+      lead: "{{ [[lead_raw | float, 0] | max, lead_cap_minutes | float] | min | round(0) | int }}"
+      # --- Cool-day skip gate (consulted in DAY-OFF only) ---
+      cooling_needed: >-
+        {{ warmest_bedroom | float > ideal_temp | float
+           or forecast_max | float > skip_threshold | float }}
+      # --- Schedule boundaries as time-of-day strings (HH:MM:SS).
+      # Phase derivation compares time-of-day so the overnight window
+      # (bedtime -> wake, spanning midnight) is handled without any
+      # date arithmetic. turn_on is the only moving boundary; it is
+      # carried as a same-day datetime purely for the debug dump. ---
+      now_tod: "{{ now().strftime('%H:%M:%S') }}"
+      wake_tod: "{{ wake_time }}"
+      bedtime_tod: "{{ bedtime }}"
+      lock_tod: >-
+        {{ (today_at(bedtime) - timedelta(minutes=1)).strftime('%H:%M:%S') }}
+      deep_tod: "{{ deep_night_check }}"
+      deep_end_tod: >-
+        {{ (today_at(deep_night_check) + timedelta(minutes=10)).strftime('%H:%M:%S') }}
+      turn_on_dt: "{{ today_at(bedtime) - timedelta(minutes=lead | int) }}"
+      turn_on_tod: "{{ turn_on_dt.strftime('%H:%M:%S') }}"
+      # --- Phase derivation (all time-of-day string comparisons) ---
+      # The "day side" of the schedule runs wake -> bedtime_lock.
+      on_day_side: "{{ wake_tod <= now_tod and now_tod < lock_tod }}"
+      in_lock_window: "{{ lock_tod <= now_tod and now_tod < bedtime_tod }}"
+      in_deep_check: "{{ deep_tod <= now_tod and now_tod < deep_end_tod }}"
+      in_deep_hold: "{{ deep_end_tod <= now_tod and now_tod < wake_tod }}"
+      # NIGHT_HOLD is the phase-derivation else branch (after bedtime, before
+      # the deep-night check) — no explicit variable is needed for it.
+      # PRECOOL begins only when cooling is needed AND now >= turn_on;
+      # once the AC is running it STAYS PRECOOL (one-way latch) even if a
+      # recomputed lead pushes turn_on later. The running AC IS the
+      # persisted "PRECOOL has started" bit — stateless and restart-safe.
+      precool_started: "{{ (cooling_needed and now_tod >= turn_on_tod) or ac_is_running }}"
+      in_precool_window: "{{ on_day_side and precool_started }}"
+      in_day_off: "{{ on_day_side and not precool_started }}"
+      # Single-lined: a folded scalar leaves trailing whitespace between a
+      # token and the next tag, and this value feeds == comparisons.
+      phase: "{% if in_lock_window %}BEDTIME_LOCK{% elif in_precool_window %}PRECOOL{% elif in_deep_check %}DEEP_NIGHT_CHECK{% elif in_deep_hold %}DEEP_HOLD{% elif in_day_off %}DAY_OFF{% else %}NIGHT_HOLD{% endif %}"
+      # --- PRECOOL sub-state ---
+      precool_substate: >-
+        {% if warmest_bedroom | float > ideal_temp | float %}DRIVE{% else %}HOLD{% endif %}
+      # --- Setpoints, all clamped to the AC's discovered min/max ---
+      effective_drive: >-
+        {{ [[drive_setpoint | float, ac_min_temp | float] | max,
+            ac_max_temp | float] | min }}
+      maintaining_setpoint: >-
+        {{ [[ideal_temp | float - hall_offset | float, ac_min_temp | float] | max,
+            ac_max_temp | float] | min }}
+      # --- Cool vs dry mode (only chosen while beeps are free) ---
+      # Single-lined: this value feeds == comparisons and hvac_mode:; a
+      # folded scalar would leave trailing whitespace on the rendered token.
+      # The dry branch additionally requires the AC to advertise 'dry' in its
+      # discovered hvac_modes — otherwise it falls through to cool.
+      desired_mode: "{% if not enable_dry_mode %}cool{% elif warmest_bedroom | float > ideal_temp | float + tolerance | float %}cool{% elif room_humidity | float > humidity_threshold | float and 'dry' in ac_hvac_modes %}dry{% else %}cool{% endif %}"
+      # --- Fan modes discovered from the entity ---
+      fan_high: >-
+        {% set m = ac_fan_modes %}
+        {% set ns = namespace(found='') %}
+        {% for c in ['Power', 'Turbo', 'High', 'high', '4', '3'] if c in m %}
+          {% if ns.found == '' %}{% set ns.found = c %}{% endif %}
+        {% endfor %}
+        {{ ns.found if ns.found != '' else (m[-1] if m | length > 0 else 'high') }}
+      fan_normal: >-
+        {% set m = ac_fan_modes %}
+        {% set ns = namespace(found='') %}
+        {% for c in ['Mid', 'Medium', 'mid', 'medium', 'Auto', 'auto', '2'] if c in m %}
+          {% if ns.found == '' %}{% set ns.found = c %}{% endif %}
+        {% endfor %}
+        {{ ns.found if ns.found != '' else (m[0] if m | length > 0 else 'auto') }}
+
+  # =============================================
+  # STEP 3: RUNTIME (CONFIG) VALIDATION
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ drive_setpoint | float >= ideal_temp | float
+                 or hall_offset | float < 0
+                 or bedtime == wake_time
+                 or wake_time >= bedtime
+                 or deep_night_check >= wake_time }}
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ enable_notifications }}"
+                sequence:
+                  - service: persistent_notification.create
+                    data:
+                      title: "Bedroom Pre-Cool — Configuration Error"
+                      message: >
+                        Invalid configuration detected. Check that Drive
+                        Setpoint ({{ drive_setpoint }}°C) is below Ideal
+                        Temperature ({{ ideal_temp }}°C), Hall Offset
+                        ({{ hall_offset }}°C) is not negative, and the schedule
+                        is ordered correctly: Wake Time ({{ wake_time }}) must
+                        be before Bedtime ({{ bedtime }}), and the Deep-Night
+                        Check ({{ deep_night_check }}) must fall in the small
+                        hours before Wake Time. Control is paused until
+                        corrected.
+                      notification_id: "bedroom_precool_config_error"
+          - stop: "Configuration error"
+
+  # =============================================
+  # STEP 4: VACATION OVERRIDE
+  # Before sensor validation — turning the AC off does not depend on
+  # bedroom-sensor health.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ vacation_active }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ not ac_unavailable and ac_is_running }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ ac_climate }}"
+          - stop: "Vacation active"
+
+  # =============================================
+  # STEP 5: SENSOR / ENTITY VALIDATION
+  # =============================================
+  - choose:
+      # AC entity unavailable — skip this tick, retry next minute.
+      - conditions:
+          - condition: template
+            value_template: "{{ ac_unavailable }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ enable_notifications }}"
+                sequence:
+                  - service: persistent_notification.create
+                    data:
+                      title: "Bedroom Pre-Cool — AC Unavailable"
+                      message: >
+                        {{ ac_climate }} is {{ current_hvac_mode }}. Skipping
+                        this cycle; will retry next minute.
+                      notification_id: "bedroom_precool_ac_unavailable"
+          - stop: "AC entity unavailable"
+      # No valid bedroom temperature sensor — hold state, warn.
+      - conditions:
+          - condition: template
+            value_template: "{{ not bedroom_sensors_ok }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ enable_notifications }}"
+                sequence:
+                  - service: persistent_notification.create
+                    data:
+                      title: "Bedroom Pre-Cool — No Bedroom Sensor"
+                      message: >
+                        All bedroom temperature sensors are unavailable. The
+                        blueprint is holding the current AC state until a
+                        sensor recovers.
+                      notification_id: "bedroom_precool_sensor_warning"
+          - stop: "No valid bedroom temperature sensor"
+
+  # =============================================
+  # STEP 5b: OVERCOOLING FAULT (child-safety floor)
+  # Informational only — does not stop the cycle.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ enable_notifications and coldest_bedroom | float < 16 }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Bedroom Pre-Cool — Overcooling Fault"
+              message: >
+                A bedroom sensor reads {{ coldest_bedroom }}°C, below the 16°C
+                child-safety floor. Check AC operation and sensor placement.
+                If inside the deep-night check window the blueprint will
+                correct upward.
+              notification_id: "bedroom_precool_overcool_fault"
+
+  # =============================================
+  # STEP 6: PHASE DISPATCH — exactly one phase acts.
+  # Each acting branch resolves desired setpoint/mode/fan, then issues
+  # only idempotent service calls (a stray call is a stray beep).
+  # NIGHT_HOLD and DEEP_HOLD are deliberately EMPTY (zero service calls).
+  #
+  # The whole 6-branch dispatch is gated on is_real_trigger: a manual "Run"
+  # has no trigger.id, so it computes everything and shows the STEP 8 debug
+  # dump but NEVER actuates the AC nor double-applies the BEDTIME_LOCK
+  # auto-learn write. STEP 1-5, 7 and 8 are unchanged on a manual Run.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_real_trigger }}"
+        sequence:
+          - choose:
+              # ---------- DAY_OFF: ensure the AC is off ----------
+              - conditions:
+                  - condition: template
+                    value_template: "{{ phase == 'DAY_OFF' }}"
+                sequence:
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ ac_is_running }}"
+                        sequence:
+                          - service: climate.turn_off
+                            target:
+                              entity_id: "{{ ac_climate }}"
+
+              # ---------- PRECOOL: closed-loop drive / hold ----------
+              - conditions:
+                  - condition: template
+                    value_template: "{{ phase == 'PRECOOL' }}"
+                sequence:
+                  - variables:
+                      precool_setpoint: >-
+                        {% if precool_substate == 'DRIVE' %}
+                          {{ effective_drive | float }}
+                        {% else %}
+                          {{ maintaining_setpoint | float }}
+                        {% endif %}
+                      precool_fan: >-
+                        {% if precool_substate == 'DRIVE' %}
+                          {{ fan_high }}
+                        {% else %}
+                          {{ fan_normal }}
+                        {% endif %}
+                  # 1. Ensure the unit is running and in the desired mode.
+                  #    set_hvac_mode fails on a powered-off LG unit, so turn_on
+                  #    first when off, then set the mode while it is running.
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ not ac_is_running }}"
+                        sequence:
+                          - service: climate.turn_on
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                  # Mode guard intentionally omits the `ac_is_running` precondition:
+                  # ac_is_running was captured in STEP 2 before this branch's
+                  # climate.turn_on ran, so on a first-tick-from-off it is stale
+                  # `false`. climate.turn_on always precedes this call when the unit
+                  # was off, so the unit IS on by now; the stale current_hvac_mode
+                  # ('off') still differs from desired_mode ('cool'), so the mode is
+                  # set the same tick instead of waiting for the next minute.
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: >-
+                              {{ current_hvac_mode != desired_mode }}
+                        sequence:
+                          - service: climate.set_hvac_mode
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              hvac_mode: "{{ desired_mode }}"
+                  # 2. Then set the temperature (separate, sequenced call).
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: >-
+                              {{ (not current_setpoint_known)
+                                 or (current_setpoint | float - precool_setpoint | float)
+                                    | abs > 0.1 }}
+                        sequence:
+                          - service: climate.set_temperature
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              temperature: "{{ precool_setpoint | float }}"
+                  # 3. Fan, only if fan control is enabled and there is a delta.
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: >-
+                              {{ enable_fan_control
+                                 and ac_fan_modes | length > 0
+                                 and current_fan != precool_fan }}
+                        sequence:
+                          - service: climate.set_fan_mode
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              fan_mode: "{{ precool_fan }}"
+
+              # ---------- BEDTIME_LOCK: one locking command + auto-learn write ----------
+              - conditions:
+                  - condition: template
+                    value_template: "{{ phase == 'BEDTIME_LOCK' }}"
+                sequence:
+                  # Only act on an already-running AC (cool-day no-op otherwise).
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ ac_is_running }}"
+                        sequence:
+                          # Lock the maintaining setpoint (mode first, then temp).
+                          - choose:
+                              - conditions:
+                                  - condition: template
+                                    value_template: "{{ current_hvac_mode != desired_mode }}"
+                                sequence:
+                                  - service: climate.set_hvac_mode
+                                    target:
+                                      entity_id: "{{ ac_climate }}"
+                                    data:
+                                      hvac_mode: "{{ desired_mode }}"
+                          - choose:
+                              - conditions:
+                                  - condition: template
+                                    value_template: >-
+                                      {{ (not current_setpoint_known)
+                                         or (current_setpoint | float
+                                             - maintaining_setpoint | float)
+                                            | abs > 0.1 }}
+                                sequence:
+                                  - service: climate.set_temperature
+                                    target:
+                                      entity_id: "{{ ac_climate }}"
+                                    data:
+                                      temperature: "{{ maintaining_setpoint | float }}"
+                          - choose:
+                              - conditions:
+                                  - condition: template
+                                    value_template: >-
+                                      {{ enable_fan_control
+                                         and ac_fan_modes | length > 0
+                                         and current_fan != fan_normal }}
+                                sequence:
+                                  - service: climate.set_fan_mode
+                                    target:
+                                      entity_id: "{{ ac_climate }}"
+                                    data:
+                                      fan_mode: "{{ fan_normal }}"
+                          # Auto-learn helper write — beep-free (an input_number,
+                          # not the AC). Only on a cooling night (AC running).
+                          - choose:
+                              - conditions:
+                                  - condition: template
+                                    value_template: "{{ enable_auto_learn and lead_bias_configured }}"
+                                sequence:
+                                  - variables:
+                                      bedtime_error: "{{ warmest_bedroom | float - ideal_temp | float }}"
+                                      new_bias_raw: >-
+                                        {{ (lead_bias | float)
+                                           + (learn_gain | float)
+                                             * (bedtime_error | float)
+                                             * (k_indoor | float) }}
+                                      # round(0) | int — the lead_bias_helper input_number
+                                      # is created with step 1, so the written value must be
+                                      # a whole number to match the helper's step.
+                                      new_bias: "{{ [[new_bias_raw | float, -60] | max, 120] | min | round(0) | int }}"
+                                  - service: input_number.set_value
+                                    target:
+                                      entity_id: "{{ lead_bias_entity }}"
+                                    data:
+                                      value: "{{ new_bias | float }}"
+
+              # ---------- DEEP_NIGHT_CHECK: at most one corrective command ----------
+              - conditions:
+                  - condition: template
+                    value_template: "{{ phase == 'DEEP_NIGHT_CHECK' }}"
+                sequence:
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ ac_is_running }}"
+                        sequence:
+                          - variables:
+                              deep_drift: "{{ warmest_bedroom | float - ideal_temp | float }}"
+                              # Target is derived from the STABLE maintaining_setpoint —
+                              # NOT the moving current_setpoint. The periodic trigger runs
+                              # this branch ~10 times across the 10-minute window;
+                              # maintaining_setpoint is deterministic on every tick, so the
+                              # abs(current_setpoint - deep_target_setpoint) > 0.1
+                              # idempotency guard genuinely caps the correction at exactly
+                              # one climate.set_temperature call. Single-lined to avoid a
+                              # folded-scalar trailing-whitespace artifact.
+                              deep_target_setpoint: "{% if deep_drift | float > tolerance | float %}{{ [[maintaining_setpoint | float - correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min }}{% elif deep_drift | float < (0 - tolerance | float) %}{{ [[maintaining_setpoint | float + correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min }}{% else %}{{ maintaining_setpoint | float }}{% endif %}"
+                          - choose:
+                              - conditions:
+                                  - condition: template
+                                    value_template: >-
+                                      {{ current_setpoint_known
+                                         and (deep_drift | float | abs) > (tolerance | float)
+                                         and (current_setpoint | float
+                                              - deep_target_setpoint | float)
+                                             | abs > 0.1 }}
+                                sequence:
+                                  - service: climate.set_temperature
+                                    target:
+                                      entity_id: "{{ ac_climate }}"
+                                    data:
+                                      temperature: "{{ deep_target_setpoint | float }}"
+
+              # ---------- NIGHT_HOLD: deliberately empty (zero service calls) ----------
+              - conditions:
+                  - condition: template
+                    value_template: "{{ phase == 'NIGHT_HOLD' }}"
+                sequence: []
+
+              # ---------- DEEP_HOLD: deliberately empty (zero service calls) ----------
+              - conditions:
+                  - condition: template
+                    value_template: "{{ phase == 'DEEP_HOLD' }}"
+                sequence: []
+
+  # =============================================
+  # STEP 7a: LEAD-BIAS-HELPER NOT CONFIGURED — one-time notice
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ enable_notifications and enable_auto_learn
+                 and not lead_bias_configured }}
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Bedroom Pre-Cool — Auto-Learn Helper Missing"
+              message: >
+                Auto-Learn is enabled but no Lead-Time Bias Helper is
+                configured. The blueprint still runs with a zero bias.
+                Create an input_number helper and select it to enable
+                self-learning.
+              notification_id: "bedroom_precool_no_bias_helper"
+
+  # =============================================
+  # STEP 7b: FORECAST UNAVAILABLE — informational notice
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ enable_notifications and phase == 'DAY_OFF'
+                 and forecast_window_temps | length == 0
+                 and not outdoor_now_ok }}
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Bedroom Pre-Cool — Forecast & Outdoor Unavailable"
+              message: >
+                Neither an hourly forecast nor the outdoor sensor is available.
+                The prediction is leaning on the indoor gap and solar term only
+                until one recovers.
+              notification_id: "bedroom_precool_forecast_warning"
+
+  # =============================================
+  # STEP 8: DEBUG NOTIFICATION (manual run only)
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id | default('manual') == 'manual' }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Bedroom Pre-Cool Debug — {{ now().strftime('%H:%M:%S') }}"
+              message: >
+                **Phase:** {{ phase }}
+                {% if phase == 'PRECOOL' %}({{ precool_substate }}){% endif %}
+
+                **Warmest bedroom:** {{ warmest_bedroom }}°C
+                | **Coldest:** {{ coldest_bedroom }}°C
+                | **Ideal:** {{ ideal_temp }}°C
+
+                **Humidity (max):** {{ room_humidity }}%
+                | **Outdoor now:** {{ outdoor_now }}°C (ok={{ outdoor_now_ok }})
+
+                **ΔT indoor:** {{ delta_in }}°C
+                | **ΔT outdoor:** {{ delta_out }}°C
+                | **forecast_max:** {{ forecast_max }}°C
+
+                **Solar load:** {{ solar_load }}
+                (elev {{ sun_elevation }}°, azim {{ sun_azimuth }}°)
+
+                **lead_bias:** {{ lead_bias }} min
+                (configured={{ lead_bias_configured }})
+
+                **lead:** {{ lead }} min
+                | **turn_on:** {{ turn_on_dt.strftime('%H:%M') }}
+                | **bedtime:** {{ bedtime_dt.strftime('%H:%M') }}
+
+                **cooling_needed:** {{ cooling_needed }}
+
+                **AC:** mode={{ current_hvac_mode }},
+                running={{ ac_is_running }},
+                setpoint={{ current_setpoint }}°C (known={{ current_setpoint_known }}),
+                fan={{ current_fan }}
+
+                **AC limits:** min={{ ac_min_temp }}°C, max={{ ac_max_temp }}°C
+
+                **maintaining_setpoint:** {{ maintaining_setpoint }}°C
+                | **effective_drive:** {{ effective_drive }}°C
+
+                **desired_mode:** {{ desired_mode }}
+                | **vacation:** {{ vacation_active }}
+              notification_id: "bedroom_precool_debug"
