@@ -448,4 +448,103 @@ trigger:
     event: start
     id: ha_start
 
-action: []
+action:
+  # =============================================
+  # STEP 1: MUTE SOUND SWITCH (standalone pre-step)
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ ac_sound_switch not in [[], none, ''] and
+                 expand(ac_sound_switch) | selectattr('state', 'eq', 'on')
+                 | list | count > 0 }}
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: "{{ ac_sound_switch }}"
+
+  # =============================================
+  # STEP 2a: LIVE-STATE VARIABLES
+  # All variables computed inside action: so HA generates a trace
+  # entry on any template failure.
+  # =============================================
+  - variables:
+      now_dt: "{{ now() }}"
+      # True only on a real trigger (periodic / vacation_change / ha_start);
+      # a manual "Run" has no trigger.id. STEP 6's phase dispatch is gated on
+      # this so a manual Run is debug-inspect-only — it never actuates the AC
+      # nor double-applies the BEDTIME_LOCK auto-learn write. Matches the
+      # STEP 8 debug gate's `trigger.id | default('manual')` logic.
+      is_real_trigger: "{{ trigger.id is defined }}"
+      # --- Bedroom temperature aggregation (skip unavailable sensors) ---
+      bedroom_valid_temps: >-
+        {% set ns = namespace(vals=[]) %}
+        {% for s in bedroom_temp_sensors %}
+          {% set v = states(s) %}
+          {% if v not in ['unavailable', 'unknown', 'none', none]
+                and v | float(none) is not none %}
+            {% set ns.vals = ns.vals + [v | float] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.vals }}
+      bedroom_sensors_ok: "{{ bedroom_valid_temps | length > 0 }}"
+      warmest_bedroom: >-
+        {% if bedroom_valid_temps | length == 0 %}
+          {{ ideal_temp | float }}
+        {% elif sensor_strategy == 'average' %}
+          {{ ((bedroom_valid_temps | sum) / (bedroom_valid_temps | length)) | round(2) }}
+        {% else %}
+          {{ bedroom_valid_temps | max }}
+        {% endif %}
+      coldest_bedroom: >-
+        {% if bedroom_valid_temps | length == 0 %}
+          {{ ideal_temp | float }}
+        {% else %}
+          {{ bedroom_valid_temps | min }}
+        {% endif %}
+      # --- Bedroom humidity (only meaningful when dry mode enabled) ---
+      bedroom_valid_humidity: >-
+        {% set ns = namespace(vals=[]) %}
+        {% for s in bedroom_humidity_sensors %}
+          {% set v = states(s) %}
+          {% if v not in ['unavailable', 'unknown', 'none', none]
+                and v | float(none) is not none %}
+            {% set ns.vals = ns.vals + [v | float] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.vals }}
+      room_humidity: >-
+        {% if bedroom_valid_humidity | length == 0 %}
+          0
+        {% else %}
+          {{ bedroom_valid_humidity | max }}
+        {% endif %}
+      # --- Outdoor live reading ---
+      outdoor_now_raw: "{{ states(outdoor_temp_sensor) }}"
+      outdoor_now_ok: >-
+        {{ outdoor_now_raw not in ['unavailable', 'unknown', 'none', none]
+           and outdoor_now_raw | float(none) is not none }}
+      outdoor_now: "{{ outdoor_now_raw | float(ideal_temp | float) }}"
+      # --- AC live state ---
+      current_hvac_mode: "{{ states(ac_climate) }}"
+      ac_unavailable: "{{ current_hvac_mode in ['unavailable', 'unknown'] }}"
+      ac_is_running: "{{ current_hvac_mode not in ['off', 'unavailable', 'unknown'] }}"
+      # LG returns null setpoints in some non-cool modes — guard the read.
+      current_setpoint_raw: "{{ state_attr(ac_climate, 'temperature') }}"
+      current_setpoint_known: "{{ current_setpoint_raw not in [none, 'none', 'unknown', 'unavailable'] }}"
+      current_setpoint: "{{ current_setpoint_raw | float(ideal_temp | float) }}"
+      current_fan: "{{ state_attr(ac_climate, 'fan_modes') and state_attr(ac_climate, 'fan_mode') or 'unknown' }}"
+      # --- AC capability discovery (never hard-code) ---
+      ac_min_temp: "{{ state_attr(ac_climate, 'min_temp') | float(16) }}"
+      ac_max_temp: "{{ state_attr(ac_climate, 'max_temp') | float(30) }}"
+      ac_fan_modes: "{{ state_attr(ac_climate, 'fan_modes') | default([], true) }}"
+      ac_hvac_modes: "{{ state_attr(ac_climate, 'hvac_modes') | default([], true) }}"
+      # --- Vacation ---
+      vacation_active: >-
+        {% if vacation_toggle is iterable and vacation_toggle | length > 0 %}
+          {{ expand(vacation_toggle) | selectattr('state', 'eq', 'on')
+             | list | length > 0 }}
+        {% else %}
+          false
+        {% endif %}
