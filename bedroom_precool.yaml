@@ -740,3 +740,118 @@ action:
           {% if ns.found == '' %}{% set ns.found = c %}{% endif %}
         {% endfor %}
         {{ ns.found if ns.found != '' else (m[0] if m | length > 0 else 'auto') }}
+
+  # =============================================
+  # STEP 3: RUNTIME (CONFIG) VALIDATION
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ drive_setpoint | float >= ideal_temp | float
+                 or hall_offset | float < 0
+                 or bedtime == wake_time
+                 or wake_time >= bedtime
+                 or deep_night_check >= wake_time }}
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ enable_notifications }}"
+                sequence:
+                  - service: persistent_notification.create
+                    data:
+                      title: "Bedroom Pre-Cool — Configuration Error"
+                      message: >
+                        Invalid configuration detected. Check that Drive
+                        Setpoint ({{ drive_setpoint }}°C) is below Ideal
+                        Temperature ({{ ideal_temp }}°C), Hall Offset
+                        ({{ hall_offset }}°C) is not negative, and the schedule
+                        is ordered correctly: Wake Time ({{ wake_time }}) must
+                        be before Bedtime ({{ bedtime }}), and the Deep-Night
+                        Check ({{ deep_night_check }}) must fall in the small
+                        hours before Wake Time. Control is paused until
+                        corrected.
+                      notification_id: "bedroom_precool_config_error"
+          - stop: "Configuration error"
+
+  # =============================================
+  # STEP 4: VACATION OVERRIDE
+  # Before sensor validation — turning the AC off does not depend on
+  # bedroom-sensor health.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ vacation_active }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ not ac_unavailable and ac_is_running }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ ac_climate }}"
+          - stop: "Vacation active"
+
+  # =============================================
+  # STEP 5: SENSOR / ENTITY VALIDATION
+  # =============================================
+  - choose:
+      # AC entity unavailable — skip this tick, retry next minute.
+      - conditions:
+          - condition: template
+            value_template: "{{ ac_unavailable }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ enable_notifications }}"
+                sequence:
+                  - service: persistent_notification.create
+                    data:
+                      title: "Bedroom Pre-Cool — AC Unavailable"
+                      message: >
+                        {{ ac_climate }} is {{ current_hvac_mode }}. Skipping
+                        this cycle; will retry next minute.
+                      notification_id: "bedroom_precool_ac_unavailable"
+          - stop: "AC entity unavailable"
+      # No valid bedroom temperature sensor — hold state, warn.
+      - conditions:
+          - condition: template
+            value_template: "{{ not bedroom_sensors_ok }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ enable_notifications }}"
+                sequence:
+                  - service: persistent_notification.create
+                    data:
+                      title: "Bedroom Pre-Cool — No Bedroom Sensor"
+                      message: >
+                        All bedroom temperature sensors are unavailable. The
+                        blueprint is holding the current AC state until a
+                        sensor recovers.
+                      notification_id: "bedroom_precool_sensor_warning"
+          - stop: "No valid bedroom temperature sensor"
+
+  # =============================================
+  # STEP 5b: OVERCOOLING FAULT (child-safety floor)
+  # Informational only — does not stop the cycle.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ enable_notifications and coldest_bedroom | float < 16 }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Bedroom Pre-Cool — Overcooling Fault"
+              message: >
+                A bedroom sensor reads {{ coldest_bedroom }}°C, below the 16°C
+                child-safety floor. Check AC operation and sensor placement.
+                If inside the deep-night check window the blueprint will
+                correct upward.
+              notification_id: "bedroom_precool_overcool_fault"
