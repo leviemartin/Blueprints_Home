@@ -1084,3 +1084,95 @@ action:
                   - condition: template
                     value_template: "{{ phase == 'DEEP_HOLD' }}"
                 sequence: []
+
+  # =============================================
+  # STEP 7a: LEAD-BIAS-HELPER NOT CONFIGURED — one-time notice
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ enable_notifications and enable_auto_learn
+                 and not lead_bias_configured }}
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Bedroom Pre-Cool — Auto-Learn Helper Missing"
+              message: >
+                Auto-Learn is enabled but no Lead-Time Bias Helper is
+                configured. The blueprint still runs with a zero bias.
+                Create an input_number helper and select it to enable
+                self-learning.
+              notification_id: "bedroom_precool_no_bias_helper"
+
+  # =============================================
+  # STEP 7b: FORECAST UNAVAILABLE — informational notice
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ enable_notifications and phase == 'DAY_OFF'
+                 and forecast_window_temps | length == 0
+                 and not outdoor_now_ok }}
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Bedroom Pre-Cool — Forecast & Outdoor Unavailable"
+              message: >
+                Neither an hourly forecast nor the outdoor sensor is available.
+                The prediction is leaning on the indoor gap and solar term only
+                until one recovers.
+              notification_id: "bedroom_precool_forecast_warning"
+
+  # =============================================
+  # STEP 8: DEBUG NOTIFICATION (manual run only)
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id | default('manual') == 'manual' }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Bedroom Pre-Cool Debug — {{ now().strftime('%H:%M:%S') }}"
+              message: >
+                **Phase:** {{ phase }}
+                {% if phase == 'PRECOOL' %}({{ precool_substate }}){% endif %}
+
+                **Warmest bedroom:** {{ warmest_bedroom }}°C
+                | **Coldest:** {{ coldest_bedroom }}°C
+                | **Ideal:** {{ ideal_temp }}°C
+
+                **Humidity (max):** {{ room_humidity }}%
+                | **Outdoor now:** {{ outdoor_now }}°C (ok={{ outdoor_now_ok }})
+
+                **ΔT indoor:** {{ delta_in }}°C
+                | **ΔT outdoor:** {{ delta_out }}°C
+                | **forecast_max:** {{ forecast_max }}°C
+
+                **Solar load:** {{ solar_load }}
+                (elev {{ sun_elevation }}°, azim {{ sun_azimuth }}°)
+
+                **lead_bias:** {{ lead_bias }} min
+                (configured={{ lead_bias_configured }})
+
+                **lead:** {{ lead }} min
+                | **turn_on:** {{ turn_on_dt.strftime('%H:%M') }}
+                | **bedtime:** {{ bedtime_dt.strftime('%H:%M') }}
+
+                **cooling_needed:** {{ cooling_needed }}
+
+                **AC:** mode={{ current_hvac_mode }},
+                running={{ ac_is_running }},
+                setpoint={{ current_setpoint }}°C (known={{ current_setpoint_known }}),
+                fan={{ current_fan }}
+
+                **AC limits:** min={{ ac_min_temp }}°C, max={{ ac_max_temp }}°C
+
+                **maintaining_setpoint:** {{ maintaining_setpoint }}°C
+                | **effective_drive:** {{ effective_drive }}°C
+
+                **desired_mode:** {{ desired_mode }}
+                | **vacation:** {{ vacation_active }}
+              notification_id: "bedroom_precool_debug"
