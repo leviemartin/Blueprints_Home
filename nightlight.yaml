@@ -1,14 +1,23 @@
 blueprint:
-  name: "Toddler Sleep Trainer & Nightlight v1.1.3"
+  name: "Toddler Sleep Trainer & Nightlight v1.2.0"
   description: >
-    **Version: 1.1.3**
-    
-    **Fixes:** Added "Keep Alive" logic. If the light turns off unexpectedly during the night (e.g., due to device timeout), this automation will force it back on.
-    
+    **Version: 1.2.0**
+
+    **New in 1.2.0:** Optional suppression gate + nap window. While the gate
+    entity (e.g. the room's main light group) is ON, this automation pauses
+    completely — a scene automation may color the night light freely. The
+    moment the gate turns OFF, the correct state for the current time is
+    painted (night → night color, wake window → wakeup color, nap window →
+    night color, otherwise off). Leave the new inputs at their defaults for
+    exact v1.1.3 behavior.
+
+    **1.1.3:** "Keep Alive" logic — if the light turns off unexpectedly during
+    the night, it is forced back on.
+
     **IMPORTANT:** Restart Home Assistant after importing.
-    
+
     An advanced nightlight automation designed for toddlers.
-    
+
   domain: automation
   input:
     light_entity:
@@ -22,7 +31,29 @@ blueprint:
         entity:
           domain: binary_sensor
           device_class: motion
-          
+
+    gate_entity:
+      name: Suppression Gate (optional)
+      description: >
+        While this entity is 'on', the automation is fully paused; when it
+        turns 'off', the correct state for the current time is applied.
+        Point it at the room's main light group. Leave empty to disable.
+      default: []
+      selector:
+        entity:
+    nap_start:
+      name: Nap Window Start (optional)
+      description: Inside the nap window, lights-off means night color.
+      default: "00:00:00"
+      selector:
+        time:
+    nap_end:
+      name: Nap Window End (leave equal to start to disable)
+      description: Must not wrap midnight.
+      default: "00:00:00"
+      selector:
+        time:
+
     # --- Scheduling ---
     wakeup_time_mon:
       name: Monday Wakeup
@@ -169,6 +200,20 @@ trigger:
     event: start
     id: "init"
 
+  # 6. Gate released: room lights just went off -> paint the correct state
+  - platform: state
+    entity_id: !input gate_entity
+    to: "off"
+    id: "gate_off"
+
+  # 7. Nap window edges (fire at midnight when disabled -> harmless repaint)
+  - platform: time
+    at: !input nap_start
+    id: "nap_start"
+  - platform: time
+    at: !input nap_end
+    id: "nap_end"
+
 variables:
   # Simple Input Mapping
   sensor_motion: !input motion_entity
@@ -183,6 +228,20 @@ variables:
   t_fri: !input wakeup_time_fri
   t_sat: !input wakeup_time_sat
   t_sun: !input wakeup_time_sun
+
+  gate: !input gate_entity
+  nap_start_t: !input nap_start
+  nap_end_t: !input nap_end
+  # entity selector yields a string when set; the default is [] (unset)
+  is_gate_on: >-
+    {% set g = gate if gate is string else (gate | first | default('')) %}
+    {{ g != '' and is_state(g, 'on') }}
+
+condition:
+  # v1.2: fully paused while the gate entity is on (scene automations own
+  # the light then). The gate_off trigger passes here by definition.
+  - condition: template
+    value_template: "{{ not is_gate_on }}"
 
 action:
   # 1. Calculate Logic Variables
@@ -200,6 +259,11 @@ action:
         {{ now().hour >= 18 or now() < t_wake }}
         
       is_motion_active: "{{ is_state(sensor_motion, 'on') }}"
+
+      is_nap_window: >
+        {% set s = today_at(nap_start_t) %}
+        {% set e = today_at(nap_end_t) %}
+        {{ s != e and s <= now() < e }}
 
   # 2. Execute Logic
   - choose:
@@ -220,6 +284,19 @@ action:
       - conditions:
           - condition: template
             value_template: "{{ is_night_window }}"
+        sequence:
+          - service: light.turn_on
+            target:
+              entity_id: !input light_entity
+            data:
+              rgb_color: !input night_color
+              brightness_pct: "{{ bri_boost if is_motion_active else bri_night }}"
+              transition: !input transition_time
+
+      # SCENARIO 3: NAP (daytime sleep window — same cue as night)
+      - conditions:
+          - condition: template
+            value_template: "{{ is_nap_window }}"
         sequence:
           - service: light.turn_on
             target:
