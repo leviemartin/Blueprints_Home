@@ -92,7 +92,9 @@ def test_v113_triggers_survive(bp):
 def test_global_gate_condition(bp):
     conds = bp.get("condition") or []
     assert conds, "v1.2 must have a global condition block"
-    assert "is_gate_on" in str(conds[0])
+    assert conds[0]["value_template"].strip() == "{{ not is_gate_on }}", (
+        "gate condition must PAUSE while gated, not run only while gated"
+    )
 
 
 def test_is_gate_on_renders():
@@ -140,11 +142,15 @@ def test_nap_window_predicate(bp):
 
 def test_choose_branch_order(bp):
     branches = [a for a in bp["action"] if "choose" in a][0]["choose"]
-    texts = [str(b["conditions"]) for b in branches]
     assert len(branches) == 3
-    assert "is_wakeup_window" in texts[0]
-    assert "is_night_window" in texts[1]
-    assert "is_nap_window" in texts[2]
+    templates = [
+        b["conditions"][0]["value_template"].strip() for b in branches
+    ]
+    # Pinned exactly (not just substring) so an inverted "not is_nap_window"
+    # or similar can't slip through while still containing the right name.
+    assert templates[0] == "{{ is_wakeup_window }}"
+    assert templates[1] == "{{ is_night_window }}"
+    assert templates[2] == "{{ is_nap_window }}"
 
 
 def test_nap_branch_uses_night_color_and_boost(bp):

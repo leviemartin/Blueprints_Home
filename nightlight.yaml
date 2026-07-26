@@ -38,6 +38,9 @@ blueprint:
         While this entity is 'on', the automation is fully paused; when it
         turns 'off', the correct state for the current time is applied.
         Point it at the room's main light group. Leave empty to disable.
+        WARNING: The gate group must NOT include the night light itself —
+        a group containing it re-gates this automation the moment the
+        light turns on.
       default: []
       selector:
         entity:
