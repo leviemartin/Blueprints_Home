@@ -7,3 +7,4 @@ gha-creds-*.json
 ruvector.db
 .firecrawl/
 agentdb.rvf*
+__pycache__/
