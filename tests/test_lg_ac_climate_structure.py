@@ -526,6 +526,26 @@ def test_rendered_window_owns_overnight_tail(bp):
     assert render_var(bp, "in_operating_window", sat, now=datetime(2026, 8, 8, 22, 30)) == "True"
 
 
+def test_description_documents_new_features(bp):
+    d = bp["blueprint"]["description"]
+    for token in ("Beep-Silent", "Hysteresis", "Manual-Override Hold", "Fail-Safe"):
+        assert token in d
+
+
+def test_door_elapsed_comparator_pinned(bp):
+    d = get_var(bp, "door_is_open")
+    assert "opened_sec >= (door_delay | int * 60)" in " ".join(d.split())
+
+
+def test_blueprint_min_version(bp):
+    assert bp["blueprint"]["homeassistant"]["min_version"] == "2024.4.0"
+
+
+def test_step2c_write_continues_on_error(bp):
+    b = bp["action"][4]["choose"][0]
+    assert b["sequence"][0]["continue_on_error"] is True
+
+
 def test_rendered_manual_detected(bp):
     base = dict(hold_enabled=True, hold_active=False,
                 current_ac_mode="cool", current_setpoint=22.0, current_fan="low")
