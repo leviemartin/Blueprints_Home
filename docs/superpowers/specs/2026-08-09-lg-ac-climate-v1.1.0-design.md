@@ -252,11 +252,16 @@ Blueprint-syntax modernization (`triggers:`/`actions:` plural keys stay legacy),
 `lg_sleep_movie.yaml` (suspect trigger syntax tracked separately), LG native Sleep Mode
 integration, beep hardware modification, schedule-edge time triggers, door-close trigger.
 
-## Open items (research-validate, in flight)
+## Research-validate resolutions (2026-08-09 — PROCEED; see
+`../research/2026-08-09-lg-ac-v1.1.0-research-validation.md`)
 
-1. `states[x].last_reported` template availability (contingency in §5).
-2. `for: {minutes: !input …}` in a state trigger.
-3. State trigger with empty `entity_id: []` from the optional door input — if invalid, the
-   trigger needs the established optional-entity blueprint pattern instead.
-4. `input_text` 255-char cap + `from_json` failure mode (guard pattern for rule 6).
-5. `persistent_notification.dismiss` on absent id (assumed no-op).
+1. `states[x].last_reported`: available since HA 2024.4; unchanged-value re-reports bump it.
+   Use unconditionally — the §5 fallback contingency is void.
+2. `for: {minutes: !input …}`: valid on **state** triggers (schema coerces); never move the door
+   trigger to a `device` trigger.
+3. `entity_id: []` state trigger: valid + silently inert — but only because `door_sensor` is
+   `multiple: true`. Constraint: the input stays `multiple: true`.
+4. `input_text`: 255-char hard cap (JSON doc ≈80 chars, fine); rule-6 guard is
+   `| from_json(default={})` — never a bare `from_json`.
+5. Dismiss on absent id: no-op in practice but weakest-sourced — dismiss steps carry
+   `continue_on_error: true`.
