@@ -400,15 +400,18 @@ action:
         {{ [t_start_mon, t_start_tue, t_start_wed, t_start_thu, t_start_fri, t_start_sat, t_start_sun][now().weekday()] }}
       schedule_end_today: >
         {{ [t_end_mon, t_end_tue, t_end_wed, t_end_thu, t_end_fri, t_end_sat, t_end_sun][now().weekday()] }}
+      schedule_start_yesterday: >
+        {{ [t_start_mon, t_start_tue, t_start_wed, t_start_thu, t_start_fri, t_start_sat, t_start_sun][(now().weekday() - 1) % 7] }}
+      schedule_end_yesterday: >
+        {{ [t_end_mon, t_end_tue, t_end_wed, t_end_thu, t_end_fri, t_end_sat, t_end_sun][(now().weekday() - 1) % 7] }}
       in_operating_window: >
         {% set t_now = now().strftime('%H:%M:%S') %}
-        {% set t_start = schedule_start_today %}
-        {% set t_end = schedule_end_today %}
-        {% if t_start <= t_end %}
-          {{ t_start <= t_now < t_end }}
-        {% else %}
-          {{ t_now >= t_start or t_now < t_end }}
-        {% endif %}
+        {% set today = (schedule_start_today <= t_now < schedule_end_today)
+              if schedule_start_today <= schedule_end_today
+              else (t_now >= schedule_start_today) %}
+        {% set y_tail = schedule_start_yesterday > schedule_end_yesterday
+              and t_now < schedule_end_yesterday %}
+        {{ today or y_tail }}
 
       # --- Target Mode & Distance ---
       target_mode: >

@@ -183,3 +183,27 @@ def test_escalation_distance_gated(bp):
     # the gate must be the FIRST branch so near-target never escalates
     assert tf.index("dist < fan_low_thresh") < tf.index("esc_stage_2")
     assert "{% if dist < fan_low_thresh | float %} {{ base_fan }}" in tf
+
+
+def test_yesterday_schedule_variables(bp):
+    # exact-equality: a copy-paste of start-lists into the end variable would make
+    # y_tail structurally `X > X` = dead code with a green suite (board R1-5)
+    sy = " ".join(get_var(bp, "schedule_start_yesterday").split())
+    assert sy == ("{{ [t_start_mon, t_start_tue, t_start_wed, t_start_thu, t_start_fri, "
+                  "t_start_sat, t_start_sun][(now().weekday() - 1) % 7] }}")
+    ey = " ".join(get_var(bp, "schedule_end_yesterday").split())
+    assert ey == ("{{ [t_end_mon, t_end_tue, t_end_wed, t_end_thu, t_end_fri, "
+                  "t_end_sat, t_end_sun][(now().weekday() - 1) % 7] }}")
+
+
+def test_window_formula_owns_overnight_tail(bp):
+    w = " ".join(get_var(bp, "in_operating_window").split())
+    assert w == (
+        "{% set t_now = now().strftime('%H:%M:%S') %} "
+        "{% set today = (schedule_start_today <= t_now < schedule_end_today) "
+        "if schedule_start_today <= schedule_end_today "
+        "else (t_now >= schedule_start_today) %} "
+        "{% set y_tail = schedule_start_yesterday > schedule_end_yesterday "
+        "and t_now < schedule_end_yesterday %} "
+        "{{ today or y_tail }}"
+    )
