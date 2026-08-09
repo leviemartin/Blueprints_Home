@@ -416,6 +416,10 @@ action:
           cool
         {% elif current_temp | float < temp_low | float %}
           heat
+        {% elif current_ac_mode == 'cool' and current_temp | float > (temp_high | float - margin | float) %}
+          cool
+        {% elif current_ac_mode == 'heat' and current_temp | float < (temp_low | float + margin | float) %}
+          heat
         {% else %}
           off
         {% endif %}
@@ -493,9 +497,12 @@ action:
         {% endif %}
       target_fan: >
         {% set mins = minutes_in_current_mode | int %}
+        {% set dist = distance_from_target | float %}
         {% set fan_levels = [fan_mode_low, fan_mode_mid, fan_mode_high, fan_mode_max] %}
         {% set base_idx = fan_levels.index(base_fan) if base_fan in fan_levels else 0 %}
-        {% if mins >= esc_stage_2 | int %}
+        {% if dist < fan_low_thresh | float %}
+          {{ base_fan }}
+        {% elif mins >= esc_stage_2 | int %}
           {{ fan_mode_max }}
         {% elif mins >= esc_stage_1 | int %}
           {{ fan_levels[[base_idx + 1, fan_levels | length - 1] | min] }}

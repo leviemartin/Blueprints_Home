@@ -163,3 +163,23 @@ def test_weather_ok_and_safe_deadband(bp):
     da = " ".join(get_var(bp, "deadband_active").split())
     assert da == ("{{ (not weather_ok) or "
                   "(outdoor_distance | float < deadband_thresh | float) }}")
+
+
+def test_target_mode_hysteresis(bp):
+    tm = " ".join(get_var(bp, "target_mode").split())
+    assert tm == (
+        "{% if current_temp | float > temp_high | float %} cool "
+        "{% elif current_temp | float < temp_low | float %} heat "
+        "{% elif current_ac_mode == 'cool' and current_temp | float > "
+        "(temp_high | float - margin | float) %} cool "
+        "{% elif current_ac_mode == 'heat' and current_temp | float < "
+        "(temp_low | float + margin | float) %} heat "
+        "{% else %} off {% endif %}"
+    )
+
+
+def test_escalation_distance_gated(bp):
+    tf = " ".join(get_var(bp, "target_fan").split())
+    # the gate must be the FIRST branch so near-target never escalates
+    assert tf.index("dist < fan_low_thresh") < tf.index("esc_stage_2")
+    assert "{% if dist < fan_low_thresh | float %} {{ base_fan }}" in tf
