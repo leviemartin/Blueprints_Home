@@ -62,7 +62,14 @@ re-send once (board R1C-5).
 
 Setpoints are clamped to the device's advertised `min_temp`/`max_temp` and quantized to
 `target_temp_step` before commanding AND before storing as expected (board R1C-1) — commanded
-values always converge with device read-back; fallbacks 16/30/0.5.
+values always converge with device read-back; fallbacks 16/30/0.5. Quantization is directional,
+not nearest-rounding: cool setpoints floor and heat setpoints ceil to the nearest step (board
+R1R2-6) — the commanded setpoint never crosses its comfort bound (a cool setpoint that rounds up
+would sit above `temp_high`, so `target_mode` would never see the room as satisfied and `off`
+would be unreachable). `target_temp_step` is floored to a 0.1 °C minimum (board R1R2-7) before
+use as a divisor — an integration reporting a literal `target_temp_step: 0` must never raise
+`ZeroDivisionError` in STEP 1, which would abort every branch below it, including the safety
+pierces.
 
 ### 2. Weather-outage safe default
 
@@ -187,9 +194,11 @@ inert (like the optional door input).
    On detection: write helper `{live snapshot, hold_until: floor(now + hold_minutes)}` and end
    the run (comfort branches skipped). The write is verified: immediately after the write, a
    template guard re-reads the helper and fires a `persistent_notification` (id
-   `ac_climate_hold_helper_error`) if `hold_until` did not persist (write failed — e.g. helper
-   missing or `max` too short), so a silently-broken hold surfaces instead of behaving as a
-   permanent revert (board R1C-3).
+   `ac_climate_hold_helper_error`) if `hold_until` did not persist (write failed — e.g. `max`
+   too short), so a silently-broken hold surfaces instead of behaving as a permanent revert
+   (board R1C-3). The same verify-`choose` dismisses the notification on its `default` branch
+   whenever a write succeeds, so the banner self-clears on the very next successful hold-start
+   (board R1R2-9) instead of persisting until a manual dismiss or reload.
 3. **During hold** (`hold_until` within `(now, now + hold_minutes]` — the upper bound rejects
    adversarial/corrupt far-future values, board R2-1): comfort branches skipped; detection
    skipped; the branch **refreshes the expected snapshot to live state** (preserving
@@ -281,7 +290,7 @@ still gets its control pass.
 |---|---|
 | Weather entity unavailable | Deadband forced active (normal cycling); silent |
 | Some sensors stale | Excluded from aggregation |
-| All sensors stale/unavailable | Notify + hold state (existing path) |
+| All sensors stale/unavailable | Notify (STEP 2b, fires regardless of which ladder branch acts) + hold comfort state; safety pierces still act |
 | AC entity unavailable | Stop, retry next tick (existing path) |
 | Helper JSON corrupt/empty/non-object/partial | No-expectation: no hold, control continues; next commanding branch re-seeds |
 | Helper `hold_until` corrupt/far-future | Rejected by the bounded window check; treated as no hold |
