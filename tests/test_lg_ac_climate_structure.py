@@ -3,10 +3,12 @@
 Run: cd ~/AI/projects/Blueprints_Home && \
      ~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests -q
 """
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 import yaml
+from jinja2 import Environment
 
 BP_PATH = Path(__file__).resolve().parent.parent / "lg_ac_climate.yaml"
 
@@ -437,3 +439,110 @@ def test_maintenance_desired_values(bp):
     dm = " ".join(mv["desired_mode"].split())
     assert dm.startswith("{% if current_ac_mode in ['cool', 'heat'] %}")
     assert "((temp_low | float + temp_high | float) / 2)" in dm
+
+
+# ---- Task 8b: rendered behavior tests ----
+
+def _float(v, default=0.0):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def render_var(bp, name, ctx, now=None):
+    """Render a STEP-1 variable template with HA-ish stubs."""
+    env = Environment()
+    env.filters["float"] = _float
+    env.filters["round"] = lambda v, p=0, *a: round(float(v), int(p))
+    env.globals["as_timestamp"] = lambda d: d.timestamp() if hasattr(d, "timestamp") else float(d)
+    tpl = env.from_string(get_var(bp, name))
+    base = {"now": (lambda: now)} if now else {}
+    return tpl.render(**base, **ctx).strip()
+
+
+def test_rendered_target_mode_hysteresis(bp):
+    ctx = dict(temp_low=20.0, temp_high=24.0, margin=0.5)
+    cases = [
+        (23.8, "cool", "cool"),   # continue zone, actively cooling → keep cooling
+        (23.4, "cool", "off"),    # past high − margin → off
+        (23.8, "off", "off"),     # in range from off → stay off
+        (24.1, "off", "cool"),    # above high → cool
+        (19.8, "off", "heat"),    # below low → heat
+        (20.3, "heat", "heat"),   # heat continue zone
+    ]
+    for temp, mode, want in cases:
+        got = render_var(bp, "target_mode", {**ctx, "current_temp": temp, "current_ac_mode": mode})
+        assert got == want, (temp, mode, got)
+
+
+def test_rendered_target_fan_distance_gate(bp):
+    # four DISTINCT fan levels — max=="high" would make stage-1 and stage-2 outputs
+    # indistinguishable for base "mid" (board R2R-7)
+    ctx = dict(fan_low_thresh=1.0, fan_med_thresh=3.0, esc_stage_1=20, esc_stage_2=40,
+               fan_mode_low="low", fan_mode_mid="mid", fan_mode_high="high",
+               fan_mode_max="turbo", base_fan="low")
+    # spec item-3 acceptance: dist 0.4 with 3 h in-mode → low (v1.0.0 gave max)
+    got = render_var(bp, "target_fan",
+                     {**ctx, "minutes_in_current_mode": 180, "distance_from_target": 0.4})
+    assert got == "low"
+    # stage-1 bump: base mid → high (not turbo)
+    got = render_var(bp, "target_fan",
+                     {**ctx, "base_fan": "mid", "minutes_in_current_mode": 25,
+                      "distance_from_target": 2.0})
+    assert got == "high"
+    # stage-2: → turbo regardless of base
+    got = render_var(bp, "target_fan",
+                     {**ctx, "base_fan": "mid", "minutes_in_current_mode": 45,
+                      "distance_from_target": 2.0})
+    assert got == "turbo"
+
+
+def test_rendered_hold_active_bounds(bp):
+    # the R2-1 bounded-window check has behavioral coverage here: a minutes-vs-seconds
+    # transcription slip would reject every legitimate hold (board R2R-9)
+    t0 = datetime(2026, 8, 9, 12, 0)
+    base = dict(hold_enabled=True, hold_minutes=60)
+    mk = lambda hu: render_var(bp, "hold_active", {**base, "hold_until": hu}, now=t0)
+    assert mk(t0.timestamp() + 1800) == "True"       # mid-hold
+    assert mk(t0.timestamp() - 10) == "False"        # expired
+    assert mk(t0.timestamp() + 90 * 24 * 3600) == "False"   # hand-edited far future → rejected
+    assert mk(0) == "False"
+
+
+def test_rendered_door_is_open_no_sensor(bp):
+    assert render_var(bp, "door_is_open", {"sensor_door": []}) == "False"
+
+
+def test_rendered_window_owns_overnight_tail(bp):
+    # Sat 22:00→06:00 overnight, Sun 07:00→23:00 (spec item-7 acceptance)
+    sun = dict(schedule_start_today="07:00:00", schedule_end_today="23:00:00",
+               schedule_start_yesterday="22:00:00", schedule_end_yesterday="06:00:00")
+    assert render_var(bp, "in_operating_window", sun, now=datetime(2026, 8, 9, 1, 0)) == "True"
+    assert render_var(bp, "in_operating_window", sun, now=datetime(2026, 8, 9, 6, 30)) == "False"
+    sat = dict(schedule_start_today="22:00:00", schedule_end_today="06:00:00",
+               schedule_start_yesterday="07:00:00", schedule_end_yesterday="23:00:00")
+    assert render_var(bp, "in_operating_window", sat, now=datetime(2026, 8, 8, 21, 0)) == "False"
+    assert render_var(bp, "in_operating_window", sat, now=datetime(2026, 8, 8, 22, 30)) == "True"
+
+
+def test_rendered_manual_detected(bp):
+    base = dict(hold_enabled=True, hold_active=False,
+                current_ac_mode="cool", current_setpoint=22.0, current_fan="low")
+    exp_full = {"mode": "cool", "temp": 24.0, "fan": "low", "hold_until": 0}
+    exp_match = {"mode": "cool", "temp": 22.0, "fan": "low", "hold_until": 0}
+    # "True"/"False" (capitalized): the template branches are {{ true }}/{{ false }}
+    # expressions so HA's literal_eval yields real booleans (board R2R-1) — a bare-text
+    # lowercase "false" here would mean the P0 regressed.
+    cases = [
+        ({**base, "expected": exp_full}, "True"),                       # 2° off → manual
+        ({**base, "expected": exp_match}, "False"),                     # matches → no
+        ({**base, "expected": {}}, "False"),                            # empty → no-expectation
+        ({**base, "expected": {"mode": "unavailable"}}, "False"),       # rule-5 sentinel
+        ({**base, "expected": {"mode": "cool"}}, "False"),              # partial mapping (R1-4)
+        ({**base, "current_fan": "high", "expected": exp_match}, "True"),  # fan change → manual
+        ({**base, "hold_active": True, "expected": exp_full}, "False"), # during hold → no
+        ({**base, "hold_enabled": False, "expected": exp_full}, "False"),  # feature off
+    ]
+    for ctx, want in cases:
+        assert render_var(bp, "manual_detected", ctx) == want, ctx
