@@ -601,6 +601,15 @@ Append to `trigger:`:
     id: "vacation_off"
 ```
 
+Also change the ladder's door branch condition (currently `{{ door_is_open }}`) to:
+
+```yaml
+            value_template: "{{ door_is_open or (trigger is defined and trigger.id == 'door_open') }}"
+```
+
+(the timed trigger selects the branch by identity — re-deriving elapsed seconds at action time
+risks the float-equality edge; triple-check P2).
+
 Insert after the STEP 2 validation choose (before the main ladder):
 
 ```yaml
@@ -801,7 +810,8 @@ def test_hold_variables(bp):
     assert " ".join(get_var(bp, "hold_enabled").split()) == \
         "{{ hold_helper not in ['', none] }}"
     exp = " ".join(get_var(bp, "expected").split())
-    assert exp == "{{ states(hold_helper) | from_json(default={}) if hold_enabled else {} }}"
+    assert exp == ("{% set e = (states(hold_helper) | from_json(default={})) "
+                   "if hold_enabled else {} %} {{ e if e is mapping else {} }}")
     ha = " ".join(get_var(bp, "hold_active").split())
     assert ha == "{{ hold_enabled and hold_until | float(0) > as_timestamp(now()) }}"
     md = " ".join(get_var(bp, "manual_detected").split())
@@ -828,7 +838,7 @@ def test_ladder_order_full(bp):
         "{{ current_ac_mode in ['unavailable', 'unknown'] }}",
         "{{ is_vacation }}",
         "{{ not in_operating_window }}",
-        "{{ door_is_open }}",
+        "{{ door_is_open or (trigger is defined and trigger.id == 'door_open') }}",
         "{{ manual_detected and not (trigger is defined and trigger.id == 'init') }}",
         "{{ hold_active and not (trigger is defined and trigger.id == 'init') }}",
         "{{ target_mode == 'off' }}",
@@ -881,7 +891,9 @@ def test_every_commanding_branch_ends_with_expected_write(bp):
       current_setpoint: "{{ state_attr(climate_ac, 'temperature') }}"
       current_fan: "{{ state_attr(climate_ac, 'fan_mode') }}"
       hold_enabled: "{{ hold_helper not in ['', none] }}"
-      expected: "{{ states(hold_helper) | from_json(default={}) if hold_enabled else {} }}"
+      expected: >
+        {% set e = (states(hold_helper) | from_json(default={})) if hold_enabled else {} %}
+        {{ e if e is mapping else {} }}
       hold_until: "{{ expected.get('hold_until', 0) | float(0) }}"
       hold_active: "{{ hold_enabled and hold_until | float(0) > as_timestamp(now()) }}"
       manual_detected: >
@@ -998,7 +1010,8 @@ commanding branch or restart seed, not by a dedicated write.
     - **Beep-Silent Control:** Commands are sent only when they change
       something — steady state sends nothing (LG units beep per command).
     - **Hysteresis:** Configurable margin stops off/on cycling at the
-      comfort-range edges.
+      comfort-range edges. In mild weather the unit may idle in-mode instead
+      of switching off — its internal thermostat cycles quietly instead.
     - **Manual-Override Hold:** Optional input_text helper detects remote/app
       changes and pauses comfort control for a configurable window (vacation,
       schedule end, and door-open still force off).
