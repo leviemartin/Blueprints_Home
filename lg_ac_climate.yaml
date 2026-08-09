@@ -532,6 +532,33 @@ action:
           {{ base_fan }}
         {% endif %}
 
+      # --- Manual Hold (v1.1.0) ---
+      current_setpoint: "{{ state_attr(climate_ac, 'temperature') }}"
+      current_fan: "{{ state_attr(climate_ac, 'fan_mode') }}"
+      hold_enabled: "{{ hold_helper not in ['', none] }}"
+      expected: >
+        {% set e = (states(hold_helper) | from_json(default={})) if hold_enabled else {} %}
+        {{ e if e is mapping else {} }}
+      hold_until: "{{ expected.get('hold_until', 0) | float(0) }}"
+      hold_active: >-
+        {{ hold_enabled and hold_until | float(0) > as_timestamp(now())
+           and hold_until | float(0) <= as_timestamp(now()) + hold_minutes | int * 60 }}
+      manual_detected: >
+        {% if not hold_enabled or hold_active or expected.get('mode') is none
+              or expected.get('mode') in ['unavailable', 'unknown'] %}
+          {{ false }}
+        {% elif current_ac_mode != expected.get('mode') %}
+          {{ true }}
+        {% elif expected.get('mode') != 'off' and expected.get('temp') is not none
+              and (current_setpoint | float(-99) - expected.get('temp') | float(-99)) | abs > 0.3 %}
+          {{ true }}
+        {% elif expected.get('mode') != 'off' and expected.get('fan') is not none
+              and current_fan != expected.get('fan') %}
+          {{ true }}
+        {% else %}
+          {{ false }}
+        {% endif %}
+
   # =============================================
   # STEP 2: RUNTIME VALIDATION
   # =============================================
@@ -582,6 +609,24 @@ action:
             continue_on_error: true
 
   # =============================================
+  # STEP 2c: RESTART SEED (no false hold after HA restart)
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: "init"
+          - condition: template
+            value_template: "{{ hold_enabled }}"
+        sequence:
+          - service: input_text.set_value
+            target:
+              entity_id: "{{ hold_helper }}"
+            data:
+              value: >
+                {{ {'mode': current_ac_mode, 'temp': current_setpoint | float(none),
+                    'fan': current_fan, 'hold_until': 0} | to_json }}
+
+  # =============================================
   # STEP 3: MAIN PRIORITY CHOOSE
   # =============================================
   - choose:
@@ -620,6 +665,18 @@ action:
                     target:
                       entity_id: "{{ climate_ac }}"
                     continue_on_error: true
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ hold_enabled }}"
+                sequence:
+                  - service: input_text.set_value
+                    target:
+                      entity_id: "{{ hold_helper }}"
+                    data:
+                      value: >
+                        {{ {'mode': 'off', 'temp': none, 'fan': none,
+                            'hold_until': 0} | to_json }}
 
       # --- 4c: OUTSIDE OPERATING WINDOW ---
       - conditions:
@@ -635,6 +692,18 @@ action:
                     target:
                       entity_id: "{{ climate_ac }}"
                     continue_on_error: true
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ hold_enabled }}"
+                sequence:
+                  - service: input_text.set_value
+                    target:
+                      entity_id: "{{ hold_helper }}"
+                    data:
+                      value: >
+                        {{ {'mode': 'off', 'temp': none, 'fan': none,
+                            'hold_until': 0} | to_json }}
 
       # --- 4d: DOOR OPEN ---
       - conditions:
@@ -650,6 +719,47 @@ action:
                     target:
                       entity_id: "{{ climate_ac }}"
                     continue_on_error: true
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ hold_enabled }}"
+                sequence:
+                  - service: input_text.set_value
+                    target:
+                      entity_id: "{{ hold_helper }}"
+                    data:
+                      value: >
+                        {{ {'mode': 'off', 'temp': none, 'fan': none,
+                            'hold_until': 0} | to_json }}
+
+      # --- MANUAL CHANGE DETECTED → START HOLD ---
+      - conditions:
+          - condition: template
+            value_template: "{{ manual_detected and not (trigger is defined and trigger.id == 'init') }}"
+        sequence:
+          - service: input_text.set_value
+            target:
+              entity_id: "{{ hold_helper }}"
+            data:
+              value: >
+                {{ {'mode': current_ac_mode, 'temp': current_setpoint | float(none),
+                    'fan': current_fan,
+                    'hold_until': (as_timestamp(now()) + hold_minutes | int * 60) | int} | to_json }}
+          - stop: "Manual change detected — holding"
+
+      # --- HOLD ACTIVE (refresh expected to live, keep the clock) ---
+      - conditions:
+          - condition: template
+            value_template: "{{ hold_active and not (trigger is defined and trigger.id == 'init') }}"
+        sequence:
+          - service: input_text.set_value
+            target:
+              entity_id: "{{ hold_helper }}"
+            data:
+              value: >
+                {{ {'mode': current_ac_mode, 'temp': current_setpoint | float(none),
+                    'fan': current_fan, 'hold_until': hold_until | float(0) | int} | to_json }}
+          - stop: "Manual hold active"
 
       # --- 4e: TEMP INSIDE COMFORT RANGE ---
       - conditions:
@@ -671,6 +781,18 @@ action:
                             target:
                               entity_id: "{{ climate_ac }}"
                             continue_on_error: true
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ hold_enabled }}"
+                        sequence:
+                          - service: input_text.set_value
+                            target:
+                              entity_id: "{{ hold_helper }}"
+                            data:
+                              value: >
+                                {{ {'mode': 'off', 'temp': none, 'fan': none,
+                                    'hold_until': 0} | to_json }}
               # Deadband DISABLED (extreme outdoor) → maintenance mode
               - conditions:
                   - condition: template
@@ -710,6 +832,18 @@ action:
                             data:
                               fan_mode: "{{ desired_fan }}"
                             continue_on_error: true
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ hold_enabled }}"
+                        sequence:
+                          - service: input_text.set_value
+                            target:
+                              entity_id: "{{ hold_helper }}"
+                            data:
+                              value: >
+                                {{ {'mode': desired_mode, 'temp': desired_setpoint | float(none),
+                                    'fan': desired_fan, 'hold_until': 0} | to_json }}
 
       # --- 4f: COOL ---
       - conditions:
@@ -743,6 +877,18 @@ action:
                     data:
                       fan_mode: "{{ desired_fan }}"
                     continue_on_error: true
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ hold_enabled }}"
+                sequence:
+                  - service: input_text.set_value
+                    target:
+                      entity_id: "{{ hold_helper }}"
+                    data:
+                      value: >
+                        {{ {'mode': desired_mode, 'temp': desired_setpoint | float(none),
+                            'fan': desired_fan, 'hold_until': 0} | to_json }}
 
       # --- 4g: HEAT ---
       - conditions:
@@ -776,3 +922,15 @@ action:
                     data:
                       fan_mode: "{{ desired_fan }}"
                     continue_on_error: true
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ hold_enabled }}"
+                sequence:
+                  - service: input_text.set_value
+                    target:
+                      entity_id: "{{ hold_helper }}"
+                    data:
+                      value: >
+                        {{ {'mode': desired_mode, 'temp': desired_setpoint | float(none),
+                            'fan': desired_fan, 'hold_until': 0} | to_json }}

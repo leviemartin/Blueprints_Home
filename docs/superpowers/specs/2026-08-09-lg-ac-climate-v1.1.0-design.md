@@ -178,7 +178,7 @@ inert (like the optional door input).
    `mode ≠ expected.mode`, or — when expected mode ≠ off — `|setpoint − expected.temp| > 0.3`
    or `fan ≠ expected.fan`. All expected-field accesses via `.get` (board R1-4: a partial
    mapping's Jinja Undefined passes `is not none` and coerces to −99, firing a false hold).
-   On detection: write helper `{live snapshot, hold_until: round(now + hold_minutes)}` and end
+   On detection: write helper `{live snapshot, hold_until: floor(now + hold_minutes)}` and end
    the run (comfort branches skipped).
 3. **During hold** (`hold_until` within `(now, now + hold_minutes]` — the upper bound rejects
    adversarial/corrupt far-future values, board R2-1): comfort branches skipped; detection

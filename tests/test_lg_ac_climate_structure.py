@@ -267,7 +267,7 @@ def _acting_branches(bp):
 def test_comfort_branches_guard_every_call(bp):
     for name, b in _acting_branches(bp).items():
         kinds = seq_kinds(b["sequence"])
-        assert kinds[:3] == ["variables", "choose", "choose"], (name, kinds)
+        assert seq_kinds(b["sequence"]) == ["variables", "choose", "choose", "choose"], (name, kinds)
         guard_temp = branch_cond(b["sequence"][1]["choose"][0])
         guard_fan = branch_cond(b["sequence"][2]["choose"][0])
         assert guard_temp == GUARD_SETPOINT, name
@@ -304,3 +304,136 @@ def test_off_branches_wrap_turn_off_in_guard(bp):
         # symmetry with the comfort calls (board R2R-8): a pierce must reach its
         # expected-write even when the cloud call errors
         assert first["choose"][0]["sequence"][0]["continue_on_error"] is True, marker
+        assert seq_kinds(b["sequence"]) == ["choose", "choose"], marker
+
+
+# ---- Task 8: manual-override hold ----
+
+EXPECTED_WRITE_VALUE = ("{{ {'mode': desired_mode, 'temp': desired_setpoint | float(none), "
+                        "'fan': desired_fan, 'hold_until': 0} | to_json }}")
+OFF_WRITE_VALUE = ("{{ {'mode': 'off', 'temp': none, 'fan': none, "
+                   "'hold_until': 0} | to_json }}")
+# Only the hold-start branch writes a nonzero hold_until (board R1-2/R1-7: a pierce ends the
+# hold; stale STEP-1 hold_until must never be re-written).
+REFRESH_WRITE_VALUE = ("{{ {'mode': current_ac_mode, 'temp': current_setpoint | float(none), "
+                       "'fan': current_fan, 'hold_until': hold_until | float(0) | int} "
+                       "| to_json }}")
+# Boolean branches MUST be {{ true }}/{{ false }} expressions, never bare text: HA parses
+# variable renders via literal_eval, and the bare text 'false' survives as a TRUTHY STRING
+# (board round-2 P0 R2R-1).
+MANUAL_DETECTED = (
+    "{% if not hold_enabled or hold_active or expected.get('mode') is none "
+    "or expected.get('mode') in ['unavailable', 'unknown'] %} {{ false }} "
+    "{% elif current_ac_mode != expected.get('mode') %} {{ true }} "
+    "{% elif expected.get('mode') != 'off' and expected.get('temp') is not none "
+    "and (current_setpoint | float(-99) - expected.get('temp') | float(-99)) | abs > 0.3 %} {{ true }} "
+    "{% elif expected.get('mode') != 'off' and expected.get('fan') is not none "
+    "and current_fan != expected.get('fan') %} {{ true }} "
+    "{% else %} {{ false }} {% endif %}"
+)
+
+
+def test_hold_variables(bp):
+    assert " ".join(get_var(bp, "hold_enabled").split()) == \
+        "{{ hold_helper not in ['', none] }}"
+    exp = " ".join(get_var(bp, "expected").split())
+    assert exp == ("{% set e = (states(hold_helper) | from_json(default={})) "
+                   "if hold_enabled else {} %} {{ e if e is mapping else {} }}")
+    ha = " ".join(get_var(bp, "hold_active").split())
+    assert ha == ("{{ hold_enabled and hold_until | float(0) > as_timestamp(now()) "
+                  "and hold_until | float(0) <= as_timestamp(now()) + hold_minutes | int * 60 }}")
+    # full exact-equality pin — substring pins let an inverted predicate ship green
+    # (board converged finding R1-6 + R2-4)
+    md = " ".join(get_var(bp, "manual_detected").split())
+    assert md == MANUAL_DETECTED
+
+
+def test_step2c_restart_seed(bp):
+    s2c = bp["action"][4]          # after the two dismiss steps
+    assert step_kind(s2c) == "choose"
+    b = s2c["choose"][0]
+    assert [c["condition"] for c in b["conditions"]] == ["trigger", "template"]
+    assert b["conditions"][0]["id"] == "init"
+    assert seq_kinds(b["sequence"]) == ["service:input_text.set_value"]
+    val = " ".join(b["sequence"][0]["data"]["value"].split())
+    assert "'hold_until': 0" in val and "current_ac_mode" in val
+
+
+def test_ladder_order_full(bp):
+    conds = [branch_cond(b) for b in ladder(bp)]
+    assert conds == [
+        "{{ not sensors_available }}",
+        "{{ current_ac_mode in ['unavailable', 'unknown'] }}",
+        "{{ is_vacation }}",
+        "{{ not in_operating_window }}",
+        "{{ door_is_open or (trigger is defined and trigger.id == 'door_open') }}",
+        "{{ manual_detected and not (trigger is defined and trigger.id == 'init') }}",
+        "{{ hold_active and not (trigger is defined and trigger.id == 'init') }}",
+        "{{ target_mode == 'off' }}",
+        "{{ target_mode == 'cool' }}",
+        "{{ target_mode == 'heat' }}",
+    ]
+
+
+def test_hold_start_branch_snapshots_and_stops(bp):
+    b = ladder(bp)[5]
+    assert seq_kinds(b["sequence"]) == ["service:input_text.set_value", "stop"]
+    val = " ".join(b["sequence"][0]["data"]["value"].split())
+    # floor, not round-half: rounding up would let sub-second trigger latency stretch a
+    # 60-min hold to the NEXT tick (~70 min) at expiry (board R2R-5)
+    assert "(as_timestamp(now()) + hold_minutes | int * 60) | int" in val
+    assert "| round(" not in val
+    assert "current_ac_mode" in val
+
+
+def test_hold_active_branch_refreshes_and_stops(bp):
+    # rule 3: refresh expected to live (hold_until preserved) so expiry compares
+    # against the user's LATEST state (board R1-8), then stop
+    b = ladder(bp)[6]
+    assert seq_kinds(b["sequence"]) == ["service:input_text.set_value", "stop"]
+    val = " ".join(b["sequence"][0]["data"]["value"].split())
+    assert val == REFRESH_WRITE_VALUE
+
+
+def _expected_write_step(step):
+    return (step_kind(step) == "choose"
+            and branch_cond(step["choose"][0]) == "{{ hold_enabled }}"
+            and seq_kinds(step["choose"][0]["sequence"]) == ["service:input_text.set_value"])
+
+
+def test_every_commanding_branch_ends_with_expected_write(bp):
+    lad = ladder(bp)
+    # off-branches: vacation, window, door, and in-range deadband-active sub-branch
+    for i in (2, 3, 4):
+        assert _expected_write_step(lad[i]["sequence"][-1]), i
+        val = " ".join(lad[i]["sequence"][-1]["choose"][0]["sequence"][0]["data"]["value"].split())
+        assert val == OFF_WRITE_VALUE, i
+    in_range = lad[7]["sequence"][-1]["choose"]
+    assert _expected_write_step(in_range[0]["sequence"][-1])          # deadband off-branch
+    assert _expected_write_step(in_range[1]["sequence"][-1])          # maintenance
+    for i in (8, 9):                                                  # cool, heat
+        assert _expected_write_step(lad[i]["sequence"][-1]), i
+        val = " ".join(lad[i]["sequence"][-1]["choose"][0]["sequence"][0]["data"]["value"].split())
+        assert val == EXPECTED_WRITE_VALUE, i
+
+
+def test_in_range_deadband_off_subbranch_shape(bp):
+    in_range = ladder(bp)[7]["sequence"][-1]["choose"]
+    sub = in_range[0]                       # deadband ACTIVE → guarded off
+    assert seq_kinds(sub["sequence"]) == ["choose", "choose"]
+    g = sub["sequence"][0]["choose"][0]
+    assert branch_cond(g) == "{{ current_ac_mode != 'off' }}"
+    assert seq_kinds(g["sequence"]) == ["service:climate.turn_off"]
+    val = " ".join(sub["sequence"][-1]["choose"][0]["sequence"][0]["data"]["value"].split())
+    assert val == OFF_WRITE_VALUE
+
+
+def test_maintenance_desired_values(bp):
+    sub = ladder(bp)[7]["sequence"][-1]["choose"][1]      # deadband DISABLED → maintenance
+    mv = sub["sequence"][0]["variables"]
+    assert " ".join(mv["desired_setpoint"].split()) == \
+        "{{ temp_high | float if desired_mode == 'cool' else temp_low | float }}"
+    assert " ".join(mv["desired_fan"].split()) == "{{ fan_mode_low }}"
+    dm = " ".join(mv["desired_mode"].split())
+    assert dm.startswith("{% if current_ac_mode in ['cool', 'heat'] %}")
+    assert "((temp_low | float + temp_high | float) / 2)" in dm
