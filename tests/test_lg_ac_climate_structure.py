@@ -241,6 +241,8 @@ def test_dismiss_steps(bp):
     inner = b["sequence"][0]
     assert inner["data"]["notification_id"] == "ac_climate_sensor_warning"
     assert inner["continue_on_error"] is True
+    assert d2["default"][0]["data"]["notification_id"] == "ac_climate_sensor_warning"
+    assert step_kind(d2["default"][0]) == "service:persistent_notification.create"
 
 
 def test_door_is_open_no_sensor_branch_is_boolean(bp):
@@ -386,6 +388,11 @@ def test_pierces_precede_sensor_stop(bp):
         assert next(i for i, c in enumerate(conds) if marker in c) < i_sens, marker
 
 
+def test_sensor_stop_branch_is_bare_stop(bp):
+    b = next(x for x in ladder(bp) if branch_cond(x) == "{{ not sensors_available }}")
+    assert seq_kinds(b["sequence"]) == ["stop"]
+
+
 def test_hold_start_branch_snapshots_and_stops(bp):
     b = ladder(bp)[5]
     assert seq_kinds(b["sequence"]) == ["service:input_text.set_value", "choose", "stop"]
@@ -396,6 +403,12 @@ def test_hold_start_branch_snapshots_and_stops(bp):
     assert "| round(" not in val
     assert "current_ac_mode" in val
     assert "ac_climate_hold_helper_error" in " ".join(str(b["sequence"][1]).split())
+    verify = b["sequence"][1]
+    assert branch_cond(verify["choose"][0]) == \
+        ("{{ (states(hold_helper) | from_json(default={})).get('hold_until', 0) "
+         "| float(0) <= as_timestamp(now()) }}")
+    assert verify["default"][0]["data"]["notification_id"] == "ac_climate_hold_helper_error"
+    assert step_kind(verify["default"][0]) == "service:persistent_notification.dismiss"
 
 
 def test_hold_active_branch_refreshes_and_stops(bp):
@@ -452,10 +465,17 @@ def test_maintenance_desired_values(bp):
 
 
 def test_setpoint_quantization_variables(bp):
+    assert " ".join(get_var(bp, "ac_min_temp").split()) == \
+        "{{ state_attr(climate_ac, 'min_temp') | float(16) }}"
+    assert " ".join(get_var(bp, "ac_max_temp").split()) == \
+        "{{ state_attr(climate_ac, 'max_temp') | float(30) }}"
     assert " ".join(get_var(bp, "ac_temp_step").split()) == \
-        "{{ state_attr(climate_ac, 'target_temp_step') | float(0.5) }}"
+        "{{ [state_attr(climate_ac, 'target_temp_step') | float(0.5), 0.1] | max }}"
     q = " ".join(get_var(bp, "setpoint_cool_q").split())
-    assert q == ("{{ ([([(((temp_high | float / ac_temp_step) | round(0)) * ac_temp_step), "
+    assert q == ("{{ ([([(((temp_high | float / ac_temp_step) | round(0, 'floor')) * ac_temp_step), "
+                 "ac_min_temp] | max), ac_max_temp] | min) | round(1) }}")
+    h = " ".join(get_var(bp, "setpoint_heat_q").split())
+    assert h == ("{{ ([([(((temp_low | float / ac_temp_step) | round(0, 'ceil')) * ac_temp_step), "
                  "ac_min_temp] | max), ac_max_temp] | min) | round(1) }}")
 
 
@@ -472,7 +492,8 @@ def render_var(bp, name, ctx, now=None):
     """Render a STEP-1 variable template with HA-ish stubs."""
     env = Environment()
     env.filters["float"] = _float
-    env.filters["round"] = lambda v, p=0, *a: round(float(v), int(p))
+    # jinja2's built-in "round" filter already supports the ('floor'/'ceil') method
+    # argument used by setpoint_cool_q/setpoint_heat_q — no override needed.
     env.globals["as_timestamp"] = lambda d: d.timestamp() if hasattr(d, "timestamp") else float(d)
     tpl = env.from_string(get_var(bp, name))
     base = {"now": (lambda: now)} if now else {}
@@ -481,12 +502,22 @@ def render_var(bp, name, ctx, now=None):
 
 def test_rendered_setpoint_quantization(bp):
     ctx = dict(ac_min_temp=16.0, ac_max_temp=30.0)
-    mk = lambda th, step: render_var(bp, "setpoint_cool_q",
-                                     {**ctx, "temp_high": th, "ac_temp_step": step})
-    assert mk(23.5, 1.0) == "24.0"     # half-degree config on whole-degree unit
-    assert mk(23.5, 0.5) == "23.5"     # native half-step unit unchanged
-    assert mk(15.0, 0.5) == "16.0"     # below device min → clamped
-    assert mk(24.0, 1.0) == "24.0"     # aligned value unchanged
+    cool = lambda th, step: render_var(bp, "setpoint_cool_q",
+                                       {**ctx, "temp_high": th, "ac_temp_step": step})
+    heat = lambda tl, step: render_var(bp, "setpoint_heat_q",
+                                       {**ctx, "temp_low": tl, "ac_temp_step": step})
+    # cool floors: never above temp_high
+    assert cool(23.5, 1.0) == "23.0"
+    assert cool(22.5, 1.0) == "22.0"
+    assert cool(23.5, 0.5) == "23.5"
+    assert cool(24.0, 1.0) == "24.0"
+    assert cool(15.0, 0.5) == "16.0"      # clamped to device min
+    # heat ceils: never below temp_low
+    assert heat(20.5, 1.0) == "21.0"
+    assert heat(21.5, 1.0) == "22.0"
+    assert heat(20.0, 1.0) == "20.0"
+    # zero step must not raise (floored to 0.1)
+    assert cool(23.5, 0.1) == "23.5"
 
 
 def test_rendered_target_mode_hysteresis(bp):
@@ -571,7 +602,7 @@ def test_door_elapsed_comparator_pinned(bp):
 
 
 def test_blueprint_min_version(bp):
-    assert bp["blueprint"]["homeassistant"]["min_version"] == "2024.4.0"
+    assert bp["blueprint"]["homeassistant"]["min_version"] == "2024.8.0"
 
 
 def test_step2c_write_continues_on_error(bp):

@@ -37,7 +37,7 @@ blueprint:
 
   domain: automation
   homeassistant:
-    min_version: "2024.4.0"
+    min_version: "2024.8.0"
   input:
     # --- DEVICES ---
     climate_entity:
@@ -431,11 +431,11 @@ action:
       # --- Device setpoint limits (v1.1.0 R1C-1: never command what the unit can't store) ---
       ac_min_temp: "{{ state_attr(climate_ac, 'min_temp') | float(16) }}"
       ac_max_temp: "{{ state_attr(climate_ac, 'max_temp') | float(30) }}"
-      ac_temp_step: "{{ state_attr(climate_ac, 'target_temp_step') | float(0.5) }}"
+      ac_temp_step: "{{ [state_attr(climate_ac, 'target_temp_step') | float(0.5), 0.1] | max }}"
       setpoint_cool_q: >-
-        {{ ([([(((temp_high | float / ac_temp_step) | round(0)) * ac_temp_step), ac_min_temp] | max), ac_max_temp] | min) | round(1) }}
+        {{ ([([(((temp_high | float / ac_temp_step) | round(0, 'floor')) * ac_temp_step), ac_min_temp] | max), ac_max_temp] | min) | round(1) }}
       setpoint_heat_q: >-
-        {{ ([([(((temp_low | float / ac_temp_step) | round(0)) * ac_temp_step), ac_min_temp] | max), ac_max_temp] | min) | round(1) }}
+        {{ ([([(((temp_low | float / ac_temp_step) | round(0, 'ceil')) * ac_temp_step), ac_min_temp] | max), ac_max_temp] | min) | round(1) }}
 
       # --- Per-Day Schedule ---
       schedule_start_today: >
@@ -632,6 +632,14 @@ action:
             data:
               notification_id: "ac_climate_sensor_warning"
             continue_on_error: true
+    default:
+      - service: persistent_notification.create
+        data:
+          title: "AC Climate Blueprint — Sensor Warning"
+          message: >
+            All temperature sensors are unavailable. AC is holding current
+            state until sensors recover. Sensors: {{ sensors_temp }}
+          notification_id: "ac_climate_sensor_warning"
 
   # =============================================
   # STEP 2c: RESTART SEED (no false hold after HA restart)
@@ -749,13 +757,6 @@ action:
           - condition: template
             value_template: "{{ not sensors_available }}"
         sequence:
-          - service: persistent_notification.create
-            data:
-              title: "AC Climate Blueprint — Sensor Warning"
-              message: >
-                All temperature sensors are unavailable. AC is holding current
-                state until sensors recover. Sensors: {{ sensors_temp }}
-              notification_id: "ac_climate_sensor_warning"
           - stop: "No sensors available"
 
       # --- MANUAL CHANGE DETECTED → START HOLD ---
@@ -781,10 +782,15 @@ action:
                       title: "AC Climate Blueprint — Hold Helper Error"
                       message: >
                         The manual-hold helper {{ hold_helper }} did not persist the
-                        hold timestamp (write failed — check the helper exists and its
-                        max length is 255). Manual-override holds are not functioning.
+                        hold timestamp (write failed — check the helper's max length
+                        is 255). Manual-override holds are not functioning.
                       notification_id: "ac_climate_hold_helper_error"
                     continue_on_error: true
+            default:
+              - service: persistent_notification.dismiss
+                data:
+                  notification_id: "ac_climate_hold_helper_error"
+                continue_on_error: true
           - stop: "Manual change detected — holding"
 
       # --- HOLD ACTIVE (refresh expected to live, keep the clock) ---
