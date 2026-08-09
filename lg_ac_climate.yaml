@@ -1,7 +1,7 @@
 blueprint:
-  name: "LG AC Climate Control v1.0.0"
+  name: "LG AC Climate Control v1.1.0"
   description: >
-    **Version: 1.0.0**
+    **Version: 1.1.0**
 
     Automates LG air conditioners per-floor using external temperature sensors
     for reliable ambient readings.
@@ -16,14 +16,28 @@ blueprint:
     - **Per-Day Schedule:** Independent start/end times for each day of the week.
     - **Vacation Mode:** Toggle to force AC fully off.
     - **Door Sensor:** Auto-off when garden door is left open.
+    - **Beep-Silent Control:** Commands are sent only when they change
+      something — steady state sends nothing (LG units beep per command).
+    - **Hysteresis:** Configurable margin stops off/on cycling at the
+      comfort-range edges. In mild weather the unit may idle in-mode instead
+      of switching off — its internal thermostat cycles quietly instead.
+    - **Manual-Override Hold:** Optional input_text helper detects remote/app
+      changes and pauses comfort control for a configurable window (vacation,
+      schedule end, and door-open still force off). Reloading any automation
+      clears active holds on all instances and reasserts control once.
+    - **Fail-Safe Degradation:** Weather outage falls back to normal cycling;
+      silently-stale sensors are excluded.
 
     **Requirements:**
     - LG AC connected via SmartThinQ or LG ThinQ integration
     - External temperature sensor(s) (e.g., Aqara)
     - Weather entity for outdoor temperature (e.g., Met.no)
     - input_boolean helper for vacation mode
+    - input_text helper (optional) for manual-override hold
 
   domain: automation
+  homeassistant:
+    min_version: "2024.8.0"
   input:
     # --- DEVICES ---
     climate_entity:
@@ -231,6 +245,47 @@ blueprint:
           max: 30
           unit_of_measurement: min
 
+    # --- HYSTERESIS / ROBUSTNESS (v1.1.0) ---
+    comfort_margin:
+      name: Comfort Margin (°C)
+      description: "Hysteresis: an actively heating/cooling AC continues until the room is this far inside the comfort range. 0 = v1.0.0 cycling behavior."
+      default: 0.5
+      selector:
+        number:
+          min: 0.0
+          max: 2.0
+          step: 0.1
+          unit_of_measurement: "°C"
+    sensor_staleness_minutes:
+      name: Sensor Staleness Cutoff (min)
+      description: "Ignore temperature sensors whose last report is older than this. Must exceed the sensors' periodic report interval (Aqara ≈ 60 min)."
+      default: 90
+      selector:
+        number:
+          min: 15
+          max: 1440
+          step: 5
+          unit_of_measurement: min
+
+    # --- MANUAL OVERRIDE HOLD (v1.1.0, optional) ---
+    manual_hold_helper:
+      name: Manual Override State Helper (Optional)
+      description: "An input_text helper storing the last automation-commanded state. When set, manual remote/app changes pause comfort control for the hold duration. Leave empty to disable. Create the helper with max length 255. Create a DEDICATED helper per automation instance — sharing one helper between two ACs breaks both."
+      default: ""
+      selector:
+        entity:
+          domain: input_text
+    manual_hold_minutes:
+      name: Manual Hold Duration (min)
+      description: "How long comfort control pauses after a manual change is detected."
+      default: 60
+      selector:
+        number:
+          min: 15
+          max: 360
+          step: 5
+          unit_of_measurement: min
+
 mode: restart
 max_exceeded: silent
 
@@ -249,6 +304,25 @@ trigger:
   # 3. HA Restart
   - platform: homeassistant
     event: start
+    id: "init"
+
+  # 4. Door left open (exact-time shut-off)
+  - platform: state
+    entity_id: !input door_sensor
+    to: "on"
+    for:
+      minutes: !input door_off_delay
+    id: "door_open"
+
+  # 5. Vacation Mode OFF (instant resume)
+  - platform: state
+    entity_id: !input vacation_toggle
+    to: "off"
+    id: "vacation_off"
+
+  # 6. Automation reload (same seed semantics as HA start — board R2-2)
+  - platform: event
+    event_type: automation_reloaded
     id: "init"
 
 variables:
@@ -290,6 +364,12 @@ variables:
   # --- Door ---
   door_delay: !input door_off_delay
 
+  # --- Hysteresis / Robustness (v1.1.0) ---
+  margin: !input comfort_margin
+  sensor_staleness: !input sensor_staleness_minutes
+  hold_helper: !input manual_hold_helper
+  hold_minutes: !input manual_hold_minutes
+
 action:
   # =============================================
   # STEP 1: COMPUTE VARIABLES
@@ -298,9 +378,12 @@ action:
       # --- Sensor Aggregation ---
       valid_temps: >
         {% set ns = namespace(vals=[]) %}
+        {% set cutoff = sensor_staleness | int * 60 %}
         {% for s in sensors_temp %}
           {% set v = states(s) %}
-          {% if v not in ['unavailable', 'unknown', none] and v | float(none) is not none %}
+          {% if v not in ['unavailable', 'unknown', none] and v | float(none) is not none
+                and states[s] is not none
+                and (as_timestamp(now()) - as_timestamp(states[s].last_reported)) < cutoff %}
             {% set ns.vals = ns.vals + [v | float] %}
           {% endif %}
         {% endfor %}
@@ -318,7 +401,9 @@ action:
         {% endif %}
 
       # --- Outdoor (from weather entity) ---
-      outdoor_temp: "{{ state_attr(entity_weather, 'temperature') | float(0) }}"
+      outdoor_temp_raw: "{{ state_attr(entity_weather, 'temperature') }}"
+      weather_ok: "{{ outdoor_temp_raw is not none and outdoor_temp_raw | float(none) is not none }}"
+      outdoor_temp: "{{ outdoor_temp_raw | float(0) if weather_ok else 0 }}"
 
       # --- Vacation ---
       is_vacation: "{{ is_state(entity_vacation, 'on') }}"
@@ -326,7 +411,7 @@ action:
       # --- Door ---
       door_is_open: >
         {% if sensor_door in [[], none, ''] %}
-          false
+          {{ false }}
         {% else %}
           {% set ns = namespace(open=false) %}
           {% for d in sensor_door %}
@@ -343,26 +428,42 @@ action:
       # --- Current AC State ---
       current_ac_mode: "{{ states(climate_ac) }}"
 
+      # --- Device setpoint limits (v1.1.0 R1C-1: never command what the unit can't store) ---
+      ac_min_temp: "{{ state_attr(climate_ac, 'min_temp') | float(16) }}"
+      ac_max_temp: "{{ state_attr(climate_ac, 'max_temp') | float(30) }}"
+      ac_temp_step: "{{ [state_attr(climate_ac, 'target_temp_step') | float(0.5), 0.1] | max }}"
+      setpoint_cool_q: >-
+        {{ ([([(((temp_high | float / ac_temp_step) | round(0, 'floor')) * ac_temp_step), ac_min_temp] | max), ac_max_temp] | min) | round(1) }}
+      setpoint_heat_q: >-
+        {{ ([([(((temp_low | float / ac_temp_step) | round(0, 'ceil')) * ac_temp_step), ac_min_temp] | max), ac_max_temp] | min) | round(1) }}
+
       # --- Per-Day Schedule ---
       schedule_start_today: >
         {{ [t_start_mon, t_start_tue, t_start_wed, t_start_thu, t_start_fri, t_start_sat, t_start_sun][now().weekday()] }}
       schedule_end_today: >
         {{ [t_end_mon, t_end_tue, t_end_wed, t_end_thu, t_end_fri, t_end_sat, t_end_sun][now().weekday()] }}
+      schedule_start_yesterday: >
+        {{ [t_start_mon, t_start_tue, t_start_wed, t_start_thu, t_start_fri, t_start_sat, t_start_sun][(now().weekday() - 1) % 7] }}
+      schedule_end_yesterday: >
+        {{ [t_end_mon, t_end_tue, t_end_wed, t_end_thu, t_end_fri, t_end_sat, t_end_sun][(now().weekday() - 1) % 7] }}
       in_operating_window: >
         {% set t_now = now().strftime('%H:%M:%S') %}
-        {% set t_start = schedule_start_today %}
-        {% set t_end = schedule_end_today %}
-        {% if t_start <= t_end %}
-          {{ t_start <= t_now < t_end }}
-        {% else %}
-          {{ t_now >= t_start or t_now < t_end }}
-        {% endif %}
+        {% set today = (schedule_start_today <= t_now < schedule_end_today)
+              if schedule_start_today <= schedule_end_today
+              else (t_now >= schedule_start_today) %}
+        {% set y_tail = schedule_start_yesterday > schedule_end_yesterday
+              and t_now < schedule_end_yesterday %}
+        {{ today or y_tail }}
 
       # --- Target Mode & Distance ---
       target_mode: >
         {% if current_temp | float > temp_high | float %}
           cool
         {% elif current_temp | float < temp_low | float %}
+          heat
+        {% elif current_ac_mode == 'cool' and current_temp | float > (temp_high | float - margin | float) %}
+          cool
+        {% elif current_ac_mode == 'heat' and current_temp | float < (temp_low | float + margin | float) %}
           heat
         {% else %}
           off
@@ -388,7 +489,7 @@ action:
         {% else %}
           {{ 0 }}
         {% endif %}
-      deadband_active: "{{ outdoor_distance | float < deadband_thresh | float }}"
+      deadband_active: "{{ (not weather_ok) or (outdoor_distance | float < deadband_thresh | float) }}"
 
       # --- Fan Speed (Proportional) ---
       available_fan_modes: "{{ state_attr(climate_ac, 'fan_modes') | default(['low', 'mid', 'high'], true) }}"
@@ -441,14 +542,46 @@ action:
         {% endif %}
       target_fan: >
         {% set mins = minutes_in_current_mode | int %}
+        {% set dist = distance_from_target | float %}
         {% set fan_levels = [fan_mode_low, fan_mode_mid, fan_mode_high, fan_mode_max] %}
         {% set base_idx = fan_levels.index(base_fan) if base_fan in fan_levels else 0 %}
-        {% if mins >= esc_stage_2 | int %}
+        {% if dist < fan_low_thresh | float %}
+          {{ base_fan }}
+        {% elif mins >= esc_stage_2 | int %}
           {{ fan_mode_max }}
         {% elif mins >= esc_stage_1 | int %}
           {{ fan_levels[[base_idx + 1, fan_levels | length - 1] | min] }}
         {% else %}
           {{ base_fan }}
+        {% endif %}
+
+      # --- Manual Hold (v1.1.0) ---
+      current_setpoint: "{{ state_attr(climate_ac, 'temperature') }}"
+      current_fan: "{{ state_attr(climate_ac, 'fan_mode') }}"
+      hold_enabled: "{{ hold_helper not in ['', none] }}"
+      expected: >
+        {% set e = (states(hold_helper) | from_json(default={})) if hold_enabled else {} %}
+        {{ e if e is mapping else {} }}
+      hold_until: "{{ expected.get('hold_until', 0) | float(0) }}"
+      hold_active: >-
+        {{ hold_enabled and expected.get('mode') is not none
+           and expected.get('mode') not in ['unavailable', 'unknown']
+           and hold_until | float(0) > as_timestamp(now())
+           and hold_until | float(0) <= as_timestamp(now()) + hold_minutes | int * 60 }}
+      manual_detected: >
+        {% if not hold_enabled or hold_active or expected.get('mode') is none
+              or expected.get('mode') in ['unavailable', 'unknown'] %}
+          {{ false }}
+        {% elif current_ac_mode != expected.get('mode') %}
+          {{ true }}
+        {% elif expected.get('mode') != 'off' and expected.get('temp') is not none
+              and (current_setpoint | float(-99) - expected.get('temp') | float(-99)) | abs > 0.3 %}
+          {{ true }}
+        {% elif expected.get('mode') != 'off' and expected.get('fan') is not none
+              and current_fan != expected.get('fan') %}
+          {{ true }}
+        {% else %}
+          {{ false }}
         {% endif %}
 
   # =============================================
@@ -469,24 +602,68 @@ action:
               notification_id: "ac_climate_config_error"
           - stop: "Comfort range misconfigured"
 
+      - conditions:
+          - condition: template
+            value_template: "{{ (margin | float * 2) >= (temp_high | float - temp_low | float) }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "AC Climate Blueprint — Configuration Error"
+              message: >
+                Comfort margin ({{ margin }}°C) is too large for the comfort
+                range ({{ temp_low }}–{{ temp_high }}°C): twice the margin must
+                fit inside the range. AC control is paused until corrected.
+              notification_id: "ac_climate_config_error"
+          - stop: "Comfort margin misconfigured"
+
+  # =============================================
+  # STEP 2b: NOTIFICATION HYGIENE
+  # =============================================
+  - service: persistent_notification.dismiss
+    data:
+      notification_id: "ac_climate_config_error"
+    continue_on_error: true
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ sensors_available }}"
+        sequence:
+          - service: persistent_notification.dismiss
+            data:
+              notification_id: "ac_climate_sensor_warning"
+            continue_on_error: true
+    default:
+      - service: persistent_notification.create
+        data:
+          title: "AC Climate Blueprint — Sensor Warning"
+          message: >
+            All temperature sensors are unavailable. AC is holding current
+            state until sensors recover. Sensors: {{ sensors_temp }}
+          notification_id: "ac_climate_sensor_warning"
+
+  # =============================================
+  # STEP 2c: RESTART SEED (no false hold after HA restart)
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: "init"
+          - condition: template
+            value_template: "{{ hold_enabled }}"
+        sequence:
+          - service: input_text.set_value
+            target:
+              entity_id: "{{ hold_helper }}"
+            data:
+              value: >
+                {{ {'mode': current_ac_mode, 'temp': current_setpoint | float(none),
+                    'fan': current_fan, 'hold_until': 0} | to_json }}
+            continue_on_error: true
+
   # =============================================
   # STEP 3: MAIN PRIORITY CHOOSE
   # =============================================
   - choose:
-      # --- 4a: SENSOR CHECK ---
-      - conditions:
-          - condition: template
-            value_template: "{{ not sensors_available }}"
-        sequence:
-          - service: persistent_notification.create
-            data:
-              title: "AC Climate Blueprint — Sensor Warning"
-              message: >
-                All temperature sensors are unavailable. AC is holding current
-                state until sensors recover. Sensors: {{ sensors_temp }}
-              notification_id: "ac_climate_sensor_warning"
-          - stop: "No sensors available"
-
       # --- 4a2: AC ENTITY UNAVAILABLE ---
       - conditions:
           - condition: template
@@ -499,33 +676,136 @@ action:
           - condition: template
             value_template: "{{ is_vacation }}"
         sequence:
-          - condition: template
-            value_template: "{{ current_ac_mode != 'off' }}"
-          - service: climate.turn_off
-            target:
-              entity_id: "{{ climate_ac }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ current_ac_mode != 'off' }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ climate_ac }}"
+                    continue_on_error: true
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ hold_enabled }}"
+                sequence:
+                  - service: input_text.set_value
+                    target:
+                      entity_id: "{{ hold_helper }}"
+                    data:
+                      value: >
+                        {{ {'mode': 'off', 'temp': none, 'fan': none,
+                            'hold_until': 0} | to_json }}
 
       # --- 4c: OUTSIDE OPERATING WINDOW ---
       - conditions:
           - condition: template
             value_template: "{{ not in_operating_window }}"
         sequence:
-          - condition: template
-            value_template: "{{ current_ac_mode != 'off' }}"
-          - service: climate.turn_off
-            target:
-              entity_id: "{{ climate_ac }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ current_ac_mode != 'off' }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ climate_ac }}"
+                    continue_on_error: true
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ hold_enabled }}"
+                sequence:
+                  - service: input_text.set_value
+                    target:
+                      entity_id: "{{ hold_helper }}"
+                    data:
+                      value: >
+                        {{ {'mode': 'off', 'temp': none, 'fan': none,
+                            'hold_until': 0} | to_json }}
 
       # --- 4d: DOOR OPEN ---
       - conditions:
           - condition: template
-            value_template: "{{ door_is_open }}"
+            value_template: "{{ door_is_open or (trigger is defined and trigger.id == 'door_open') }}"
         sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ current_ac_mode != 'off' }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ climate_ac }}"
+                    continue_on_error: true
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ hold_enabled }}"
+                sequence:
+                  - service: input_text.set_value
+                    target:
+                      entity_id: "{{ hold_helper }}"
+                    data:
+                      value: >
+                        {{ {'mode': 'off', 'temp': none, 'fan': none,
+                            'hold_until': 0} | to_json }}
+
+      # --- SENSOR CHECK (pierces above must not starve on stale sensors) ---
+      - conditions:
           - condition: template
-            value_template: "{{ current_ac_mode != 'off' }}"
-          - service: climate.turn_off
+            value_template: "{{ not sensors_available }}"
+        sequence:
+          - stop: "No sensors available"
+
+      # --- MANUAL CHANGE DETECTED → START HOLD ---
+      - conditions:
+          - condition: template
+            value_template: "{{ manual_detected and not (trigger is defined and trigger.id == 'init') }}"
+        sequence:
+          - service: input_text.set_value
             target:
-              entity_id: "{{ climate_ac }}"
+              entity_id: "{{ hold_helper }}"
+            data:
+              value: >
+                {{ {'mode': current_ac_mode, 'temp': current_setpoint | float(none),
+                    'fan': current_fan,
+                    'hold_until': (as_timestamp(now()) + hold_minutes | int * 60) | int} | to_json }}
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ (states(hold_helper) | from_json(default={})).get('hold_until', 0) | float(0) <= as_timestamp(now()) }}"
+                sequence:
+                  - service: persistent_notification.create
+                    data:
+                      title: "AC Climate Blueprint — Hold Helper Error"
+                      message: >
+                        The manual-hold helper {{ hold_helper }} did not persist the
+                        hold timestamp (write failed — check the helper's max length
+                        is 255). Manual-override holds are not functioning.
+                      notification_id: "ac_climate_hold_helper_error"
+                    continue_on_error: true
+            default:
+              - service: persistent_notification.dismiss
+                data:
+                  notification_id: "ac_climate_hold_helper_error"
+                continue_on_error: true
+          - stop: "Manual change detected — holding"
+
+      # --- HOLD ACTIVE (refresh expected to live, keep the clock) ---
+      - conditions:
+          - condition: template
+            value_template: "{{ hold_active and not (trigger is defined and trigger.id == 'init') }}"
+        sequence:
+          - service: input_text.set_value
+            target:
+              entity_id: "{{ hold_helper }}"
+            data:
+              value: >
+                {{ {'mode': current_ac_mode, 'temp': current_setpoint | float(none),
+                    'fan': current_fan, 'hold_until': hold_until | float(0) | int} | to_json }}
+          - stop: "Manual hold active"
 
       # --- 4e: TEMP INSIDE COMFORT RANGE ---
       - conditions:
@@ -538,21 +818,34 @@ action:
                   - condition: template
                     value_template: "{{ deadband_active }}"
                 sequence:
-                  - condition: template
-                    value_template: "{{ current_ac_mode != 'off' }}"
-                  - service: climate.turn_off
-                    target:
-                      entity_id: "{{ climate_ac }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ current_ac_mode != 'off' }}"
+                        sequence:
+                          - service: climate.turn_off
+                            target:
+                              entity_id: "{{ climate_ac }}"
+                            continue_on_error: true
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ hold_enabled }}"
+                        sequence:
+                          - service: input_text.set_value
+                            target:
+                              entity_id: "{{ hold_helper }}"
+                            data:
+                              value: >
+                                {{ {'mode': 'off', 'temp': none, 'fan': none,
+                                    'hold_until': 0} | to_json }}
               # Deadband DISABLED (extreme outdoor) → maintenance mode
               - conditions:
                   - condition: template
                     value_template: "{{ not deadband_active }}"
                 sequence:
-                  - service: climate.set_temperature
-                    target:
-                      entity_id: "{{ climate_ac }}"
-                    data:
-                      hvac_mode: >
+                  - variables:
+                      desired_mode: >
                         {% if current_ac_mode in ['cool', 'heat'] %}
                           {{ current_ac_mode }}
                         {% elif current_temp | float >= ((temp_low | float + temp_high | float) / 2) %}
@@ -560,52 +853,130 @@ action:
                         {% else %}
                           heat
                         {% endif %}
-                      temperature: >
-                        {% if current_ac_mode == 'cool' %}
-                          {{ temp_high }}
-                        {% elif current_ac_mode == 'heat' %}
-                          {{ temp_low }}
-                        {% elif current_temp | float >= ((temp_low | float + temp_high | float) / 2) %}
-                          {{ temp_high }}
-                        {% else %}
-                          {{ temp_low }}
-                        {% endif %}
-                  - service: climate.set_fan_mode
-                    target:
-                      entity_id: "{{ climate_ac }}"
-                    data:
-                      fan_mode: "{{ fan_mode_low }}"
+                      desired_setpoint: "{{ setpoint_cool_q if desired_mode == 'cool' else setpoint_heat_q }}"
+                      desired_fan: "{{ fan_mode_low }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ current_ac_mode != desired_mode or (state_attr(climate_ac, 'temperature') | float(-99) - desired_setpoint | float) | abs > 0.05 }}"
+                        sequence:
+                          - service: climate.set_temperature
+                            target:
+                              entity_id: "{{ climate_ac }}"
+                            data:
+                              hvac_mode: "{{ desired_mode }}"
+                              temperature: "{{ desired_setpoint }}"
+                            continue_on_error: true
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ state_attr(climate_ac, 'fan_mode') != desired_fan }}"
+                        sequence:
+                          - service: climate.set_fan_mode
+                            target:
+                              entity_id: "{{ climate_ac }}"
+                            data:
+                              fan_mode: "{{ desired_fan }}"
+                            continue_on_error: true
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ hold_enabled }}"
+                        sequence:
+                          - service: input_text.set_value
+                            target:
+                              entity_id: "{{ hold_helper }}"
+                            data:
+                              value: >
+                                {{ {'mode': desired_mode, 'temp': desired_setpoint | float(none),
+                                    'fan': desired_fan, 'hold_until': 0} | to_json }}
 
       # --- 4f: COOL ---
       - conditions:
           - condition: template
             value_template: "{{ target_mode == 'cool' }}"
         sequence:
-          - service: climate.set_temperature
-            target:
-              entity_id: "{{ climate_ac }}"
-            data:
-              hvac_mode: "cool"
-              temperature: "{{ temp_high }}"
-          - service: climate.set_fan_mode
-            target:
-              entity_id: "{{ climate_ac }}"
-            data:
-              fan_mode: "{{ target_fan }}"
+          - variables:
+              desired_mode: "cool"
+              desired_setpoint: "{{ setpoint_cool_q }}"
+              desired_fan: "{{ target_fan }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ current_ac_mode != desired_mode or (state_attr(climate_ac, 'temperature') | float(-99) - desired_setpoint | float) | abs > 0.05 }}"
+                sequence:
+                  - service: climate.set_temperature
+                    target:
+                      entity_id: "{{ climate_ac }}"
+                    data:
+                      hvac_mode: "{{ desired_mode }}"
+                      temperature: "{{ desired_setpoint }}"
+                    continue_on_error: true
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ state_attr(climate_ac, 'fan_mode') != desired_fan }}"
+                sequence:
+                  - service: climate.set_fan_mode
+                    target:
+                      entity_id: "{{ climate_ac }}"
+                    data:
+                      fan_mode: "{{ desired_fan }}"
+                    continue_on_error: true
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ hold_enabled }}"
+                sequence:
+                  - service: input_text.set_value
+                    target:
+                      entity_id: "{{ hold_helper }}"
+                    data:
+                      value: >
+                        {{ {'mode': desired_mode, 'temp': desired_setpoint | float(none),
+                            'fan': desired_fan, 'hold_until': 0} | to_json }}
 
       # --- 4g: HEAT ---
       - conditions:
           - condition: template
             value_template: "{{ target_mode == 'heat' }}"
         sequence:
-          - service: climate.set_temperature
-            target:
-              entity_id: "{{ climate_ac }}"
-            data:
-              hvac_mode: "heat"
-              temperature: "{{ temp_low }}"
-          - service: climate.set_fan_mode
-            target:
-              entity_id: "{{ climate_ac }}"
-            data:
-              fan_mode: "{{ target_fan }}"
+          - variables:
+              desired_mode: "heat"
+              desired_setpoint: "{{ setpoint_heat_q }}"
+              desired_fan: "{{ target_fan }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ current_ac_mode != desired_mode or (state_attr(climate_ac, 'temperature') | float(-99) - desired_setpoint | float) | abs > 0.05 }}"
+                sequence:
+                  - service: climate.set_temperature
+                    target:
+                      entity_id: "{{ climate_ac }}"
+                    data:
+                      hvac_mode: "{{ desired_mode }}"
+                      temperature: "{{ desired_setpoint }}"
+                    continue_on_error: true
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ state_attr(climate_ac, 'fan_mode') != desired_fan }}"
+                sequence:
+                  - service: climate.set_fan_mode
+                    target:
+                      entity_id: "{{ climate_ac }}"
+                    data:
+                      fan_mode: "{{ desired_fan }}"
+                    continue_on_error: true
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ hold_enabled }}"
+                sequence:
+                  - service: input_text.set_value
+                    target:
+                      entity_id: "{{ hold_helper }}"
+                    data:
+                      value: >
+                        {{ {'mode': desired_mode, 'temp': desired_setpoint | float(none),
+                            'fan': desired_fan, 'hold_until': 0} | to_json }}
