@@ -207,3 +207,40 @@ def test_window_formula_owns_overnight_tail(bp):
         "and t_now < schedule_end_yesterday %} "
         "{{ today or y_tail }}"
     )
+
+
+def test_trigger_roster(bp):
+    trigs = bp["trigger"]
+    ids = [t.get("id") for t in trigs]
+    assert ids == ["update_loop", "vacation_on", "init", "door_open", "vacation_off", "init"]
+    reload_t = trigs[5]
+    # reloads don't fire homeassistant:start (board R2-2); same id → same seed semantics.
+    # If the event name were ever wrong, the trigger is inert — safe either way.
+    assert (reload_t["platform"], reload_t["event_type"]) == ("event", "automation_reloaded")
+    door = trigs[3]
+    assert door["platform"] == "state"          # research §2: never a device trigger
+    assert door["entity_id"] == _Input("door_sensor")
+    assert door["to"] == "on"
+    assert door["for"] == {"minutes": _Input("door_off_delay")}
+    vac = trigs[4]
+    assert (vac["platform"], vac["to"]) == ("state", "off")
+    assert vac["entity_id"] == _Input("vacation_toggle")
+
+
+def test_dismiss_steps(bp):
+    d1 = bp["action"][2]
+    assert step_kind(d1) == "service:persistent_notification.dismiss"
+    assert d1["data"]["notification_id"] == "ac_climate_config_error"
+    assert d1["continue_on_error"] is True
+    d2 = bp["action"][3]
+    assert step_kind(d2) == "choose"
+    b = d2["choose"][0]
+    assert branch_cond(b) == "{{ sensors_available }}"
+    inner = b["sequence"][0]
+    assert inner["data"]["notification_id"] == "ac_climate_sensor_warning"
+    assert inner["continue_on_error"] is True
+
+
+def test_door_is_open_no_sensor_branch_is_boolean(bp):
+    d = get_var(bp, "door_is_open")
+    assert "{{ false }}" in d and d.find("{{ false }}") < d.find("{% else %}")

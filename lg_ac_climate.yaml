@@ -292,6 +292,25 @@ trigger:
     event: start
     id: "init"
 
+  # 4. Door left open (exact-time shut-off)
+  - platform: state
+    entity_id: !input door_sensor
+    to: "on"
+    for:
+      minutes: !input door_off_delay
+    id: "door_open"
+
+  # 5. Vacation Mode OFF (instant resume)
+  - platform: state
+    entity_id: !input vacation_toggle
+    to: "off"
+    id: "vacation_off"
+
+  # 6. Automation reload (same seed semantics as HA start — board R2-2)
+  - platform: event
+    event_type: automation_reloaded
+    id: "init"
+
 variables:
   # --- Entity Mappings ---
   climate_ac: !input climate_entity
@@ -378,7 +397,7 @@ action:
       # --- Door ---
       door_is_open: >
         {% if sensor_door in [[], none, ''] %}
-          false
+          {{ false }}
         {% else %}
           {% set ns = namespace(open=false) %}
           {% for d in sensor_door %}
@@ -546,6 +565,23 @@ action:
           - stop: "Comfort margin misconfigured"
 
   # =============================================
+  # STEP 2b: NOTIFICATION HYGIENE
+  # =============================================
+  - service: persistent_notification.dismiss
+    data:
+      notification_id: "ac_climate_config_error"
+    continue_on_error: true
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ sensors_available }}"
+        sequence:
+          - service: persistent_notification.dismiss
+            data:
+              notification_id: "ac_climate_sensor_warning"
+            continue_on_error: true
+
+  # =============================================
   # STEP 3: MAIN PRIORITY CHOOSE
   # =============================================
   - choose:
@@ -595,7 +631,7 @@ action:
       # --- 4d: DOOR OPEN ---
       - conditions:
           - condition: template
-            value_template: "{{ door_is_open }}"
+            value_template: "{{ door_is_open or (trigger is defined and trigger.id == 'door_open') }}"
         sequence:
           - condition: template
             value_template: "{{ current_ac_mode != 'off' }}"
