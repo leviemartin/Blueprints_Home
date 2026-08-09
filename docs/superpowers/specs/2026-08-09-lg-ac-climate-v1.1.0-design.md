@@ -123,7 +123,8 @@ door cycles); per-day schedule-edge triggers (requirements wording updated to "w
 control tick" instead).
 
 **Acceptance:** door opens at T, delay 5 min → `climate.turn_off` at T+5 (±trigger latency),
-not T+5..15.
+not T+5..15. Carve-out: an HA restart during the countdown loses the pending `for:` timer —
+the 10-minute loop is the backstop for that window (board R2-3).
 
 ### 7. Cross-midnight window correctness
 
@@ -148,48 +149,79 @@ expected to be a no-op — research-validate confirms.)
 
 ### 9. Manual-override hold (auto-detect, safety pierces)
 
-**Helper contract:** optional per-floor `input_text` storing JSON (≤255 chars, well within):
+**Helper contract:** optional per-floor `input_text` storing JSON:
 
 ```json
 {"mode": "cool", "temp": 24.0, "fan": "low", "hold_until": 0}
 ```
 
 `mode/temp/fan` = last state this automation commanded ("expected"); `hold_until` = epoch
-seconds, `0` = no hold. Helper unset ⇒ every hold codepath inert (like the optional door input).
+seconds **rounded to an integer** (board R1-9: an unrounded float epoch can push the document
+past a default-`max:100` helper, and `input_text.set_value` silently no-ops on overflow), `0` =
+no hold. The helper **must be created with `max: 255`** (stated in the input description; the
+rounded document also fits the default 100, belt-and-braces). Helper unset ⇒ every hold codepath
+inert (like the optional door input).
 
 **Rules:**
 
 1. **Expected-write:** every branch that commands the AC — comfort *and* safety-off — finishes by
-   writing the helper with what it commanded (off-branches: `mode: "off"`, `temp`/`fan` null).
-   Writes preserve the current `hold_until` except where a rule below sets/clears it.
+   writing the helper with what it commanded (off-branches: `mode: "off"`, `temp`/`fan` null)
+   **and `hold_until: 0`**. Only the hold-start branch ever writes a nonzero `hold_until`
+   (board R1-2: reusing the pre-seed STEP-1 value re-armed stale holds after restart; writing 0
+   everywhere eliminates the class). A **safety pierce therefore ends any active hold** (board
+   R1-7: the manual state the hold protected no longer exists once a pierce turns the AC off —
+   preserving the hold stranded the AC off and defeated vacation-off instant resume).
    Unconditional write (local helper; no beep, negligible recorder churn).
 2. **Detection** (each run, after safety branches, before comfort branches; requires helper
-   configured, parsed expected present, no active hold): manual ⇔ `mode ≠ expected.mode`, or —
-   when expected mode ≠ off — `|setpoint − expected.temp| > 0.3` or `fan ≠ expected.fan`.
-   On detection: write helper `{expected: live snapshot, hold_until: now + hold_minutes}` and
-   end the run (comfort branches skipped).
-3. **During hold** (`hold_until > now`): comfort branches skipped; detection skipped (a fixed,
-   non-extending window — extending on the user's own further tweaks would compare against
-   pre-hold expected and never release). Safety still pierces: vacation, out-of-window, and
-   door-open sit **above** the hold check in the ladder and still force off (rule 1 writes apply,
-   `hold_until` preserved — the hold rides out its clock).
-4. **Expiry:** first run past `hold_until` resumes computed control (one beep) and rewrites
+   configured, no active hold, and a usable expectation — see rule 6): manual ⇔
+   `mode ≠ expected.mode`, or — when expected mode ≠ off — `|setpoint − expected.temp| > 0.3`
+   or `fan ≠ expected.fan`. All expected-field accesses via `.get` (board R1-4: a partial
+   mapping's Jinja Undefined passes `is not none` and coerces to −99, firing a false hold).
+   On detection: write helper `{live snapshot, hold_until: round(now + hold_minutes)}` and end
+   the run (comfort branches skipped).
+3. **During hold** (`hold_until` within `(now, now + hold_minutes]` — the upper bound rejects
+   adversarial/corrupt far-future values, board R2-1): comfort branches skipped; detection
+   skipped; the branch **refreshes the expected snapshot to live state** (preserving
+   `hold_until`) so expiry compares against the user's *latest* state (board R1-8: comparing
+   against the hold-start snapshot made every further tweak restart the window). The window
+   itself never extends. Safety still pierces: vacation, out-of-window, and door-open sit
+   **above** the hold check and force off — which by rule 1 also ends the hold.
+4. **Expiry:** first run past `hold_until` finds expected = the user's latest state (rule 3
+   refresh), so no re-detection fires; computed control resumes (one beep) and rewrites
    expected.
-5. **Restart guard:** on the `homeassistant: start` trigger, write `{expected: live snapshot,
-   hold_until: 0}` **before** the ladder runs (STEP 2c), then continue the run — the restart
-   control pass is preserved, and detection cannot fire because expected now equals live. State
-   may drift legitimately during downtime; a false hold per restart would be worse than missing
-   one manual change. A `hold_until` in the past is equivalent to `0` everywhere.
-6. **Corrupt/empty helper JSON** → treat as no-expectation: no hold, no detection this tick; the
-   baseline is (re)established by the next commanding branch or restart seed. This covers
-   invalid JSON (`from_json(default={})`) AND valid-but-non-object JSON — a bare number/string/
-   list parses successfully, so the `expected` template must apply an `is mapping` check or every
-   downstream `.get`/`in` access raises and kills the variables step each tick (triple-check P1).
+5. **Restart/reload guard:** on the `homeassistant: start` trigger **and** on the
+   `automation_reloaded` event (board R2-2: reloads don't fire HA start; both triggers share
+   id `init`), write `{expected: live snapshot, hold_until: 0}` **before** the ladder runs
+   (STEP 2c), then continue the run. The seed is written even while the climate entity is still
+   `unavailable`/`unknown` at startup (cloud entities come up late — board R1-1): an
+   unavailable/unknown expected mode is a deliberate **no-expectation sentinel** that detection
+   ignores (rule 6), and the next commanding branch re-establishes a real baseline. State may
+   drift legitimately during downtime; a false hold per restart would be worse than missing one
+   manual change. A `hold_until` in the past — or beyond `now + hold_minutes` — is equivalent
+   to `0` everywhere.
+6. **Unusable expectation** → no hold, no detection this tick; the baseline is (re)established
+   by the next commanding branch or restart seed. Unusable ⇔ invalid JSON
+   (`from_json(default={})`), valid-but-non-object JSON (`is mapping` check — a bare
+   number/string/list parses successfully and would otherwise kill the variables step each
+   tick), a missing `mode` key, or a `mode` of `unavailable`/`unknown` (rule 5 sentinel).
 
 **Acceptance:** (a) user bumps setpoint 24→22 on the remote → next tick detects, no revert for
-60 min, revert+resume after; (b) during hold, vacation ON still turns the AC off; (c) HA restart
-during a hold clears it without a false detection; (d) helper unset → byte-identical control
-behavior to items 1–8 alone.
+60 min, revert+resume after; (b) during hold, vacation ON still turns the AC off — and this
+ends the hold, so vacation-off resumes computed control immediately; (c) HA restart during a
+hold clears it without a false detection, including when the climate entity is still
+unavailable at the restart tick; (d) helper unset → byte-identical control behavior to items
+1–8 alone; (e) door pierce during a hold, door later closes → comfort control resumes on the
+next tick (no stranded-off window); (f) a second manual tweak during a hold is honored until
+the original expiry, then reverted — the window does not extend.
+
+**Command-failure residual (accepted, documented):** the two comfort `climate.*` calls carry
+`continue_on_error: true` so a cloud error cannot abort the branch before its expected-write
+(board R1-3). If a command fails, expected records the *desired* state while the device kept
+its old one — the next tick may read that as a manual change and start one spurious hold
+(self-clears within the hold window; the alternative two-strike scheme was rejected because it
+would revert a genuine manual change once before honoring it, defeating the feature's purpose).
+`mode: restart` interruption between a command and its expected-write has the same bounded
+consequence.
 
 ## Action-flow order (v1.1.0 ladder)
 
@@ -208,7 +240,7 @@ STEP 3  choose ladder:
      (condition: door_is_open OR trigger.id == 'door_open' — the timed trigger must select this
       branch by identity, not re-derive elapsed time and risk the float-equality edge)
   6. manual detected → start hold (rule 2) + stop
-  7. hold active     → stop
+  7. hold active     → refresh expected snapshot, preserve hold_until (rule 3) + stop
   8. in range → deadband on: off (guarded) + write │ deadband off: maintenance (guarded) + write
   9. cool / 10. heat → guarded set_temperature + guarded set_fan_mode + expected-write
 ```
@@ -224,9 +256,13 @@ restart never reads as a manual change yet still gets its control pass.
 | Some sensors stale | Excluded from aggregation |
 | All sensors stale/unavailable | Notify + hold state (existing path) |
 | AC entity unavailable | Stop, retry next tick (existing path) |
-| Helper JSON corrupt/empty | Re-seed from live state, no hold, control continues |
+| Helper JSON corrupt/empty/non-object/partial | No-expectation: no hold, control continues; next commanding branch re-seeds |
+| Helper `hold_until` corrupt/far-future | Rejected by the bounded window check; treated as no hold |
 | Helper unset | Items 1–8 behavior only; hold feature inert |
-| HA restart mid-hold | Hold cleared, expected re-seeded, no false detection |
+| HA restart or automation reload mid-hold | Hold cleared, expected re-seeded (even if entity still unavailable — sentinel), no false detection |
+| Automation re-enabled after long disable (no reload event) | One spurious hold possible from drift; self-clears within the hold window |
+| Comfort command fails mid-branch (cloud error) | Branch completes via `continue_on_error`; one spurious hold possible; self-clears |
+| HA restart during a door `for:` countdown | Pending timer lost; the 10-minute loop is the backstop (exact-time guarantee excludes restart windows) |
 
 ## Testing
 
@@ -242,8 +278,12 @@ loader + pytest, venv `~/projects/ceiling-fan-hue-blueprint/.venv`):
   and on each acting branch's guarded-call choreography — membership asserts are vacuous for
   sequence order (kids-room lesson: positional pins are the only shape that binds YAML
   choreography).
-- **Guard-presence pins:** every `climate.*` call in branches 9–11 sits inside a per-call guard;
-  every commanding branch ends with an expected-write.
+- **Guard-presence pins:** every `climate.*` call in branches 8–10 (in-range/maintenance, cool,
+  heat) sits inside a per-call guard; every commanding branch ends with an expected-write.
+- **Rendered behavior tests** (board R1-10): the nightlight harness already renders Jinja with
+  stubbed `now()`/`states`/`state_attr` — each spec acceptance line for `in_operating_window`,
+  `target_mode`, `target_fan`, and `manual_detected` gets a rendered assertion, alongside (not
+  instead of) the exact-text pins.
 - Reviewers run hash-verified apply/revert mutation probes per
   `feedback_mutation_that_fails_to_apply_reads_as_survivor`.
 
