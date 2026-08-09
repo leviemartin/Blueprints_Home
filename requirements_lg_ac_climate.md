@@ -54,7 +54,8 @@ manual human input.
 1. Vacation mode: forces AC fully off via input_boolean; control resumes
    immediately when toggled off
 2. Door sensor: AC turns off at exactly the configured delay after the door
-   opens (dedicated timed trigger)
+   opens (dedicated timed trigger), except across HA restarts or during a
+   sensor-failure hold — there the 10-minute loop is the backstop
 3. Manual-override hold: a human change via remote/app (mode, setpoint beyond
    ±0.3 °C, or fan) is detected against the last automation-commanded state
    and honored for a configurable hold window (default 60 min). Vacation,
