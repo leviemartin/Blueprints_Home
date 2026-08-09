@@ -160,7 +160,7 @@ seconds **floored to an integer** (board R1-9: an unrounded float epoch can push
 past a default-`max:100` helper, and `input_text.set_value` silently no-ops on overflow; floor
 rather than round-half — board R2R-5 — so sub-second trigger latency can never stretch a hold
 past its true deadline into the next tick), `0` = no hold. The helper **must be created with `max: 255`** (stated in the input description; the
-rounded document also fits the default 100, belt-and-braces). Helper unset ⇒ every hold codepath
+integer-epoch document also fits the default 100, belt-and-braces). Helper unset ⇒ every hold codepath
 inert (like the optional door input).
 
 **Rules:**
