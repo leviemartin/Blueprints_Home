@@ -364,7 +364,9 @@ def test_weather_ok_and_safe_deadband(bp):
 ```
 
 - [ ] **Step 2: Run — FAIL**
-- [ ] **Step 3: Implement** — replace the three variables in STEP 1:
+- [ ] **Step 3: Implement** — replace `valid_temps`, `outdoor_temp`, and `deadband_active`, and
+add `outdoor_temp_raw` + `weather_ok` immediately above `outdoor_temp` (they are additions, not
+replacements — five variables total change in STEP 1):
 
 ```yaml
       valid_temps: >
@@ -487,10 +489,14 @@ def test_escalation_distance_gated(bp):
 
 ```python
 def test_yesterday_schedule_variables(bp):
+    # exact-equality: a copy-paste of start-lists into the end variable would make
+    # y_tail structurally `X > X` = dead code with a green suite (board R1-5)
     sy = " ".join(get_var(bp, "schedule_start_yesterday").split())
-    assert "(now().weekday() - 1) % 7" in sy
+    assert sy == ("{{ [t_start_mon, t_start_tue, t_start_wed, t_start_thu, t_start_fri, "
+                  "t_start_sat, t_start_sun][(now().weekday() - 1) % 7] }}")
     ey = " ".join(get_var(bp, "schedule_end_yesterday").split())
-    assert "(now().weekday() - 1) % 7" in ey
+    assert ey == ("{{ [t_end_mon, t_end_tue, t_end_wed, t_end_thu, t_end_fri, "
+                  "t_end_sat, t_end_sun][(now().weekday() - 1) % 7] }}")
 
 
 def test_window_formula_owns_overnight_tail(bp):
@@ -553,7 +559,11 @@ Replace `in_operating_window`:
 def test_trigger_roster(bp):
     trigs = bp["trigger"]
     ids = [t.get("id") for t in trigs]
-    assert ids == ["update_loop", "vacation_on", "init", "door_open", "vacation_off"]
+    assert ids == ["update_loop", "vacation_on", "init", "door_open", "vacation_off", "init"]
+    reload_t = trigs[5]
+    # reloads don't fire homeassistant:start (board R2-2); same id → same seed semantics.
+    # If the event name were ever wrong, the trigger is inert — safe either way.
+    assert (reload_t["platform"], reload_t["event_type"]) == ("event", "automation_reloaded")
     door = trigs[3]
     assert door["platform"] == "state"          # research §2: never a device trigger
     assert door["entity_id"] == _Input("door_sensor")
@@ -599,6 +609,11 @@ Append to `trigger:`:
     entity_id: !input vacation_toggle
     to: "off"
     id: "vacation_off"
+
+  # 6. Automation reload (same seed semantics as HA start — board R2-2)
+  - platform: event
+    event_type: automation_reloaded
+    id: "init"
 ```
 
 Also change the ladder's door branch condition (currently `{{ door_is_open }}`) to:
@@ -681,6 +696,9 @@ def test_comfort_branches_guard_every_call(bp):
         assert seq_kinds(inner_t) == ["service:climate.set_temperature"], name
         inner_f = b["sequence"][2]["choose"][0]["sequence"]
         assert seq_kinds(inner_f) == ["service:climate.set_fan_mode"], name
+        # a cloud error must not abort the branch before its expected-write (board R1-3)
+        assert inner_t[0]["continue_on_error"] is True, name
+        assert inner_f[0]["continue_on_error"] is True, name
 
 
 def test_cool_heat_desired_values(bp):
@@ -731,6 +749,7 @@ Cool branch becomes (heat branch mirrors with `heat`/`temp_low`):
                     data:
                       hvac_mode: "{{ desired_mode }}"
                       temperature: "{{ desired_setpoint }}"
+                    continue_on_error: true
           - choose:
               - conditions:
                   - condition: template
@@ -741,7 +760,11 @@ Cool branch becomes (heat branch mirrors with `heat`/`temp_low`):
                       entity_id: "{{ climate_ac }}"
                     data:
                       fan_mode: "{{ desired_fan }}"
+                    continue_on_error: true
 ```
+
+(`continue_on_error: true` on both calls in ALL THREE comfort branches — maintenance, cool,
+heat — board R1-3: an integration error must not skip the branch's expected-write.)
 
 Maintenance sub-branch (deadband disabled): same three-step shape with
 
@@ -801,9 +824,24 @@ Off-branches (vacation / out-of-window / door / in-range-deadband-active) each b
 
 ```python
 EXPECTED_WRITE_VALUE = ("{{ {'mode': desired_mode, 'temp': desired_setpoint | float(none), "
-                        "'fan': desired_fan, 'hold_until': hold_until | float(0)} | to_json }}")
+                        "'fan': desired_fan, 'hold_until': 0} | to_json }}")
 OFF_WRITE_VALUE = ("{{ {'mode': 'off', 'temp': none, 'fan': none, "
-                   "'hold_until': hold_until | float(0)} | to_json }}")
+                   "'hold_until': 0} | to_json }}")
+# Only the hold-start branch writes a nonzero hold_until (board R1-2/R1-7: a pierce ends the
+# hold; stale STEP-1 hold_until must never be re-written).
+REFRESH_WRITE_VALUE = ("{{ {'mode': current_ac_mode, 'temp': current_setpoint | float(none), "
+                       "'fan': current_fan, 'hold_until': hold_until | float(0) | round(0) | int} "
+                       "| to_json }}")
+MANUAL_DETECTED = (
+    "{% if not hold_enabled or hold_active or expected.get('mode') is none "
+    "or expected.get('mode') in ['unavailable', 'unknown'] %} false "
+    "{% elif current_ac_mode != expected.get('mode') %} true "
+    "{% elif expected.get('mode') != 'off' and expected.get('temp') is not none "
+    "and (current_setpoint | float(-99) - expected.get('temp') | float(-99)) | abs > 0.3 %} true "
+    "{% elif expected.get('mode') != 'off' and expected.get('fan') is not none "
+    "and current_fan != expected.get('fan') %} true "
+    "{% else %} false {% endif %}"
+)
 
 
 def test_hold_variables(bp):
@@ -813,11 +851,12 @@ def test_hold_variables(bp):
     assert exp == ("{% set e = (states(hold_helper) | from_json(default={})) "
                    "if hold_enabled else {} %} {{ e if e is mapping else {} }}")
     ha = " ".join(get_var(bp, "hold_active").split())
-    assert ha == "{{ hold_enabled and hold_until | float(0) > as_timestamp(now()) }}"
+    assert ha == ("{{ hold_enabled and hold_until | float(0) > as_timestamp(now()) "
+                  "and hold_until | float(0) <= as_timestamp(now()) + hold_minutes | int * 60 }}")
+    # full exact-equality pin — substring pins let an inverted predicate ship green
+    # (board converged finding R1-6 + R2-4)
     md = " ".join(get_var(bp, "manual_detected").split())
-    assert "expected.mode" in md and "> 0.3" in md and "expected.fan" in md
-    assert md.startswith("{% if not hold_enabled or hold_active or expected == {} "
-                         "or 'mode' not in expected %} false")
+    assert md == MANUAL_DETECTED
 
 
 def test_step2c_restart_seed(bp):
@@ -851,12 +890,17 @@ def test_hold_start_branch_snapshots_and_stops(bp):
     b = ladder(bp)[5]
     assert seq_kinds(b["sequence"]) == ["service:input_text.set_value", "stop"]
     val = " ".join(b["sequence"][0]["data"]["value"].split())
-    assert "as_timestamp(now()) + hold_minutes | int * 60" in val
+    assert "(as_timestamp(now()) + hold_minutes | int * 60) | round(0) | int" in val
     assert "current_ac_mode" in val
 
 
-def test_hold_active_branch_stops(bp):
-    assert seq_kinds(ladder(bp)[6]["sequence"]) == ["stop"]
+def test_hold_active_branch_refreshes_and_stops(bp):
+    # rule 3: refresh expected to live (hold_until preserved) so expiry compares
+    # against the user's LATEST state (board R1-8), then stop
+    b = ladder(bp)[6]
+    assert seq_kinds(b["sequence"]) == ["service:input_text.set_value", "stop"]
+    val = " ".join(b["sequence"][0]["data"]["value"].split())
+    assert val == REFRESH_WRITE_VALUE
 
 
 def _expected_write_step(step):
@@ -895,17 +939,20 @@ def test_every_commanding_branch_ends_with_expected_write(bp):
         {% set e = (states(hold_helper) | from_json(default={})) if hold_enabled else {} %}
         {{ e if e is mapping else {} }}
       hold_until: "{{ expected.get('hold_until', 0) | float(0) }}"
-      hold_active: "{{ hold_enabled and hold_until | float(0) > as_timestamp(now()) }}"
+      hold_active: >-
+        {{ hold_enabled and hold_until | float(0) > as_timestamp(now())
+           and hold_until | float(0) <= as_timestamp(now()) + hold_minutes | int * 60 }}
       manual_detected: >
-        {% if not hold_enabled or hold_active or expected == {} or 'mode' not in expected %}
+        {% if not hold_enabled or hold_active or expected.get('mode') is none
+              or expected.get('mode') in ['unavailable', 'unknown'] %}
           false
-        {% elif current_ac_mode != expected.mode %}
+        {% elif current_ac_mode != expected.get('mode') %}
           true
-        {% elif expected.mode != 'off' and expected.temp is not none
-              and (current_setpoint | float(-99) - expected.temp | float(-99)) | abs > 0.3 %}
+        {% elif expected.get('mode') != 'off' and expected.get('temp') is not none
+              and (current_setpoint | float(-99) - expected.get('temp') | float(-99)) | abs > 0.3 %}
           true
-        {% elif expected.mode != 'off' and expected.fan is not none
-              and current_fan != expected.fan %}
+        {% elif expected.get('mode') != 'off' and expected.get('fan') is not none
+              and current_fan != expected.get('fan') %}
           true
         {% else %}
           false
@@ -949,14 +996,21 @@ def test_every_commanding_branch_ends_with_expected_write(bp):
               value: >
                 {{ {'mode': current_ac_mode, 'temp': current_setpoint | float(none),
                     'fan': current_fan,
-                    'hold_until': as_timestamp(now()) + hold_minutes | int * 60} | to_json }}
+                    'hold_until': (as_timestamp(now()) + hold_minutes | int * 60) | round(0) | int} | to_json }}
           - stop: "Manual change detected — holding"
 
-      # --- HOLD ACTIVE ---
+      # --- HOLD ACTIVE (refresh expected to live, keep the clock) ---
       - conditions:
           - condition: template
             value_template: "{{ hold_active and not (trigger is defined and trigger.id == 'init') }}"
         sequence:
+          - service: input_text.set_value
+            target:
+              entity_id: "{{ hold_helper }}"
+            data:
+              value: >
+                {{ {'mode': current_ac_mode, 'temp': current_setpoint | float(none),
+                    'fan': current_fan, 'hold_until': hold_until | float(0) | round(0) | int} | to_json }}
           - stop: "Manual hold active"
 ```
 
@@ -974,7 +1028,7 @@ def test_every_commanding_branch_ends_with_expected_write(bp):
                     data:
                       value: >
                         {{ {'mode': 'off', 'temp': none, 'fan': none,
-                            'hold_until': hold_until | float(0)} | to_json }}
+                            'hold_until': 0} | to_json }}
 ```
 
 3.5 Append to maintenance/cool/heat branches (last step) — same shape with:
@@ -982,15 +1036,121 @@ def test_every_commanding_branch_ends_with_expected_write(bp):
 ```yaml
                       value: >
                         {{ {'mode': desired_mode, 'temp': desired_setpoint | float(none),
-                            'fan': desired_fan, 'hold_until': hold_until | float(0)} | to_json }}
+                            'fan': desired_fan, 'hold_until': 0} | to_json }}
 ```
 
-3.6 Spec rule 6 amendment (lazy seeding — one-line edit in the spec file): corrupt/empty helper
-JSON is treated as no-expectation (detection off); the baseline is (re)established by the next
-commanding branch or restart seed, not by a dedicated write.
+3.6 Tighten the Task-7 shape pins now that every commanding branch has its expected-write
+appended (board R1-13 — a prefix slice would let a stray unguarded call hide before the write):
+in `test_comfort_branches_guard_every_call` replace the `kinds[:3]` prefix assert with
+`assert seq_kinds(b["sequence"]) == ["variables", "choose", "choose", "choose"], (name, kinds)`,
+and in `test_off_branches_wrap_turn_off_in_guard` add
+`assert seq_kinds(b["sequence"]) == ["choose", "choose"], marker` after the existing asserts.
 
 - [ ] **Step 4: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
-- [ ] **Step 5: Commit** — `feat(lg-ac): auto-detected manual-override hold (safety pierces)` (include the spec one-liner in this commit)
+- [ ] **Step 5: Commit** — `feat(lg-ac): auto-detected manual-override hold (pierce ends hold)`
+
+---
+
+### Task 8b: Rendered behavior tests (board R1-10)
+
+**Model tier:** Sonnet
+**Rationale:** Spec acceptance lines are renderable propositions; the rendering-stub pattern already exists in the nightlight suite.
+**Effort:** high
+
+**Files:**
+- Test: `tests/test_lg_ac_climate_structure.py` (additions only — no blueprint change)
+
+The exact-text pins bind the template *text*; these bind its *semantics* — a
+character-perfect-but-wrong transcription cannot survive both.
+
+- [ ] **Step 1: Add rendering helper + tests**
+
+```python
+from datetime import datetime
+
+from jinja2 import Environment
+
+
+def _float(v, default=0.0):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def render_var(bp, name, ctx, now=None):
+    """Render a STEP-1 variable template with HA-ish stubs."""
+    env = Environment()
+    env.filters["float"] = _float
+    env.filters["round"] = lambda v, p=0, *a: round(float(v), int(p))
+    tpl = env.from_string(get_var(bp, name))
+    base = {"now": (lambda: now)} if now else {}
+    return tpl.render(**base, **ctx).strip()
+
+
+def test_rendered_target_mode_hysteresis(bp):
+    ctx = dict(temp_low=20.0, temp_high=24.0, margin=0.5)
+    cases = [
+        (23.8, "cool", "cool"),   # continue zone, actively cooling → keep cooling
+        (23.4, "cool", "off"),    # past high − margin → off
+        (23.8, "off", "off"),     # in range from off → stay off
+        (24.1, "off", "cool"),    # above high → cool
+        (19.8, "off", "heat"),    # below low → heat
+        (20.3, "heat", "heat"),   # heat continue zone
+    ]
+    for temp, mode, want in cases:
+        got = render_var(bp, "target_mode", {**ctx, "current_temp": temp, "current_ac_mode": mode})
+        assert got == want, (temp, mode, got)
+
+
+def test_rendered_target_fan_distance_gate(bp):
+    ctx = dict(fan_low_thresh=1.0, fan_med_thresh=3.0, esc_stage_1=20, esc_stage_2=40,
+               fan_mode_low="low", fan_mode_mid="mid", fan_mode_high="high",
+               fan_mode_max="high", base_fan="low")
+    # spec item-3 acceptance: dist 0.4 with 3 h in-mode → low (v1.0.0 gave max)
+    got = render_var(bp, "target_fan",
+                     {**ctx, "minutes_in_current_mode": 180, "distance_from_target": 0.4})
+    assert got == "low"
+    # genuinely far + past stage 2 → max
+    got = render_var(bp, "target_fan",
+                     {**ctx, "base_fan": "mid", "minutes_in_current_mode": 45,
+                      "distance_from_target": 2.0})
+    assert got == "high"
+
+
+def test_rendered_window_owns_overnight_tail(bp):
+    # Sat 22:00→06:00 overnight, Sun 07:00→23:00 (spec item-7 acceptance)
+    sun = dict(schedule_start_today="07:00:00", schedule_end_today="23:00:00",
+               schedule_start_yesterday="22:00:00", schedule_end_yesterday="06:00:00")
+    assert render_var(bp, "in_operating_window", sun, now=datetime(2026, 8, 9, 1, 0)) == "True"
+    assert render_var(bp, "in_operating_window", sun, now=datetime(2026, 8, 9, 6, 30)) == "False"
+    sat = dict(schedule_start_today="22:00:00", schedule_end_today="06:00:00",
+               schedule_start_yesterday="07:00:00", schedule_end_yesterday="23:00:00")
+    assert render_var(bp, "in_operating_window", sat, now=datetime(2026, 8, 8, 21, 0)) == "False"
+    assert render_var(bp, "in_operating_window", sat, now=datetime(2026, 8, 8, 22, 30)) == "True"
+
+
+def test_rendered_manual_detected(bp):
+    base = dict(hold_enabled=True, hold_active=False,
+                current_ac_mode="cool", current_setpoint=22.0, current_fan="low")
+    exp_full = {"mode": "cool", "temp": 24.0, "fan": "low", "hold_until": 0}
+    exp_match = {"mode": "cool", "temp": 22.0, "fan": "low", "hold_until": 0}
+    cases = [
+        ({**base, "expected": exp_full}, "true"),                       # 2° off → manual
+        ({**base, "expected": exp_match}, "false"),                     # matches → no
+        ({**base, "expected": {}}, "false"),                            # empty → no-expectation
+        ({**base, "expected": {"mode": "unavailable"}}, "false"),       # rule-5 sentinel
+        ({**base, "expected": {"mode": "cool"}}, "false"),              # partial mapping (R1-4)
+        ({**base, "current_fan": "high", "expected": exp_match}, "true"),  # fan change → manual
+        ({**base, "hold_active": True, "expected": exp_full}, "false"), # during hold → no
+        ({**base, "hold_enabled": False, "expected": exp_full}, "false"),  # feature off
+    ]
+    for ctx, want in cases:
+        assert render_var(bp, "manual_detected", ctx) == want, ctx
+```
+
+- [ ] **Step 2: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
+- [ ] **Step 3: Commit** — `test(lg-ac): rendered behavior tests for the four load-bearing templates`
 
 ---
 
