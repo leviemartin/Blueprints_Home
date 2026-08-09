@@ -94,6 +94,12 @@ Validation gate extended: `2 × margin < (high − low)` else config-error notif
 **Acceptance:** cooling at high=24, margin=0.5: room 23.8 → still `cool`; 23.4 → `off`.
 AC off, room 23.8 → stays `off`.
 
+**Accepted consequence (triple-check):** because the cooling setpoint stays at `temp_high`, the
+unit's own thermostat may hold the room just above `high − margin`, so in mild weather the AC can
+remain in cool/heat with an idle compressor for extended stretches instead of switching off —
+internal-thermostat cycling deliberately replaces off/on flapping (quieter, beep-free, gentler on
+the compressor). Documented in the blueprint description.
+
 ### 5. Sensor staleness cutoff
 
 `valid_temps` additionally requires `(now() − states[s].last_reported) <
@@ -174,8 +180,11 @@ seconds, `0` = no hold. Helper unset ⇒ every hold codepath inert (like the opt
    control pass is preserved, and detection cannot fire because expected now equals live. State
    may drift legitimately during downtime; a false hold per restart would be worse than missing
    one manual change. A `hold_until` in the past is equivalent to `0` everywhere.
-6. **Corrupt/empty helper JSON** → treat as no-expectation: write live snapshot, `hold_until: 0`,
-   continue the run normally (no hold, no detection this tick).
+6. **Corrupt/empty helper JSON** → treat as no-expectation: no hold, no detection this tick; the
+   baseline is (re)established by the next commanding branch or restart seed. This covers
+   invalid JSON (`from_json(default={})`) AND valid-but-non-object JSON — a bare number/string/
+   list parses successfully, so the `expected` template must apply an `is mapping` check or every
+   downstream `.get`/`in` access raises and kills the variables step each tick (triple-check P1).
 
 **Acceptance:** (a) user bumps setpoint 24→22 on the remote → next tick detects, no revert for
 60 min, revert+resume after; (b) during hold, vacation ON still turns the AC off; (c) HA restart
@@ -196,6 +205,8 @@ STEP 3  choose ladder:
   3. vacation ON  → off (guarded) + expected-write
   4. out of window → off (guarded) + expected-write
   5. door open     → off (guarded) + expected-write
+     (condition: door_is_open OR trigger.id == 'door_open' — the timed trigger must select this
+      branch by identity, not re-derive elapsed time and risk the float-equality edge)
   6. manual detected → start hold (rule 2) + stop
   7. hold active     → stop
   8. in range → deadband on: off (guarded) + write │ deadband off: maintenance (guarded) + write
