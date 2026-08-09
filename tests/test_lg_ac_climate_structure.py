@@ -144,3 +144,22 @@ def test_validation_gate_covers_margin(bp):
                         "(temp_high | float - temp_low | float) }}")
     for b in gate:
         assert seq_kinds(b["sequence"]) == ["service:persistent_notification.create", "stop"]
+
+
+def test_staleness_filter_uses_last_reported(bp):
+    vt = get_var(bp, "valid_temps")
+    assert "last_reported" in vt
+    assert "last_updated" not in vt          # wrong field — unchanged re-reports must count
+    assert "sensor_staleness | int * 60" in vt
+    assert "states[s] is not none" in vt
+
+
+def test_weather_ok_and_safe_deadband(bp):
+    raw = " ".join(str(get_var(bp, "outdoor_temp_raw")).split())
+    assert raw == "{{ state_attr(entity_weather, 'temperature') }}"
+    ok = " ".join(get_var(bp, "weather_ok").split())
+    assert ok == ("{{ outdoor_temp_raw is not none and "
+                  "outdoor_temp_raw | float(none) is not none }}")
+    da = " ".join(get_var(bp, "deadband_active").split())
+    assert da == ("{{ (not weather_ok) or "
+                  "(outdoor_distance | float < deadband_thresh | float) }}")

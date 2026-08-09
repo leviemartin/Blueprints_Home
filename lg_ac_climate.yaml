@@ -345,9 +345,12 @@ action:
       # --- Sensor Aggregation ---
       valid_temps: >
         {% set ns = namespace(vals=[]) %}
+        {% set cutoff = sensor_staleness | int * 60 %}
         {% for s in sensors_temp %}
           {% set v = states(s) %}
-          {% if v not in ['unavailable', 'unknown', none] and v | float(none) is not none %}
+          {% if v not in ['unavailable', 'unknown', none] and v | float(none) is not none
+                and states[s] is not none
+                and (as_timestamp(now()) - as_timestamp(states[s].last_reported)) < cutoff %}
             {% set ns.vals = ns.vals + [v | float] %}
           {% endif %}
         {% endfor %}
@@ -365,7 +368,9 @@ action:
         {% endif %}
 
       # --- Outdoor (from weather entity) ---
-      outdoor_temp: "{{ state_attr(entity_weather, 'temperature') | float(0) }}"
+      outdoor_temp_raw: "{{ state_attr(entity_weather, 'temperature') }}"
+      weather_ok: "{{ outdoor_temp_raw is not none and outdoor_temp_raw | float(none) is not none }}"
+      outdoor_temp: "{{ outdoor_temp_raw | float(0) if weather_ok else 0 }}"
 
       # --- Vacation ---
       is_vacation: "{{ is_state(entity_vacation, 'on') }}"
@@ -435,7 +440,7 @@ action:
         {% else %}
           {{ 0 }}
         {% endif %}
-      deadband_active: "{{ outdoor_distance | float < deadband_thresh | float }}"
+      deadband_active: "{{ (not weather_ok) or (outdoor_distance | float < deadband_thresh | float) }}"
 
       # --- Fan Speed (Proportional) ---
       available_fan_modes: "{{ state_attr(climate_ac, 'fan_modes') | default(['low', 'mid', 'high'], true) }}"
