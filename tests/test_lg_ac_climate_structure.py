@@ -97,3 +97,50 @@ def test_door_sensor_stays_multiple(inputs):
 
 def test_fan_discovery_untouched(bp):
     assert "state_attr(climate_ac, 'fan_modes')" in get_var(bp, "available_fan_modes")
+
+
+# ---- v1.1.0 additions ----
+
+def test_version_bumped(bp):
+    assert bp["blueprint"]["name"] == "LG AC Climate Control v1.1.0"
+    assert "**Version: 1.1.0**" in bp["blueprint"]["description"]
+
+
+def test_new_input_schemas(inputs):
+    cm = inputs["comfort_margin"]
+    assert cm["default"] == 0.5
+    n = cm["selector"]["number"]
+    assert (n["min"], n["max"], n["step"]) == (0.0, 2.0, 0.1)
+
+    st = inputs["sensor_staleness_minutes"]
+    assert st["default"] == 90
+    n = st["selector"]["number"]
+    assert (n["min"], n["max"], n["step"]) == (15, 1440, 5)
+
+    hh = inputs["manual_hold_helper"]
+    assert hh["default"] == ""
+    assert hh["selector"]["entity"]["domain"] == "input_text"
+
+    hm = inputs["manual_hold_minutes"]
+    assert hm["default"] == 60
+    n = hm["selector"]["number"]
+    assert (n["min"], n["max"], n["step"]) == (15, 360, 5)
+
+
+def test_variable_mappings_for_new_inputs(bp):
+    v = bp["variables"]
+    assert v["margin"] == _Input("comfort_margin")
+    assert v["sensor_staleness"] == _Input("sensor_staleness_minutes")
+    assert v["hold_helper"] == _Input("manual_hold_helper")
+    assert v["hold_minutes"] == _Input("manual_hold_minutes")
+
+
+def test_validation_gate_covers_margin(bp):
+    # STEP 2 is the first choose in action (after the variables step)
+    gate = bp["action"][1]["choose"]
+    conds = [branch_cond(b) for b in gate]
+    assert conds[0] == "{{ temp_low | float >= temp_high | float }}"
+    assert conds[1] == ("{{ (margin | float * 2) >= "
+                        "(temp_high | float - temp_low | float) }}")
+    for b in gate:
+        assert seq_kinds(b["sequence"]) == ["service:persistent_notification.create", "stop"]

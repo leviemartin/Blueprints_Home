@@ -1,7 +1,7 @@
 blueprint:
-  name: "LG AC Climate Control v1.0.0"
+  name: "LG AC Climate Control v1.1.0"
   description: >
-    **Version: 1.0.0**
+    **Version: 1.1.0**
 
     Automates LG air conditioners per-floor using external temperature sensors
     for reliable ambient readings.
@@ -231,6 +231,47 @@ blueprint:
           max: 30
           unit_of_measurement: min
 
+    # --- HYSTERESIS / ROBUSTNESS (v1.1.0) ---
+    comfort_margin:
+      name: Comfort Margin (°C)
+      description: "Hysteresis: an actively heating/cooling AC continues until the room is this far inside the comfort range. 0 = v1.0.0 cycling behavior."
+      default: 0.5
+      selector:
+        number:
+          min: 0.0
+          max: 2.0
+          step: 0.1
+          unit_of_measurement: "°C"
+    sensor_staleness_minutes:
+      name: Sensor Staleness Cutoff (min)
+      description: "Ignore temperature sensors whose last report is older than this. Must exceed the sensors' periodic report interval (Aqara ≈ 60 min)."
+      default: 90
+      selector:
+        number:
+          min: 15
+          max: 1440
+          step: 5
+          unit_of_measurement: min
+
+    # --- MANUAL OVERRIDE HOLD (v1.1.0, optional) ---
+    manual_hold_helper:
+      name: Manual Override State Helper (Optional)
+      description: "An input_text helper storing the last automation-commanded state. When set, manual remote/app changes pause comfort control for the hold duration. Leave empty to disable."
+      default: ""
+      selector:
+        entity:
+          domain: input_text
+    manual_hold_minutes:
+      name: Manual Hold Duration (min)
+      description: "How long comfort control pauses after a manual change is detected."
+      default: 60
+      selector:
+        number:
+          min: 15
+          max: 360
+          step: 5
+          unit_of_measurement: min
+
 mode: restart
 max_exceeded: silent
 
@@ -289,6 +330,12 @@ variables:
 
   # --- Door ---
   door_delay: !input door_off_delay
+
+  # --- Hysteresis / Robustness (v1.1.0) ---
+  margin: !input comfort_margin
+  sensor_staleness: !input sensor_staleness_minutes
+  hold_helper: !input manual_hold_helper
+  hold_minutes: !input manual_hold_minutes
 
 action:
   # =============================================
@@ -468,6 +515,20 @@ action:
                 this is corrected.
               notification_id: "ac_climate_config_error"
           - stop: "Comfort range misconfigured"
+
+      - conditions:
+          - condition: template
+            value_template: "{{ (margin | float * 2) >= (temp_high | float - temp_low | float) }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "AC Climate Blueprint — Configuration Error"
+              message: >
+                Comfort margin ({{ margin }}°C) is too large for the comfort
+                range ({{ temp_low }}–{{ temp_high }}°C): twice the margin must
+                fit inside the range. AC control is paused until corrected.
+              notification_id: "ac_climate_config_error"
+          - stop: "Comfort margin misconfigured"
 
   # =============================================
   # STEP 3: MAIN PRIORITY CHOOSE
