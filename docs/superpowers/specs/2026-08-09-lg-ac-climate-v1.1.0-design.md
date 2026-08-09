@@ -57,6 +57,12 @@ Per-call `choose`, never sequence-level `condition:` — a skipped setpoint must
 fan change. The off-branches keep their existing `current_ac_mode != 'off'` guards.
 
 **Acceptance:** a tick where live state already equals desired issues zero `climate.*` calls.
+Qualifier: a trigger arriving inside the integration's state-lag window after a command may
+re-send once (board R1C-5).
+
+Setpoints are clamped to the device's advertised `min_temp`/`max_temp` and quantized to
+`target_temp_step` before commanding AND before storing as expected (board R1C-1) — commanded
+values always converge with device read-back; fallbacks 16/30/0.5.
 
 ### 2. Weather-outage safe default
 
@@ -179,14 +185,22 @@ inert (like the optional door input).
    or `fan ≠ expected.fan`. All expected-field accesses via `.get` (board R1-4: a partial
    mapping's Jinja Undefined passes `is not none` and coerces to −99, firing a false hold).
    On detection: write helper `{live snapshot, hold_until: floor(now + hold_minutes)}` and end
-   the run (comfort branches skipped).
+   the run (comfort branches skipped). The write is verified: immediately after the write, a
+   template guard re-reads the helper and fires a `persistent_notification` (id
+   `ac_climate_hold_helper_error`) if `hold_until` did not persist (write failed — e.g. helper
+   missing or `max` too short), so a silently-broken hold surfaces instead of behaving as a
+   permanent revert (board R1C-3).
 3. **During hold** (`hold_until` within `(now, now + hold_minutes]` — the upper bound rejects
    adversarial/corrupt far-future values, board R2-1): comfort branches skipped; detection
    skipped; the branch **refreshes the expected snapshot to live state** (preserving
    `hold_until`) so expiry compares against the user's *latest* state (board R1-8: comparing
    against the hold-start snapshot made every further tweak restart the window). The window
    itself never extends. Safety still pierces: vacation, out-of-window, and door-open sit
-   **above** the hold check and force off — which by rule 1 also ends the hold.
+   **above** the hold check and force off — which by rule 1 also ends the hold. A hold also
+   requires a **usable expected mode**: `expected.mode` must be set and not the rule-6
+   unavailable/unknown sentinel, else the hold is treated as inactive even with a future
+   `hold_until` on file (board R2C-2) — a bare `hold_until`-only or sentinel-mode document can
+   never gate control.
 4. **Expiry:** first run past `hold_until` finds expected = the user's latest state as of the
    last hold-active tick, so no re-detection fires and computed control resumes (one beep),
    rewriting expected. Residual (board R2R-4, accepted): a manual change landing in the final
@@ -241,21 +255,25 @@ STEP 2  validation gate (low<high AND 2×margin<high−low) → notify+stop on f
 STEP 2b dismiss config-error · dismiss sensor-warning (iff sensors_available)
 STEP 2c restart-init → seed helper (rule 5), then continue   [only when helper configured]
 STEP 3  choose ladder:
-  1. sensors unavailable → notify + stop
-  2. AC entity unavailable → stop
-  3. vacation ON  → off (guarded) + expected-write
-  4. out of window → off (guarded) + expected-write
-  5. door open     → off (guarded) + expected-write
+  1. AC entity unavailable → stop
+  2. vacation ON  → off (guarded) + expected-write
+  3. out of window → off (guarded) + expected-write
+  4. door open     → off (guarded) + expected-write
      (condition: door_is_open OR trigger.id == 'door_open' — the timed trigger must select this
       branch by identity, not re-derive elapsed time and risk the float-equality edge)
+  5. sensors unavailable → notify + stop
+     (pierces precede the sensor stop — stale sensors must not starve safety shut-offs
+      (board R1C-7/R2C-1))
   6. manual detected → start hold (rule 2) + stop
   7. hold active     → refresh expected snapshot, preserve hold_until (rule 3) + stop
   8. in range → deadband on: off (guarded) + write │ deadband off: maintenance (guarded) + write
   9. cool / 10. heat → guarded set_temperature + guarded set_fan_mode + expected-write
 ```
 
-Ladder branches 3–5 are the pierce set; 6–7 shield only 8–10. STEP 2c precedes the ladder so a
-restart never reads as a manual change yet still gets its control pass.
+Ladder branches 2–4 are the pierce set; they sit above the sensor stop (5) so vacation/window/
+door shut-offs — which need no temperature data — fire even when all sensors are stale. 6–7
+shield only 8–10. STEP 2c precedes the ladder so a restart never reads as a manual change yet
+still gets its control pass.
 
 ## Degradation matrix
 
@@ -270,8 +288,10 @@ restart never reads as a manual change yet still gets its control pass.
 | Helper unset | Items 1–8 behavior only; hold feature inert |
 | HA restart or automation reload mid-hold | Hold cleared, expected re-seeded (even if entity still unavailable — sentinel), no false detection |
 | Automation re-enabled after long disable (no reload event) | One spurious hold possible from drift; self-clears within the hold window |
-| Any commanded call fails (comfort or pierce `turn_off`, cloud error) | Branch completes via `continue_on_error` (all commanded calls carry it — board R2R-8); one spurious hold possible; self-clears |
-| HA restart during a door `for:` countdown | Pending timer lost; the 10-minute loop is the backstop (exact-time guarantee excludes restart windows) |
+| Any commanded call fails (comfort or pierce `turn_off`, cloud error) | one spurious hold window during which computed control is suspended and the failed command is not retried until expiry (accepted; board R1C-2) |
+| HA restart during a door `for:` countdown | shut-off resumes within door_off_delay + one tick of restart (last_changed resets at boot — board R1C-6) |
+| Helper doc with only a future hold_until | Ignored — hold requires a usable expected mode (board R2C-2) |
+| Automation reload (any automation) mid-hold | Hold cleared on all instances, control reasserted once (board R2C-3) |
 
 ## Testing
 
