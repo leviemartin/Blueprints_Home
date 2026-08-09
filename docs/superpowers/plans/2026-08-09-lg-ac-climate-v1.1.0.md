@@ -69,7 +69,7 @@ seq_kinds(seq)      -> list[str]          # [step_kind(s) for s in seq]
 **Interfaces:**
 - Produces: fixtures `bp`, `inputs`; helpers `get_var(bp, name)`, `step_kind(step)`, `ladder(bp)`, `branch_cond(branch)`, `seq_kinds(seq)` — exact signatures above; all later tasks import nothing, they extend this file.
 
-- [ ] **Step 1: Write the harness + invariant pins**
+- [x] **Step 1: Write the harness + invariant pins**
 
 ```python
 """Structural + logic pins for lg_ac_climate.yaml (LG AC Climate Control v1.1.0).
@@ -173,12 +173,12 @@ def test_fan_discovery_untouched(bp):
     assert "state_attr(climate_ac, 'fan_modes')" in get_var(bp, "available_fan_modes")
 ```
 
-- [ ] **Step 2: Run tests — all PASS against v1.0.0**
+- [x] **Step 2: Run tests — all PASS against v1.0.0**
 
 Run: `cd ~/AI/projects/Blueprints_Home && ~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests/test_lg_ac_climate_structure.py -q`
 Expected: all PASS (these pin what must not change; the file is still v1.0.0). Report `pytest: PASS=N FAIL=M`.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/test_lg_ac_climate_structure.py
@@ -200,7 +200,7 @@ git commit -m "test(lg-ac): harness + v1.0.0 invariant pins"
 **Interfaces:**
 - Produces: inputs `comfort_margin`, `sensor_staleness_minutes`, `manual_hold_helper`, `manual_hold_minutes`; variables `margin`, `sensor_staleness`, `hold_helper`, `hold_minutes` (used by Tasks 3, 4, 8).
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 def test_version_bumped(bp):
@@ -248,9 +248,9 @@ def test_validation_gate_covers_margin(bp):
         assert seq_kinds(b["sequence"]) == ["service:persistent_notification.create", "stop"]
 ```
 
-- [ ] **Step 2: Run — new tests FAIL, Task-1 pins PASS**
+- [x] **Step 2: Run — new tests FAIL, Task-1 pins PASS**
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `lg_ac_climate.yaml`:
 1. `name: "LG AC Climate Control v1.1.0"`; description version line → `**Version: 1.1.0**`.
@@ -326,8 +326,8 @@ In `lg_ac_climate.yaml`:
           - stop: "Comfort margin misconfigured"
 ```
 
-- [ ] **Step 4: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
-- [ ] **Step 5: Commit** — `feat(lg-ac): v1.1.0 inputs + margin validation`
+- [x] **Step 4: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
+- [x] **Step 5: Commit** — `feat(lg-ac): v1.1.0 inputs + margin validation`
 
 ---
 
@@ -344,7 +344,7 @@ In `lg_ac_climate.yaml`:
 **Interfaces:**
 - Produces: `weather_ok` (bool template) — consumed by `deadband_active`; `valid_temps` staleness clause pinned by tests.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 def test_staleness_filter_uses_last_reported(bp):
@@ -366,8 +366,8 @@ def test_weather_ok_and_safe_deadband(bp):
                   "(outdoor_distance | float < deadband_thresh | float) }}")
 ```
 
-- [ ] **Step 2: Run — FAIL**
-- [ ] **Step 3: Implement** — replace `valid_temps`, `outdoor_temp`, and `deadband_active`, and
+- [x] **Step 2: Run — FAIL**
+- [x] **Step 3: Implement** — replace `valid_temps`, `outdoor_temp`, and `deadband_active`, and
 add `outdoor_temp_raw` + `weather_ok` immediately above `outdoor_temp` (they are additions, not
 replacements — five variables total change in STEP 1):
 
@@ -398,8 +398,8 @@ replacements — five variables total change in STEP 1):
       deadband_active: "{{ (not weather_ok) or (outdoor_distance | float < deadband_thresh | float) }}"
 ```
 
-- [ ] **Step 4: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
-- [ ] **Step 5: Commit** — `feat(lg-ac): weather-outage safe default + last_reported staleness filter`
+- [x] **Step 4: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
+- [x] **Step 5: Commit** — `feat(lg-ac): weather-outage safe default + last_reported staleness filter`
 
 ---
 
@@ -413,7 +413,7 @@ replacements — five variables total change in STEP 1):
 - Modify: `lg_ac_climate.yaml` STEP 1 `target_mode`, `target_fan`
 - Test: `tests/test_lg_ac_climate_structure.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 def test_target_mode_hysteresis(bp):
@@ -436,8 +436,8 @@ def test_escalation_distance_gated(bp):
     assert "{% if dist < fan_low_thresh | float %} {{ base_fan }}" in tf
 ```
 
-- [ ] **Step 2: Run — FAIL**
-- [ ] **Step 3: Implement**
+- [x] **Step 2: Run — FAIL**
+- [x] **Step 3: Implement**
 
 ```yaml
       target_mode: >
@@ -473,8 +473,8 @@ def test_escalation_distance_gated(bp):
         {% endif %}
 ```
 
-- [ ] **Step 4: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
-- [ ] **Step 5: Commit** — `feat(lg-ac): hysteresis target_mode + distance-gated escalation`
+- [x] **Step 4: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
+- [x] **Step 5: Commit** — `feat(lg-ac): hysteresis target_mode + distance-gated escalation`
 
 ---
 
@@ -488,7 +488,7 @@ def test_escalation_distance_gated(bp):
 - Modify: `lg_ac_climate.yaml` STEP 1 schedule variables (add `schedule_start_yesterday`, `schedule_end_yesterday`; rewrite `in_operating_window`)
 - Test: `tests/test_lg_ac_climate_structure.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 def test_yesterday_schedule_variables(bp):
@@ -515,8 +515,8 @@ def test_window_formula_owns_overnight_tail(bp):
     )
 ```
 
-- [ ] **Step 2: Run — FAIL**
-- [ ] **Step 3: Implement** — after `schedule_end_today`, add:
+- [x] **Step 2: Run — FAIL**
+- [x] **Step 3: Implement** — after `schedule_end_today`, add:
 
 ```yaml
       schedule_start_yesterday: >
@@ -538,8 +538,8 @@ Replace `in_operating_window`:
         {{ today or y_tail }}
 ```
 
-- [ ] **Step 4: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
-- [ ] **Step 5: Commit** — `feat(lg-ac): overnight windows belong to their start day`
+- [x] **Step 4: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
+- [x] **Step 5: Commit** — `feat(lg-ac): overnight windows belong to their start day`
 
 ---
 
@@ -556,7 +556,7 @@ Replace `in_operating_window`:
 **Interfaces:**
 - Produces: trigger ids `door_open`, `vacation_off`; STEP 2b occupies `bp["action"][2]` and `bp["action"][3]` (Task 8 inserts STEP 2c after these).
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 def test_trigger_roster(bp):
@@ -593,8 +593,8 @@ def test_dismiss_steps(bp):
 
 Note: `branch_cond` expects `conditions: [{condition: template, value_template: ...}]` — write the sensor-dismiss guard in that full form, not shorthand.
 
-- [ ] **Step 2: Run — FAIL**
-- [ ] **Step 3: Implement**
+- [x] **Step 2: Run — FAIL**
+- [x] **Step 3: Implement**
 
 Append to `trigger:`:
 
@@ -661,8 +661,8 @@ Insert after the STEP 2 validation choose (before the main ladder):
             continue_on_error: true
 ```
 
-- [ ] **Step 4: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
-- [ ] **Step 5: Commit** — `feat(lg-ac): door/vacation-off triggers + self-dismissing notifications`
+- [x] **Step 4: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
+- [x] **Step 5: Commit** — `feat(lg-ac): door/vacation-off triggers + self-dismissing notifications`
 
 ---
 
@@ -680,7 +680,7 @@ Insert after the STEP 2 validation choose (before the main ladder):
 - Consumes: ladder helpers from Task 1.
 - Produces: every acting branch shaped as `variables → choose(set_temperature) → choose(set_fan_mode)` (comfort) or `choose(turn_off)` (off-branches); Task 8 appends one expected-write step to each of these branches — do not collapse the shapes.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 GUARD_SETPOINT = ("{{ current_ac_mode != desired_mode or "
@@ -741,8 +741,8 @@ def test_off_branches_wrap_turn_off_in_guard(bp):
         assert first["choose"][0]["sequence"][0]["continue_on_error"] is True, marker
 ```
 
-- [ ] **Step 2: Run — FAIL**
-- [ ] **Step 3: Implement**
+- [x] **Step 2: Run — FAIL**
+- [x] **Step 3: Implement**
 
 Cool branch becomes (heat branch mirrors with `heat`/`temp_low`):
 
@@ -819,8 +819,8 @@ Off-branches (vacation / out-of-window / door / in-range-deadband-active) each b
 
 (the old sequence-level `condition:` step is removed — Task 8 appends an expected-write after the choose, and a sequence condition would abort it; `continue_on_error` for the same reason, board R2R-8. This shape applies to all FOUR off-paths: vacation, out-of-window, door, and the in-range deadband-active sub-branch.)
 
-- [ ] **Step 4: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
-- [ ] **Step 5: Commit** — `feat(lg-ac): per-call idempotence guards — steady-state ticks send zero commands`
+- [x] **Step 4: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
+- [x] **Step 5: Commit** — `feat(lg-ac): per-call idempotence guards — steady-state ticks send zero commands`
 
 ---
 
@@ -839,7 +839,7 @@ Off-branches (vacation / out-of-window / door / in-range-deadband-active) each b
 - Consumes: branch shapes from Task 7 (appends one step to each acting branch).
 - Produces: helper JSON contract `{"mode","temp","fan","hold_until"}`.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 EXPECTED_WRITE_VALUE = ("{{ {'mode': desired_mode, 'temp': desired_setpoint | float(none), "
@@ -950,8 +950,8 @@ def test_every_commanding_branch_ends_with_expected_write(bp):
         assert val == EXPECTED_WRITE_VALUE, i
 ```
 
-- [ ] **Step 2: Run — FAIL**
-- [ ] **Step 3: Implement**
+- [x] **Step 2: Run — FAIL**
+- [x] **Step 3: Implement**
 
 3.1 STEP 1 variables (after the fan/escalation block):
 
@@ -1088,8 +1088,8 @@ def test_in_range_deadband_off_subbranch_shape(bp):
     assert val == OFF_WRITE_VALUE
 ```
 
-- [ ] **Step 4: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
-- [ ] **Step 5: Commit** — `feat(lg-ac): auto-detected manual-override hold (pierce ends hold)`
+- [x] **Step 4: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
+- [x] **Step 5: Commit** — `feat(lg-ac): auto-detected manual-override hold (pierce ends hold)`
 
 ---
 
@@ -1105,7 +1105,7 @@ def test_in_range_deadband_off_subbranch_shape(bp):
 The exact-text pins bind the template *text*; these bind its *semantics* — a
 character-perfect-but-wrong transcription cannot survive both.
 
-- [ ] **Step 1: Add rendering helper + tests**
+- [x] **Step 1: Add rendering helper + tests**
 
 ```python
 from datetime import datetime
@@ -1218,8 +1218,8 @@ def test_rendered_manual_detected(bp):
         assert render_var(bp, "manual_detected", ctx) == want, ctx
 ```
 
-- [ ] **Step 2: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
-- [ ] **Step 3: Commit** — `test(lg-ac): rendered behavior tests for the four load-bearing templates`
+- [x] **Step 2: Run the suite and report `pytest: PASS=N FAIL=M` — FAIL must be 0**
+- [x] **Step 3: Commit** — `test(lg-ac): rendered behavior tests for the four load-bearing templates`
 
 ---
 
@@ -1233,7 +1233,7 @@ def test_rendered_manual_detected(bp):
 - Modify: `lg_ac_climate.yaml` description bullets
 - Test: full suite + YAML parse
 
-- [ ] **Step 1: Update description feature bullets** — under `**Features:**` add:
+- [x] **Step 1: Update description feature bullets** — under `**Features:**` add:
 
 ```
     - **Beep-Silent Control:** Commands are sent only when they change
@@ -1250,7 +1250,7 @@ def test_rendered_manual_detected(bp):
 
 and update the Requirements list: `input_text helper (optional) for manual-override hold`.
 
-- [ ] **Step 2: Verify description** — add test:
+- [x] **Step 2: Verify description** — add test:
 
 ```python
 def test_description_documents_new_features(bp):
@@ -1259,11 +1259,11 @@ def test_description_documents_new_features(bp):
         assert token in d
 ```
 
-- [ ] **Step 3: Full suite + parse check**
+- [x] **Step 3: Full suite + parse check**
 
 Run: `~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -c "import yaml; yaml.SafeLoader; print('parse ok')"` is insufficient — use the harness loader: `~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests -q` (must be 100% PASS, including the untouched nightlight suite). Report `pytest: PASS=N FAIL=M`.
 
-- [ ] **Step 4: Commit** — `feat(lg-ac): v1.1.0 description + docs polish`
+- [x] **Step 4: Commit** — `feat(lg-ac): v1.1.0 description + docs polish`
 
 ---
 
