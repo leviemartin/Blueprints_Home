@@ -59,7 +59,8 @@ manual human input.
 3. Manual-override hold: a human change via remote/app (mode, setpoint beyond
    ±0.3 °C, or fan) is detected against the last automation-commanded state
    and honored for a configurable hold window (default 60 min). Vacation,
-   schedule end, and door-open still force off during a hold.
+   schedule end, and door-open still force off during a hold. Requires a
+   dedicated helper per instance.
 
 ### Safety & Degradation
 1. Sensor failure: holds current AC state, fires persistent notification;
@@ -72,3 +73,8 @@ manual human input.
 4. Graceful handling of AC entity unavailability
 5. Warnings self-dismiss when their condition heals
 6. HA restart never triggers a false manual-hold detection
+7. Safety overrides (vacation/schedule/door) act even when all temperature
+   sensors are stale or unavailable
+8. A transient cloud command failure can produce one spurious manual-hold
+   window (self-clears); floors sharing one LG account can fail correlated
+   at the /10 boundary

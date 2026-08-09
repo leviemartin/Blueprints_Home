@@ -287,11 +287,11 @@ def test_cool_heat_desired_values(bp):
     br = _acting_branches(bp)
     cv = br["cool"]["sequence"][0]["variables"]
     assert cv["desired_mode"] == "cool"
-    assert " ".join(cv["desired_setpoint"].split()) == "{{ temp_high | float }}"
+    assert " ".join(cv["desired_setpoint"].split()) == "{{ setpoint_cool_q }}"
     assert " ".join(cv["desired_fan"].split()) == "{{ target_fan }}"
     hv = br["heat"]["sequence"][0]["variables"]
     assert hv["desired_mode"] == "heat"
-    assert " ".join(hv["desired_setpoint"].split()) == "{{ temp_low | float }}"
+    assert " ".join(hv["desired_setpoint"].split()) == "{{ setpoint_heat_q }}"
 
 
 def test_off_branches_wrap_turn_off_in_guard(bp):
@@ -342,7 +342,9 @@ def test_hold_variables(bp):
     assert exp == ("{% set e = (states(hold_helper) | from_json(default={})) "
                    "if hold_enabled else {} %} {{ e if e is mapping else {} }}")
     ha = " ".join(get_var(bp, "hold_active").split())
-    assert ha == ("{{ hold_enabled and hold_until | float(0) > as_timestamp(now()) "
+    assert ha == ("{{ hold_enabled and expected.get('mode') is not none "
+                  "and expected.get('mode') not in ['unavailable', 'unknown'] "
+                  "and hold_until | float(0) > as_timestamp(now()) "
                   "and hold_until | float(0) <= as_timestamp(now()) + hold_minutes | int * 60 }}")
     # full exact-equality pin — substring pins let an inverted predicate ship green
     # (board converged finding R1-6 + R2-4)
@@ -364,11 +366,11 @@ def test_step2c_restart_seed(bp):
 def test_ladder_order_full(bp):
     conds = [branch_cond(b) for b in ladder(bp)]
     assert conds == [
-        "{{ not sensors_available }}",
         "{{ current_ac_mode in ['unavailable', 'unknown'] }}",
         "{{ is_vacation }}",
         "{{ not in_operating_window }}",
         "{{ door_is_open or (trigger is defined and trigger.id == 'door_open') }}",
+        "{{ not sensors_available }}",
         "{{ manual_detected and not (trigger is defined and trigger.id == 'init') }}",
         "{{ hold_active and not (trigger is defined and trigger.id == 'init') }}",
         "{{ target_mode == 'off' }}",
@@ -377,15 +379,23 @@ def test_ladder_order_full(bp):
     ]
 
 
+def test_pierces_precede_sensor_stop(bp):
+    conds = [branch_cond(b) for b in ladder(bp)]
+    i_sens = conds.index("{{ not sensors_available }}")
+    for marker in ("is_vacation", "not in_operating_window", "door_is_open"):
+        assert next(i for i, c in enumerate(conds) if marker in c) < i_sens, marker
+
+
 def test_hold_start_branch_snapshots_and_stops(bp):
     b = ladder(bp)[5]
-    assert seq_kinds(b["sequence"]) == ["service:input_text.set_value", "stop"]
+    assert seq_kinds(b["sequence"]) == ["service:input_text.set_value", "choose", "stop"]
     val = " ".join(b["sequence"][0]["data"]["value"].split())
     # floor, not round-half: rounding up would let sub-second trigger latency stretch a
     # 60-min hold to the NEXT tick (~70 min) at expiry (board R2R-5)
     assert "(as_timestamp(now()) + hold_minutes | int * 60) | int" in val
     assert "| round(" not in val
     assert "current_ac_mode" in val
+    assert "ac_climate_hold_helper_error" in " ".join(str(b["sequence"][1]).split())
 
 
 def test_hold_active_branch_refreshes_and_stops(bp):
@@ -406,7 +416,7 @@ def _expected_write_step(step):
 def test_every_commanding_branch_ends_with_expected_write(bp):
     lad = ladder(bp)
     # off-branches: vacation, window, door, and in-range deadband-active sub-branch
-    for i in (2, 3, 4):
+    for i in (1, 2, 3):
         assert _expected_write_step(lad[i]["sequence"][-1]), i
         val = " ".join(lad[i]["sequence"][-1]["choose"][0]["sequence"][0]["data"]["value"].split())
         assert val == OFF_WRITE_VALUE, i
@@ -434,11 +444,19 @@ def test_maintenance_desired_values(bp):
     sub = ladder(bp)[7]["sequence"][-1]["choose"][1]      # deadband DISABLED → maintenance
     mv = sub["sequence"][0]["variables"]
     assert " ".join(mv["desired_setpoint"].split()) == \
-        "{{ temp_high | float if desired_mode == 'cool' else temp_low | float }}"
+        "{{ setpoint_cool_q if desired_mode == 'cool' else setpoint_heat_q }}"
     assert " ".join(mv["desired_fan"].split()) == "{{ fan_mode_low }}"
     dm = " ".join(mv["desired_mode"].split())
     assert dm.startswith("{% if current_ac_mode in ['cool', 'heat'] %}")
     assert "((temp_low | float + temp_high | float) / 2)" in dm
+
+
+def test_setpoint_quantization_variables(bp):
+    assert " ".join(get_var(bp, "ac_temp_step").split()) == \
+        "{{ state_attr(climate_ac, 'target_temp_step') | float(0.5) }}"
+    q = " ".join(get_var(bp, "setpoint_cool_q").split())
+    assert q == ("{{ ([([(((temp_high | float / ac_temp_step) | round(0)) * ac_temp_step), "
+                 "ac_min_temp] | max), ac_max_temp] | min) | round(1) }}")
 
 
 # ---- Task 8b: rendered behavior tests ----
@@ -459,6 +477,16 @@ def render_var(bp, name, ctx, now=None):
     tpl = env.from_string(get_var(bp, name))
     base = {"now": (lambda: now)} if now else {}
     return tpl.render(**base, **ctx).strip()
+
+
+def test_rendered_setpoint_quantization(bp):
+    ctx = dict(ac_min_temp=16.0, ac_max_temp=30.0)
+    mk = lambda th, step: render_var(bp, "setpoint_cool_q",
+                                     {**ctx, "temp_high": th, "ac_temp_step": step})
+    assert mk(23.5, 1.0) == "24.0"     # half-degree config on whole-degree unit
+    assert mk(23.5, 0.5) == "23.5"     # native half-step unit unchanged
+    assert mk(15.0, 0.5) == "16.0"     # below device min → clamped
+    assert mk(24.0, 1.0) == "24.0"     # aligned value unchanged
 
 
 def test_rendered_target_mode_hysteresis(bp):
@@ -502,12 +530,17 @@ def test_rendered_hold_active_bounds(bp):
     # the R2-1 bounded-window check has behavioral coverage here: a minutes-vs-seconds
     # transcription slip would reject every legitimate hold (board R2R-9)
     t0 = datetime(2026, 8, 9, 12, 0)
-    base = dict(hold_enabled=True, hold_minutes=60)
+    base = dict(hold_enabled=True, hold_minutes=60, expected={"mode": "cool"})
     mk = lambda hu: render_var(bp, "hold_active", {**base, "hold_until": hu}, now=t0)
     assert mk(t0.timestamp() + 1800) == "True"       # mid-hold
     assert mk(t0.timestamp() - 10) == "False"        # expired
     assert mk(t0.timestamp() + 90 * 24 * 3600) == "False"   # hand-edited far future → rejected
     assert mk(0) == "False"
+
+    mk2 = lambda hu, exp: render_var(bp, "hold_active",
+                                     {**base, "hold_until": hu, "expected": exp}, now=t0)
+    assert mk2(t0.timestamp() + 1800, {}) == "False"                     # hold_until-only doc
+    assert mk2(t0.timestamp() + 1800, {"mode": "unavailable"}) == "False"  # sentinel
 
 
 def test_rendered_door_is_open_no_sensor(bp):

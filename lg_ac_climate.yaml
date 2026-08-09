@@ -23,7 +23,8 @@ blueprint:
       of switching off — its internal thermostat cycles quietly instead.
     - **Manual-Override Hold:** Optional input_text helper detects remote/app
       changes and pauses comfort control for a configurable window (vacation,
-      schedule end, and door-open still force off).
+      schedule end, and door-open still force off). Reloading any automation
+      clears active holds on all instances and reasserts control once.
     - **Fail-Safe Degradation:** Weather outage falls back to normal cycling;
       silently-stale sensors are excluded.
 
@@ -269,7 +270,7 @@ blueprint:
     # --- MANUAL OVERRIDE HOLD (v1.1.0, optional) ---
     manual_hold_helper:
       name: Manual Override State Helper (Optional)
-      description: "An input_text helper storing the last automation-commanded state. When set, manual remote/app changes pause comfort control for the hold duration. Leave empty to disable. Create the helper with max length 255."
+      description: "An input_text helper storing the last automation-commanded state. When set, manual remote/app changes pause comfort control for the hold duration. Leave empty to disable. Create the helper with max length 255. Create a DEDICATED helper per automation instance — sharing one helper between two ACs breaks both."
       default: ""
       selector:
         entity:
@@ -427,6 +428,15 @@ action:
       # --- Current AC State ---
       current_ac_mode: "{{ states(climate_ac) }}"
 
+      # --- Device setpoint limits (v1.1.0 R1C-1: never command what the unit can't store) ---
+      ac_min_temp: "{{ state_attr(climate_ac, 'min_temp') | float(16) }}"
+      ac_max_temp: "{{ state_attr(climate_ac, 'max_temp') | float(30) }}"
+      ac_temp_step: "{{ state_attr(climate_ac, 'target_temp_step') | float(0.5) }}"
+      setpoint_cool_q: >-
+        {{ ([([(((temp_high | float / ac_temp_step) | round(0)) * ac_temp_step), ac_min_temp] | max), ac_max_temp] | min) | round(1) }}
+      setpoint_heat_q: >-
+        {{ ([([(((temp_low | float / ac_temp_step) | round(0)) * ac_temp_step), ac_min_temp] | max), ac_max_temp] | min) | round(1) }}
+
       # --- Per-Day Schedule ---
       schedule_start_today: >
         {{ [t_start_mon, t_start_tue, t_start_wed, t_start_thu, t_start_fri, t_start_sat, t_start_sun][now().weekday()] }}
@@ -554,7 +564,9 @@ action:
         {{ e if e is mapping else {} }}
       hold_until: "{{ expected.get('hold_until', 0) | float(0) }}"
       hold_active: >-
-        {{ hold_enabled and hold_until | float(0) > as_timestamp(now())
+        {{ hold_enabled and expected.get('mode') is not none
+           and expected.get('mode') not in ['unavailable', 'unknown']
+           and hold_until | float(0) > as_timestamp(now())
            and hold_until | float(0) <= as_timestamp(now()) + hold_minutes | int * 60 }}
       manual_detected: >
         {% if not hold_enabled or hold_active or expected.get('mode') is none
@@ -644,20 +656,6 @@ action:
   # STEP 3: MAIN PRIORITY CHOOSE
   # =============================================
   - choose:
-      # --- 4a: SENSOR CHECK ---
-      - conditions:
-          - condition: template
-            value_template: "{{ not sensors_available }}"
-        sequence:
-          - service: persistent_notification.create
-            data:
-              title: "AC Climate Blueprint — Sensor Warning"
-              message: >
-                All temperature sensors are unavailable. AC is holding current
-                state until sensors recover. Sensors: {{ sensors_temp }}
-              notification_id: "ac_climate_sensor_warning"
-          - stop: "No sensors available"
-
       # --- 4a2: AC ENTITY UNAVAILABLE ---
       - conditions:
           - condition: template
@@ -746,6 +744,20 @@ action:
                         {{ {'mode': 'off', 'temp': none, 'fan': none,
                             'hold_until': 0} | to_json }}
 
+      # --- SENSOR CHECK (pierces above must not starve on stale sensors) ---
+      - conditions:
+          - condition: template
+            value_template: "{{ not sensors_available }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "AC Climate Blueprint — Sensor Warning"
+              message: >
+                All temperature sensors are unavailable. AC is holding current
+                state until sensors recover. Sensors: {{ sensors_temp }}
+              notification_id: "ac_climate_sensor_warning"
+          - stop: "No sensors available"
+
       # --- MANUAL CHANGE DETECTED → START HOLD ---
       - conditions:
           - condition: template
@@ -759,6 +771,20 @@ action:
                 {{ {'mode': current_ac_mode, 'temp': current_setpoint | float(none),
                     'fan': current_fan,
                     'hold_until': (as_timestamp(now()) + hold_minutes | int * 60) | int} | to_json }}
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ (states(hold_helper) | from_json(default={})).get('hold_until', 0) | float(0) <= as_timestamp(now()) }}"
+                sequence:
+                  - service: persistent_notification.create
+                    data:
+                      title: "AC Climate Blueprint — Hold Helper Error"
+                      message: >
+                        The manual-hold helper {{ hold_helper }} did not persist the
+                        hold timestamp (write failed — check the helper exists and its
+                        max length is 255). Manual-override holds are not functioning.
+                      notification_id: "ac_climate_hold_helper_error"
+                    continue_on_error: true
           - stop: "Manual change detected — holding"
 
       # --- HOLD ACTIVE (refresh expected to live, keep the clock) ---
@@ -821,7 +847,7 @@ action:
                         {% else %}
                           heat
                         {% endif %}
-                      desired_setpoint: "{{ temp_high | float if desired_mode == 'cool' else temp_low | float }}"
+                      desired_setpoint: "{{ setpoint_cool_q if desired_mode == 'cool' else setpoint_heat_q }}"
                       desired_fan: "{{ fan_mode_low }}"
                   - choose:
                       - conditions:
@@ -866,7 +892,7 @@ action:
         sequence:
           - variables:
               desired_mode: "cool"
-              desired_setpoint: "{{ temp_high | float }}"
+              desired_setpoint: "{{ setpoint_cool_q }}"
               desired_fan: "{{ target_fan }}"
           - choose:
               - conditions:
@@ -911,7 +937,7 @@ action:
         sequence:
           - variables:
               desired_mode: "heat"
-              desired_setpoint: "{{ temp_low | float }}"
+              desired_setpoint: "{{ setpoint_heat_q }}"
               desired_fan: "{{ target_fan }}"
           - choose:
               - conditions:
