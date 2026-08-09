@@ -156,9 +156,10 @@ expected to be a no-op — research-validate confirms.)
 ```
 
 `mode/temp/fan` = last state this automation commanded ("expected"); `hold_until` = epoch
-seconds **rounded to an integer** (board R1-9: an unrounded float epoch can push the document
-past a default-`max:100` helper, and `input_text.set_value` silently no-ops on overflow), `0` =
-no hold. The helper **must be created with `max: 255`** (stated in the input description; the
+seconds **floored to an integer** (board R1-9: an unrounded float epoch can push the document
+past a default-`max:100` helper, and `input_text.set_value` silently no-ops on overflow; floor
+rather than round-half — board R2R-5 — so sub-second trigger latency can never stretch a hold
+past its true deadline into the next tick), `0` = no hold. The helper **must be created with `max: 255`** (stated in the input description; the
 rounded document also fits the default 100, belt-and-braces). Helper unset ⇒ every hold codepath
 inert (like the optional door input).
 
@@ -186,16 +187,24 @@ inert (like the optional door input).
    against the hold-start snapshot made every further tweak restart the window). The window
    itself never extends. Safety still pierces: vacation, out-of-window, and door-open sit
    **above** the hold check and force off — which by rule 1 also ends the hold.
-4. **Expiry:** first run past `hold_until` finds expected = the user's latest state (rule 3
-   refresh), so no re-detection fires; computed control resumes (one beep) and rewrites
-   expected.
+4. **Expiry:** first run past `hold_until` finds expected = the user's latest state as of the
+   last hold-active tick, so no re-detection fires and computed control resumes (one beep),
+   rewriting expected. Residual (board R2R-4, accepted): a manual change landing in the final
+   inter-tick gap (≤ one loop interval before expiry) is seen as a fresh manual change at the
+   expiry tick and starts a new full window — per-tweak bounded, and arguably desirable (the
+   most recent human input is honored); a user who keeps tweaking keeps the hold alive.
 5. **Restart/reload guard:** on the `homeassistant: start` trigger **and** on the
    `automation_reloaded` event (board R2-2: reloads don't fire HA start; both triggers share
    id `init`), write `{expected: live snapshot, hold_until: 0}` **before** the ladder runs
-   (STEP 2c), then continue the run. The seed is written even while the climate entity is still
-   `unavailable`/`unknown` at startup (cloud entities come up late — board R1-1): an
-   unavailable/unknown expected mode is a deliberate **no-expectation sentinel** that detection
-   ignores (rule 6), and the next commanding branch re-establishes a real baseline. State may
+   (STEP 2c), then continue the run. **The seed alone does not protect the seeding run itself**:
+   STEP-1 variables (`expected`, `hold_active`, `manual_detected`) are frozen before STEP 2c
+   writes the helper, so ladder branches 6 and 7 must additionally carry
+   `and not (trigger is defined and trigger.id == 'init')` — that guard, not the seed's
+   position, is what stops a restart reading as a manual change on the init run; the seed
+   protects all *subsequent* runs (board R2R-3). The seed is written even while the climate
+   entity is still `unavailable`/`unknown` at startup (cloud entities come up late — board
+   R1-1): an unavailable/unknown expected mode is a deliberate **no-expectation sentinel** that
+   detection ignores (rule 6), and the next commanding branch re-establishes a real baseline. State may
    drift legitimately during downtime; a false hold per restart would be worse than missing one
    manual change. A `hold_until` in the past — or beyond `now + hold_minutes` — is equivalent
    to `0` everywhere.
@@ -261,7 +270,7 @@ restart never reads as a manual change yet still gets its control pass.
 | Helper unset | Items 1–8 behavior only; hold feature inert |
 | HA restart or automation reload mid-hold | Hold cleared, expected re-seeded (even if entity still unavailable — sentinel), no false detection |
 | Automation re-enabled after long disable (no reload event) | One spurious hold possible from drift; self-clears within the hold window |
-| Comfort command fails mid-branch (cloud error) | Branch completes via `continue_on_error`; one spurious hold possible; self-clears |
+| Any commanded call fails (comfort or pierce `turn_off`, cloud error) | Branch completes via `continue_on_error` (all commanded calls carry it — board R2R-8); one spurious hold possible; self-clears |
 | HA restart during a door `for:` countdown | Pending timer lost; the 10-minute loop is the backstop (exact-time guarantee excludes restart windows) |
 
 ## Testing
