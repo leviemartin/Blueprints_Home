@@ -611,33 +611,45 @@ action:
           - condition: template
             value_template: "{{ is_vacation }}"
         sequence:
-          - condition: template
-            value_template: "{{ current_ac_mode != 'off' }}"
-          - service: climate.turn_off
-            target:
-              entity_id: "{{ climate_ac }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ current_ac_mode != 'off' }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ climate_ac }}"
+                    continue_on_error: true
 
       # --- 4c: OUTSIDE OPERATING WINDOW ---
       - conditions:
           - condition: template
             value_template: "{{ not in_operating_window }}"
         sequence:
-          - condition: template
-            value_template: "{{ current_ac_mode != 'off' }}"
-          - service: climate.turn_off
-            target:
-              entity_id: "{{ climate_ac }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ current_ac_mode != 'off' }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ climate_ac }}"
+                    continue_on_error: true
 
       # --- 4d: DOOR OPEN ---
       - conditions:
           - condition: template
             value_template: "{{ door_is_open or (trigger is defined and trigger.id == 'door_open') }}"
         sequence:
-          - condition: template
-            value_template: "{{ current_ac_mode != 'off' }}"
-          - service: climate.turn_off
-            target:
-              entity_id: "{{ climate_ac }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ current_ac_mode != 'off' }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ climate_ac }}"
+                    continue_on_error: true
 
       # --- 4e: TEMP INSIDE COMFORT RANGE ---
       - conditions:
@@ -650,21 +662,22 @@ action:
                   - condition: template
                     value_template: "{{ deadband_active }}"
                 sequence:
-                  - condition: template
-                    value_template: "{{ current_ac_mode != 'off' }}"
-                  - service: climate.turn_off
-                    target:
-                      entity_id: "{{ climate_ac }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ current_ac_mode != 'off' }}"
+                        sequence:
+                          - service: climate.turn_off
+                            target:
+                              entity_id: "{{ climate_ac }}"
+                            continue_on_error: true
               # Deadband DISABLED (extreme outdoor) → maintenance mode
               - conditions:
                   - condition: template
                     value_template: "{{ not deadband_active }}"
                 sequence:
-                  - service: climate.set_temperature
-                    target:
-                      entity_id: "{{ climate_ac }}"
-                    data:
-                      hvac_mode: >
+                  - variables:
+                      desired_mode: >
                         {% if current_ac_mode in ['cool', 'heat'] %}
                           {{ current_ac_mode }}
                         {% elif current_temp | float >= ((temp_low | float + temp_high | float) / 2) %}
@@ -672,52 +685,94 @@ action:
                         {% else %}
                           heat
                         {% endif %}
-                      temperature: >
-                        {% if current_ac_mode == 'cool' %}
-                          {{ temp_high }}
-                        {% elif current_ac_mode == 'heat' %}
-                          {{ temp_low }}
-                        {% elif current_temp | float >= ((temp_low | float + temp_high | float) / 2) %}
-                          {{ temp_high }}
-                        {% else %}
-                          {{ temp_low }}
-                        {% endif %}
-                  - service: climate.set_fan_mode
-                    target:
-                      entity_id: "{{ climate_ac }}"
-                    data:
-                      fan_mode: "{{ fan_mode_low }}"
+                      desired_setpoint: "{{ temp_high | float if desired_mode == 'cool' else temp_low | float }}"
+                      desired_fan: "{{ fan_mode_low }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ current_ac_mode != desired_mode or (state_attr(climate_ac, 'temperature') | float(-99) - desired_setpoint | float) | abs > 0.05 }}"
+                        sequence:
+                          - service: climate.set_temperature
+                            target:
+                              entity_id: "{{ climate_ac }}"
+                            data:
+                              hvac_mode: "{{ desired_mode }}"
+                              temperature: "{{ desired_setpoint }}"
+                            continue_on_error: true
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ state_attr(climate_ac, 'fan_mode') != desired_fan }}"
+                        sequence:
+                          - service: climate.set_fan_mode
+                            target:
+                              entity_id: "{{ climate_ac }}"
+                            data:
+                              fan_mode: "{{ desired_fan }}"
+                            continue_on_error: true
 
       # --- 4f: COOL ---
       - conditions:
           - condition: template
             value_template: "{{ target_mode == 'cool' }}"
         sequence:
-          - service: climate.set_temperature
-            target:
-              entity_id: "{{ climate_ac }}"
-            data:
-              hvac_mode: "cool"
-              temperature: "{{ temp_high }}"
-          - service: climate.set_fan_mode
-            target:
-              entity_id: "{{ climate_ac }}"
-            data:
-              fan_mode: "{{ target_fan }}"
+          - variables:
+              desired_mode: "cool"
+              desired_setpoint: "{{ temp_high | float }}"
+              desired_fan: "{{ target_fan }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ current_ac_mode != desired_mode or (state_attr(climate_ac, 'temperature') | float(-99) - desired_setpoint | float) | abs > 0.05 }}"
+                sequence:
+                  - service: climate.set_temperature
+                    target:
+                      entity_id: "{{ climate_ac }}"
+                    data:
+                      hvac_mode: "{{ desired_mode }}"
+                      temperature: "{{ desired_setpoint }}"
+                    continue_on_error: true
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ state_attr(climate_ac, 'fan_mode') != desired_fan }}"
+                sequence:
+                  - service: climate.set_fan_mode
+                    target:
+                      entity_id: "{{ climate_ac }}"
+                    data:
+                      fan_mode: "{{ desired_fan }}"
+                    continue_on_error: true
 
       # --- 4g: HEAT ---
       - conditions:
           - condition: template
             value_template: "{{ target_mode == 'heat' }}"
         sequence:
-          - service: climate.set_temperature
-            target:
-              entity_id: "{{ climate_ac }}"
-            data:
-              hvac_mode: "heat"
-              temperature: "{{ temp_low }}"
-          - service: climate.set_fan_mode
-            target:
-              entity_id: "{{ climate_ac }}"
-            data:
-              fan_mode: "{{ target_fan }}"
+          - variables:
+              desired_mode: "heat"
+              desired_setpoint: "{{ temp_low | float }}"
+              desired_fan: "{{ target_fan }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ current_ac_mode != desired_mode or (state_attr(climate_ac, 'temperature') | float(-99) - desired_setpoint | float) | abs > 0.05 }}"
+                sequence:
+                  - service: climate.set_temperature
+                    target:
+                      entity_id: "{{ climate_ac }}"
+                    data:
+                      hvac_mode: "{{ desired_mode }}"
+                      temperature: "{{ desired_setpoint }}"
+                    continue_on_error: true
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ state_attr(climate_ac, 'fan_mode') != desired_fan }}"
+                sequence:
+                  - service: climate.set_fan_mode
+                    target:
+                      entity_id: "{{ climate_ac }}"
+                    data:
+                      fan_mode: "{{ desired_fan }}"
+                    continue_on_error: true

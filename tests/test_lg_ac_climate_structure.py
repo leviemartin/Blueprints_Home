@@ -244,3 +244,63 @@ def test_dismiss_steps(bp):
 def test_door_is_open_no_sensor_branch_is_boolean(bp):
     d = get_var(bp, "door_is_open")
     assert "{{ false }}" in d and d.find("{{ false }}") < d.find("{% else %}")
+
+
+# ---- Task 7: idempotence guards (beep elimination) ----
+
+GUARD_SETPOINT = ("{{ current_ac_mode != desired_mode or "
+                  "(state_attr(climate_ac, 'temperature') | float(-99) - "
+                  "desired_setpoint | float) | abs > 0.05 }}")
+GUARD_FAN = "{{ state_attr(climate_ac, 'fan_mode') != desired_fan }}"
+
+
+def _acting_branches(bp):
+    """cool + heat + the two in-range sub-branches, keyed for messages."""
+    lad = ladder(bp)
+    in_range = next(b for b in lad if "target_mode == 'off'" in branch_cond(b))
+    sub = in_range["sequence"][-1]["choose"]      # deadband choose
+    cool = next(b for b in lad if branch_cond(b) == "{{ target_mode == 'cool' }}")
+    heat = next(b for b in lad if branch_cond(b) == "{{ target_mode == 'heat' }}")
+    return {"maintenance": sub[1], "cool": cool, "heat": heat}
+
+
+def test_comfort_branches_guard_every_call(bp):
+    for name, b in _acting_branches(bp).items():
+        kinds = seq_kinds(b["sequence"])
+        assert kinds[:3] == ["variables", "choose", "choose"], (name, kinds)
+        guard_temp = branch_cond(b["sequence"][1]["choose"][0])
+        guard_fan = branch_cond(b["sequence"][2]["choose"][0])
+        assert guard_temp == GUARD_SETPOINT, name
+        assert guard_fan == GUARD_FAN, name
+        inner_t = b["sequence"][1]["choose"][0]["sequence"]
+        assert seq_kinds(inner_t) == ["service:climate.set_temperature"], name
+        inner_f = b["sequence"][2]["choose"][0]["sequence"]
+        assert seq_kinds(inner_f) == ["service:climate.set_fan_mode"], name
+        # a cloud error must not abort the branch before its expected-write (board R1-3)
+        assert inner_t[0]["continue_on_error"] is True, name
+        assert inner_f[0]["continue_on_error"] is True, name
+
+
+def test_cool_heat_desired_values(bp):
+    br = _acting_branches(bp)
+    cv = br["cool"]["sequence"][0]["variables"]
+    assert cv["desired_mode"] == "cool"
+    assert " ".join(cv["desired_setpoint"].split()) == "{{ temp_high | float }}"
+    assert " ".join(cv["desired_fan"].split()) == "{{ target_fan }}"
+    hv = br["heat"]["sequence"][0]["variables"]
+    assert hv["desired_mode"] == "heat"
+    assert " ".join(hv["desired_setpoint"].split()) == "{{ temp_low | float }}"
+
+
+def test_off_branches_wrap_turn_off_in_guard(bp):
+    lad = ladder(bp)
+    for marker in ("is_vacation", "not in_operating_window", "door_is_open"):
+        b = next(x for x in lad if marker in branch_cond(x))
+        first = b["sequence"][0]
+        assert step_kind(first) == "choose", marker
+        g = branch_cond(first["choose"][0])
+        assert g == "{{ current_ac_mode != 'off' }}", marker
+        assert seq_kinds(first["choose"][0]["sequence"]) == ["service:climate.turn_off"], marker
+        # symmetry with the comfort calls (board R2R-8): a pierce must reach its
+        # expected-write even when the cloud call errors
+        assert first["choose"][0]["sequence"][0]["continue_on_error"] is True, marker
