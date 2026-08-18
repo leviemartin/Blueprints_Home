@@ -1,5 +1,12 @@
 # LG AC Climate v1.2.0 — Implementation Plan
 
+> **Status: Done (2026-08-18).** All tasks T0–T5 shipped: merged `a7553a6`
+> (PR #9, session #8, epic #7 closed), deployed via blueprint/save + instance
+> `comfort_margin: 1.0`, read-path trace gate PASSED (deep_pull_depth 0.5 /
+> actives 21.5·22.5 / gates true). One observation pending: the first live
+> deep-pull→OFF cycle (deploy landed after the 22:30 schedule close; expected
+> next daytime the room crosses 23.0).
+
 **Spec:** `docs/superpowers/specs/2026-08-18-lg-ac-climate-v1.2.0-design.md`
 **Branch:** `lg-ac-v1.2.0` → PR → `main`
 
