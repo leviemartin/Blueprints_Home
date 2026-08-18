@@ -216,7 +216,7 @@ Appended to STEP 2b, same self-healing pattern as the sensor warning
           The comfort range/margin and this AC's setpoint grid (step
           {{ ac_temp_step }}, min {{ ac_min_temp }}, max {{ ac_max_temp }})
           leave no valid deep setpoint for
-          {{ 'cooling' if not cool_deep_ok else 'heating' }}.
+          {{ 'cooling and heating' if (not cool_deep_ok and not heat_deep_ok) else ('cooling' if not cool_deep_ok else 'heating') }}.
           That mode falls back to boundary idling (v1.1.0 behavior).
         notification_id: "ac_climate_deep_infeasible"
       continue_on_error: true

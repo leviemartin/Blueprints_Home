@@ -84,7 +84,10 @@ Pre-deploy: run the spec's instance blast-radius checklist (R1-4 + R1R2-1) at
 deploy time — re-enumerate instances, live-read each device's
 `target_temp_step`/`min_temp`/`max_temp`, compute PREDICTED
 `cool_deep_ok`/`heat_deep_ok` per instance; deploy gate FAILS if the
-living-room instance predicts either gate False. Then: (1) push merged YAML via
+living-room instance predicts either gate False. Also assert each device's
+`min_temp` and `max_temp` are exact multiples of its `target_temp_step`
+(code board BC-02/R1C-2: a non-step-anchored bound can pass the gate with an
+unstorable command → beep-per-tick loop; LG units observed are all anchored). Then: (1) push merged YAML via
 HA WS `blueprint/save` (`domain: automation`,
 `path: leviemartin/lg_ac_climate.yaml`, `yaml: <file contents>`,
 `allow_override: true`); no input renames — instances survive (spec Migration).
