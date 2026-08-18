@@ -1,7 +1,7 @@
 blueprint:
-  name: "LG AC Climate Control v1.1.0"
+  name: "LG AC Climate Control v1.2.0"
   description: >
-    **Version: 1.1.0**
+    **Version: 1.2.0**
 
     Automates LG air conditioners per-floor using external temperature sensors
     for reliable ambient readings.
@@ -18,9 +18,14 @@ blueprint:
     - **Door Sensor:** Auto-off when garden door is left open.
     - **Beep-Silent Control:** Commands are sent only when they change
       something — steady state sends nothing (LG units beep per command).
-    - **Hysteresis:** Configurable margin stops off/on cycling at the
-      comfort-range edges. In mild weather the unit may idle in-mode instead
-      of switching off — its internal thermostat cycles quietly instead.
+    - **Deep Hysteresis (v1.2.0):** While actively heating/cooling, the
+      setpoint aims max(device step, 0.5 °C) past the comfort-range release
+      point, so the room sensors — not the unit's internal one — decide when
+      the target is reached and the unit genuinely turns OFF. The off/on
+      transitions beep by design (silence-over-beeps trade); steady state
+      stays command-free. If the device's setpoint grid or limits leave no
+      valid deep setpoint, that mode falls back to v1.1.0 boundary idling
+      and a persistent notification is raised.
     - **Manual-Override Hold:** Optional input_text helper detects remote/app
       changes and pauses comfort control for a configurable window (vacation,
       schedule end, and door-open still force off). Reloading any automation
@@ -248,7 +253,7 @@ blueprint:
     # --- HYSTERESIS / ROBUSTNESS (v1.1.0) ---
     comfort_margin:
       name: Comfort Margin (°C)
-      description: "Hysteresis: an actively heating/cooling AC continues until the room is this far inside the comfort range. 0 = v1.0.0 cycling behavior."
+      description: "Hysteresis release depth: an actively heating/cooling AC continues until the room is this far inside the comfort range, then turns OFF. The commanded setpoint aims max(device step, 0.5 °C) past this release so the room sensors decide, not the unit's own. 0 approximates v1.0.0 cycling behavior."
       default: 0.5
       selector:
         number:
@@ -437,6 +442,24 @@ action:
       setpoint_heat_q: >-
         {{ ([([(((temp_low | float / ac_temp_step) | round(0, 'ceil')) * ac_temp_step), ac_min_temp] | max), ac_max_temp] | min) | round(1) }}
 
+      # --- Deep-pull setpoints + feasibility gates (v1.2.0) ---
+      # Declaration order is load-bearing: each references the previous.
+      deep_pull_depth: "{{ [ac_temp_step, 0.5] | max }}"
+      setpoint_cool_active_q: >-
+        {% set r = temp_high | float - margin | float %}
+        {% set q = ((((r - deep_pull_depth) / ac_temp_step) + 0.001) | round(0, 'floor')) * ac_temp_step %}
+        {{ ([([q, ac_min_temp] | max), ac_max_temp] | min) | round(1) }}
+      setpoint_heat_active_q: >-
+        {% set r = temp_low | float + margin | float %}
+        {% set q = ((((r + deep_pull_depth) / ac_temp_step) - 0.001) | round(0, 'floor') + 1) * ac_temp_step %}
+        {{ ([([q, ac_max_temp] | min), ac_min_temp] | max) | round(1) }}
+      cool_deep_ok: >-
+        {{ (setpoint_cool_active_q | float | round(2)) <= ((temp_high | float - margin | float - deep_pull_depth) | round(2))
+           and (setpoint_cool_active_q | float | round(2)) > (temp_low | float | round(2)) }}
+      heat_deep_ok: >-
+        {{ (setpoint_heat_active_q | float | round(2)) >= ((temp_low | float + margin | float + deep_pull_depth) | round(2))
+           and (setpoint_heat_active_q | float | round(2)) < (temp_high | float | round(2)) }}
+
       # --- Per-Day Schedule ---
       schedule_start_today: >
         {{ [t_start_mon, t_start_tue, t_start_wed, t_start_thu, t_start_fri, t_start_sat, t_start_sun][now().weekday()] }}
@@ -604,7 +627,7 @@ action:
 
       - conditions:
           - condition: template
-            value_template: "{{ (margin | float * 2) >= (temp_high | float - temp_low | float) }}"
+            value_template: "{{ (margin | float * 2) > (temp_high | float - temp_low | float) }}"
         sequence:
           - service: persistent_notification.create
             data:
@@ -612,7 +635,7 @@ action:
               message: >
                 Comfort margin ({{ margin }}°C) is too large for the comfort
                 range ({{ temp_low }}–{{ temp_high }}°C): twice the margin must
-                fit inside the range. AC control is paused until corrected.
+                not exceed the range. AC control is paused until corrected.
               notification_id: "ac_climate_config_error"
           - stop: "Comfort margin misconfigured"
 
@@ -640,6 +663,28 @@ action:
             All temperature sensors are unavailable. AC is holding current
             state until sensors recover. Sensors: {{ sensors_temp }}
           notification_id: "ac_climate_sensor_warning"
+  # Deep-pull infeasibility signal (v1.2.0) — self-healing, config-static
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ cool_deep_ok and heat_deep_ok }}"
+        sequence:
+          - service: persistent_notification.dismiss
+            data:
+              notification_id: "ac_climate_deep_infeasible"
+            continue_on_error: true
+    default:
+      - service: persistent_notification.create
+        data:
+          title: "AC Climate Blueprint — Deep-pull infeasible"
+          message: >
+            The comfort range/margin and this AC's setpoint grid (step
+            {{ ac_temp_step }}, min {{ ac_min_temp }}, max {{ ac_max_temp }})
+            leave no valid deep setpoint for
+            {{ 'cooling' if not cool_deep_ok else 'heating' }}.
+            That mode falls back to boundary idling (v1.1.0 behavior).
+          notification_id: "ac_climate_deep_infeasible"
+        continue_on_error: true
 
   # =============================================
   # STEP 2c: RESTART SEED (no false hold after HA restart)
@@ -898,7 +943,7 @@ action:
         sequence:
           - variables:
               desired_mode: "cool"
-              desired_setpoint: "{{ setpoint_cool_q }}"
+              desired_setpoint: "{{ setpoint_cool_active_q if (deadband_active and cool_deep_ok) else setpoint_cool_q }}"
               desired_fan: "{{ target_fan }}"
           - choose:
               - conditions:
@@ -943,7 +988,7 @@ action:
         sequence:
           - variables:
               desired_mode: "heat"
-              desired_setpoint: "{{ setpoint_heat_q }}"
+              desired_setpoint: "{{ setpoint_heat_active_q if (deadband_active and heat_deep_ok) else setpoint_heat_q }}"
               desired_fan: "{{ target_fan }}"
           - choose:
               - conditions:

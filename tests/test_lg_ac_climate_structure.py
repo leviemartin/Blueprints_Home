@@ -1,4 +1,4 @@
-"""Structural + logic pins for lg_ac_climate.yaml (LG AC Climate Control v1.1.0).
+"""Structural + logic pins for lg_ac_climate.yaml (LG AC Climate Control v1.2.0).
 
 Run: cd ~/AI/projects/Blueprints_Home && \
      ~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests -q
@@ -104,13 +104,16 @@ def test_fan_discovery_untouched(bp):
 # ---- v1.1.0 additions ----
 
 def test_version_bumped(bp):
-    assert bp["blueprint"]["name"] == "LG AC Climate Control v1.1.0"
-    assert "**Version: 1.1.0**" in bp["blueprint"]["description"]
+    assert bp["blueprint"]["name"] == "LG AC Climate Control v1.2.0"
+    assert "**Version: 1.2.0**" in bp["blueprint"]["description"]
 
 
 def test_new_input_schemas(inputs):
     cm = inputs["comfort_margin"]
+    # default STAYS 0.5 (v1.2.0 C3 rev 3): the operator instance opts into 1.0
+    # per-instance; a default bump would change every unset sibling implicitly
     assert cm["default"] == 0.5
+    assert "release depth" in cm["description"]        # v1.2.0 semantics documented
     n = cm["selector"]["number"]
     assert (n["min"], n["max"], n["step"]) == (0.0, 2.0, 0.1)
 
@@ -142,8 +145,11 @@ def test_validation_gate_covers_margin(bp):
     gate = bp["action"][1]["choose"]
     conds = [branch_cond(b) for b in gate]
     assert conds[0] == "{{ temp_low | float >= temp_high | float }}"
-    assert conds[1] == ("{{ (margin | float * 2) >= "
+    # strict > (v1.2.0 C4): equality margin*2 == width is legal — releases meet
+    # at the midpoint, active targets straddle it under the _deep_ok gates
+    assert conds[1] == ("{{ (margin | float * 2) > "
                         "(temp_high | float - temp_low | float) }}")
+    assert "must not exceed the range" in gate[1]["sequence"][0]["data"]["message"]
     for b in gate:
         assert seq_kinds(b["sequence"]) == ["service:persistent_notification.create", "stop"]
 
@@ -286,14 +292,18 @@ def test_comfort_branches_guard_every_call(bp):
 
 
 def test_cool_heat_desired_values(bp):
+    # v1.2.0 C2: deep pull only when the off-state is reachable (deadband) AND
+    # feasible on this device's grid (gate); else boundary = v1.1.0 behavior
     br = _acting_branches(bp)
     cv = br["cool"]["sequence"][0]["variables"]
     assert cv["desired_mode"] == "cool"
-    assert " ".join(cv["desired_setpoint"].split()) == "{{ setpoint_cool_q }}"
+    assert " ".join(cv["desired_setpoint"].split()) == \
+        "{{ setpoint_cool_active_q if (deadband_active and cool_deep_ok) else setpoint_cool_q }}"
     assert " ".join(cv["desired_fan"].split()) == "{{ target_fan }}"
     hv = br["heat"]["sequence"][0]["variables"]
     assert hv["desired_mode"] == "heat"
-    assert " ".join(hv["desired_setpoint"].split()) == "{{ setpoint_heat_q }}"
+    assert " ".join(hv["desired_setpoint"].split()) == \
+        "{{ setpoint_heat_active_q if (deadband_active and heat_deep_ok) else setpoint_heat_q }}"
 
 
 def test_off_branches_wrap_turn_off_in_guard(bp):
@@ -354,8 +364,27 @@ def test_hold_variables(bp):
     assert md == MANUAL_DETECTED
 
 
+def test_deep_infeasible_notification_block(bp):
+    # v1.2.0 C7: self-healing operator signal when a mode cannot deep-pull —
+    # STEP 2b pattern (fixed id create/dismiss), runs before the ladder so it
+    # fires regardless of branch (board B194701-10)
+    blk = bp["action"][4]
+    assert step_kind(blk) == "choose"
+    b = blk["choose"][0]
+    assert branch_cond(b) == "{{ cool_deep_ok and heat_deep_ok }}"
+    dis = b["sequence"][0]
+    assert step_kind(dis) == "service:persistent_notification.dismiss"
+    assert dis["data"]["notification_id"] == "ac_climate_deep_infeasible"
+    assert dis["continue_on_error"] is True
+    cre = blk["default"][0]
+    assert step_kind(cre) == "service:persistent_notification.create"
+    assert cre["data"]["notification_id"] == "ac_climate_deep_infeasible"
+    assert cre["continue_on_error"] is True
+    assert "boundary idling" in cre["data"]["message"]
+
+
 def test_step2c_restart_seed(bp):
-    s2c = bp["action"][4]          # after the two dismiss steps
+    s2c = bp["action"][5]          # after the dismiss steps + C7 infeasibility block
     assert step_kind(s2c) == "choose"
     b = s2c["choose"][0]
     assert [c["condition"] for c in b["conditions"]] == ["trigger", "template"]
@@ -479,6 +508,51 @@ def test_setpoint_quantization_variables(bp):
                  "ac_min_temp] | max), ac_max_temp] | min) | round(1) }}")
 
 
+# ---- v1.2.0: deep-pull variables (spec C1, board rounds 1+2) ----
+
+def test_deep_pull_variables_pinned(bp):
+    assert " ".join(str(get_var(bp, "deep_pull_depth")).split()) == \
+        "{{ [ac_temp_step, 0.5] | max }}"
+    c = " ".join(get_var(bp, "setpoint_cool_active_q").split())
+    assert c == ("{% set r = temp_high | float - margin | float %} "
+                 "{% set q = ((((r - deep_pull_depth) / ac_temp_step) + 0.001) "
+                 "| round(0, 'floor')) * ac_temp_step %} "
+                 "{{ ([([q, ac_min_temp] | max), ac_max_temp] | min) | round(1) }}")
+    h = " ".join(get_var(bp, "setpoint_heat_active_q").split())
+    assert h == ("{% set r = temp_low | float + margin | float %} "
+                 "{% set q = ((((r + deep_pull_depth) / ac_temp_step) - 0.001) "
+                 "| round(0, 'floor') + 1) * ac_temp_step %} "
+                 "{{ ([([q, ac_max_temp] | min), ac_min_temp] | max) | round(1) }}")
+    # gates: round(2) on BOTH sides of every compare (float-dust kill, board
+    # B194701-11); depth term inside the first compare (post-clamp thinning,
+    # board B194701-12); strict outer-bound term (trigger-line, B194701-03)
+    cg = " ".join(get_var(bp, "cool_deep_ok").split())
+    assert cg == ("{{ (setpoint_cool_active_q | float | round(2)) <= "
+                  "((temp_high | float - margin | float - deep_pull_depth) | round(2)) "
+                  "and (setpoint_cool_active_q | float | round(2)) > "
+                  "(temp_low | float | round(2)) }}")
+    hg = " ".join(get_var(bp, "heat_deep_ok").split())
+    assert hg == ("{{ (setpoint_heat_active_q | float | round(2)) >= "
+                  "((temp_low | float + margin | float + deep_pull_depth) | round(2)) "
+                  "and (setpoint_heat_active_q | float | round(2)) < "
+                  "(temp_high | float | round(2)) }}")
+
+
+def test_active_setpoint_variable_ordering(bp):
+    # HA renders a variables block in declaration order: a key referencing a
+    # later key is Undefined at runtime and kills the whole tick INCLUDING the
+    # safety pierces — invisible to get_var/render_var (board R1-8 + R1R2-7)
+    keys = list(bp["action"][0]["variables"].keys())
+    i = {k: keys.index(k) for k in
+         ("ac_temp_step", "deep_pull_depth", "setpoint_cool_active_q",
+          "setpoint_heat_active_q", "cool_deep_ok", "heat_deep_ok")}
+    assert i["ac_temp_step"] < i["deep_pull_depth"]
+    assert i["deep_pull_depth"] < i["setpoint_cool_active_q"]
+    assert i["deep_pull_depth"] < i["setpoint_heat_active_q"]
+    assert i["setpoint_cool_active_q"] < i["cool_deep_ok"]
+    assert i["setpoint_heat_active_q"] < i["heat_deep_ok"]
+
+
 # ---- Task 8b: rendered behavior tests ----
 
 def _float(v, default=0.0):
@@ -518,6 +592,50 @@ def test_rendered_setpoint_quantization(bp):
     assert heat(20.0, 1.0) == "20.0"
     # zero step must not raise (floored to 0.1)
     assert cool(23.5, 0.1) == "23.5"
+
+
+def _active(bp, mode, tl, th, margin, step, acmin=16.0, acmax=30.0):
+    # mirror HA's sequential variables rendering: depth from its own template,
+    # setpoint fed into its gate — never hand-computed (plan T1.6)
+    # device attrs are ALWAYS floats in STEP 1 (| float(…) guards) — an int
+    # here would diverge from live rendering (Jinja round keeps ints as ints)
+    depth = float(render_var(bp, "deep_pull_depth", {"ac_temp_step": float(step)}))
+    ctx = dict(temp_low=tl, temp_high=th, margin=margin, ac_temp_step=float(step),
+               ac_min_temp=float(acmin), ac_max_temp=float(acmax),
+               deep_pull_depth=depth)
+    sp = render_var(bp, f"setpoint_{mode}_active_q", ctx)
+    gate = render_var(bp, f"{mode}_deep_ok",
+                      {**ctx, f"setpoint_{mode}_active_q": float(sp)})
+    return sp, gate
+
+
+def test_rendered_active_setpoint_and_gates(bp):
+    # spec edge table (16 rows) — expected values verified by exact-arithmetic
+    # simulation 2026-08-18. Coverage classes: device-limit collapse
+    # (B194701-01), 0.1-step float dust (B194701-11 — raw compares rendered
+    # 21.7/False where 22.2/True is correct), thin depth + clamp-thinning
+    # (B194701-12), trigger-line straddle (B194701-03)
+    cases = [
+        ("cool", dict(tl=21, th=23, margin=1.0, step=0.5), "21.5", "True"),
+        ("cool", dict(tl=21, th=23, margin=1.0, step=1.0), "21.0", "False"),
+        ("cool", dict(tl=21.5, th=23.5, margin=1.0, step=1.0), "21.0", "False"),
+        ("cool", dict(tl=21, th=23, margin=1.0, step=0.5, acmin=22), "22.0", "False"),
+        ("cool", dict(tl=21, th=23, margin=0.0, step=0.5), "22.5", "True"),
+        ("cool", dict(tl=21, th=23, margin=0.9, step=0.5), "21.5", "True"),
+        ("cool", dict(tl=21, th=23, margin=0.7, step=0.1), "21.8", "True"),
+        ("cool", dict(tl=21, th=23, margin=1.0, step=0.5, acmin=21.7), "21.7", "False"),
+        ("heat", dict(tl=21, th=23, margin=1.0, step=0.5), "22.5", "True"),
+        ("heat", dict(tl=21, th=23, margin=0.5, step=1.0), "23.0", "False"),
+        ("heat", dict(tl=21, th=23, margin=1.0, step=1.0), "23.0", "False"),
+        ("heat", dict(tl=21, th=23, margin=1.0, step=0.5, acmax=22), "22.0", "False"),
+        ("heat", dict(tl=21, th=23, margin=0.9, step=0.5), "22.5", "True"),
+        ("heat", dict(tl=21, th=23, margin=0.7, step=0.1), "22.2", "True"),
+        ("heat", dict(tl=21, th=23, margin=0.2, step=0.1), "21.7", "True"),
+        ("heat", dict(tl=21, th=23, margin=0.4, step=0.1), "21.9", "True"),
+    ]
+    for mode, kw, want_sp, want_gate in cases:
+        sp, gate = _active(bp, mode, **kw)
+        assert (sp, gate) == (want_sp, want_gate), (mode, kw, sp, gate)
 
 
 def test_rendered_target_mode_hysteresis(bp):
@@ -592,8 +710,14 @@ def test_rendered_window_owns_overnight_tail(bp):
 
 def test_description_documents_new_features(bp):
     d = bp["blueprint"]["description"]
-    for token in ("Beep-Silent", "Hysteresis", "Manual-Override Hold", "Fail-Safe"):
+    for token in ("Beep-Silent", "Manual-Override Hold", "Fail-Safe"):
         assert token in d
+    # v1.2.0-only tokens — RED against v1.1.0 (board R1-6: the v1.1.0 tokens
+    # all survive the rewrite, so they alone cannot pin the C5 change)
+    # folded-scalar note: more-indented continuation lines keep literal
+    # newlines, so each token must sit within one source line of the bullet
+    assert "Deep Hysteresis" in d
+    assert "transitions beep by design" in d
 
 
 def test_door_elapsed_comparator_pinned(bp):
@@ -606,7 +730,7 @@ def test_blueprint_min_version(bp):
 
 
 def test_step2c_write_continues_on_error(bp):
-    b = bp["action"][4]["choose"][0]
+    b = bp["action"][5]["choose"][0]
     assert b["sequence"][0]["continue_on_error"] is True
 
 
