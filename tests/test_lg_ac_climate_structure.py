@@ -381,6 +381,17 @@ def test_deep_infeasible_notification_block(bp):
     assert cre["data"]["notification_id"] == "ac_climate_deep_infeasible"
     assert cre["continue_on_error"] is True
     assert "boundary idling" in cre["data"]["message"]
+    # code board BC-01 (converged R1C-1+R2C-1): the message must name every
+    # infeasible mode — step-1.0 devices commonly fail BOTH gates at once
+    env = Environment()
+    base = dict(ac_temp_step=1.0, ac_min_temp=16.0, ac_max_temp=30.0)
+    msg = lambda c, h: env.from_string(cre["data"]["message"]).render(
+        **base, cool_deep_ok=c, heat_deep_ok=h)
+    assert "cooling and heating" in msg(False, False)
+    only_cool = msg(False, True)
+    assert "cooling" in only_cool and "cooling and heating" not in only_cool
+    only_heat = msg(True, False)
+    assert "heating" in only_heat and "cooling and heating" not in only_heat
 
 
 def test_step2c_restart_seed(bp):
@@ -592,6 +603,16 @@ def test_rendered_setpoint_quantization(bp):
     assert heat(20.0, 1.0) == "20.0"
     # zero step must not raise (floored to 0.1)
     assert cool(23.5, 0.1) == "23.5"
+
+
+def test_rendered_zero_step_guard_chain(bp):
+    # code board BC-03 (R2C-2): exercise the RAW device attr → guard → deep-pull
+    # chain, not a hand-fed 0.1 — a regressed coercion would otherwise stay green
+    step = render_var(bp, "ac_temp_step",
+                      {"state_attr": lambda e, a: 0, "climate_ac": "climate.x"})
+    assert step == "0.1"
+    sp, gate = _active(bp, "heat", tl=21, th=23, margin=0.7, step=float(step))
+    assert (sp, gate) == ("22.2", "True")
 
 
 def _active(bp, mode, tl, th, margin, step, acmin=16.0, acmax=30.0):
