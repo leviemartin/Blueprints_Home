@@ -30,13 +30,21 @@ manual human input.
 ### Climate Control
 1. Automatic mode selection: heat if below range, cool if above, off if inside
 2. Configurable comfort range with separate low/high bounds
-3. Hysteresis: an actively heating/cooling AC continues until the room is a
-   configurable margin (default 0.5 °C) inside the range — no boundary cycling
+3. Deep hysteresis (v1.2.0): an actively heating/cooling AC continues until
+   the room is a configurable margin (default 0.5 °C; the operator's
+   living-room instance sets 1.0) inside the range, then turns OFF. While the
+   deadband is active, the commanded setpoint aims `max(device step, 0.5 °C)`
+   past that release point so the external room sensors — not the unit's
+   internal one — decide when it is reached. If the device's setpoint grid or
+   min/max limits leave no valid deep setpoint for a mode, that mode falls
+   back to v1.1.0 boundary idling and a persistent notification is raised
 4. Outdoor-aware deadband: when outdoor temp is extreme, AC holds in
    maintenance mode (low fan at boundary) instead of turning off
 5. 10-minute polling loop for temperature checks
 6. Idempotent command policy: a control tick sends a command only when it
-   would change the AC's state — steady state is command-silent (and beep-free)
+   would change the AC's state — steady state is command-silent (and beep-free).
+   v1.2.0 adds genuine off/on cycles, whose transitions beep by design — the
+   operator's explicit silence-over-beeps trade
 
 ### Fan Control
 1. Proportional fan speed based on distance from comfort boundary
@@ -69,7 +77,9 @@ manual human input.
 2. Weather entity failure: deadband defaults to active (normal cycling),
    never maintenance-on-missing-data
 3. Comfort range validation: blocks operation if low >= high or if twice the
-   hysteresis margin does not fit inside the range
+   hysteresis margin exceeds the range (equality is legal since v1.2.0 — the
+   release thresholds meet at the midpoint; the deep-pull feasibility gates
+   keep the active targets strictly apart)
 4. Graceful handling of AC entity unavailability
 5. Warnings self-dismiss when their condition heals
 6. HA restart never triggers a false manual-hold detection
