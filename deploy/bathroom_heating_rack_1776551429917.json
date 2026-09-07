@@ -1,0 +1,28 @@
+{
+  "id": "1776551429917",
+  "alias": "Bathroom Heating Rack v2.0.0",
+  "description": "",
+  "use_blueprint": {
+    "path": "leviemartin/bathroom_heating_rack.yaml",
+    "input": {
+      "heating_climate": "climate.heatingrack_bathroom",
+      "bathroom_temp_sensor": "sensor.bathroom_temperature",
+      "fan_switch": "light.heater",
+      "vacation_off": ["input_boolean.heating_rack_vacation"],
+      "boost_toggle": "input_boolean.heating_rack_boost",
+      "boost_target_temp": 26,
+      "boost_runtime_min": 55,
+      "morning_b_days": ["sat", "sun"],
+      "morning_b_hold_until": "09:30:00",
+      "evening_a_days": ["mon", "tue", "wed", "thu", "fri"],
+      "evening_a_target_warm": "19:15:00",
+      "evening_a_hold_until": "20:30:00",
+      "evening_a_target_temp": 24,
+      "evening_b_days": ["sat", "sun"],
+      "evening_b_target_warm": "19:15:00",
+      "evening_b_hold_until": "20:30:00",
+      "warmup_min_minutes": 10,
+      "notify_targets": ["notify.mobile_app_martin_fold"]
+    }
+  }
+}
