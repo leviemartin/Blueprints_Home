@@ -252,6 +252,29 @@ def world(**kw):
     return _States(table)
 
 
+def at(w, when):
+    """Shift every state's last_changed so `minutes_ago` values are relative to `when` instead of NOW.
+
+    Any test that overrides `now` MUST pass its world through this, or "motion 2 min ago"
+    silently becomes "motion 11 h ago" (caught by the scratch run on 2026-09-07).
+    """
+    delta = when - NOW
+    for s in w.table.values():
+        s.last_changed = s.last_changed + delta
+    return w
+
+
+def render_at(bp, ctx, w, when, upto="desired_on"):
+    env = make_env(at(w, when))
+    env.globals["now"] = lambda: when
+    out = dict(ctx)
+    for name, tpl in bp["action"][0]["variables"].items():
+        out[name] = parse(env.from_string(str(tpl)).render(**out))
+        if name == upto:
+            return out
+    raise KeyError(upto)
+
+
 def primary(dew_point=None, temperature=20.0, humidity=60.0, state="cloudy"):
     attrs = {"temperature": temperature, "humidity": humidity}
     if dew_point is not None:
@@ -609,28 +632,24 @@ def test_rule_continue_until_adaptive_target(bp):
 def test_rule_start_daytime_only(bp):
     w = world(**{"sensor.rh": _State("80"), "weather.primary": primary(dew_point=5.0)})
     assert _decide(bp, base_ctx(), w) == ("start", True)
-    env_now = NOW.replace(hour=23)
-    out_ctx = base_ctx()
-    env = make_env(w)
-    env.globals["now"] = lambda: env_now
-    out = dict(out_ctx)
-    for name, tpl in bp["action"][0]["variables"].items():
-        out[name] = parse(env.from_string(str(tpl)).render(**out))
-        if name == "desired_on":
-            break
+    w = world(**{"sensor.rh": _State("80"), "weather.primary": primary(dew_point=5.0)})
+    out = render_at(bp, base_ctx(), w, NOW.replace(hour=23))
     assert (out["active_rule"], out["desired_on"]) == ("idle", False)
 
 
 def test_rule_shower_turns_on_at_night(bp):
     ctx, w = _shower_ctx(55, 63, 2)
-    env = make_env(w)
-    env.globals["now"] = lambda: NOW.replace(hour=23)
-    out = dict(ctx)
-    for name, tpl in bp["action"][0]["variables"].items():
-        out[name] = parse(env.from_string(str(tpl)).render(**out))
-        if name == "desired_on":
-            break
+    out = render_at(bp, ctx, w, NOW.replace(hour=23))
+    assert out["is_night"] is True and out["presence_recent"] is True
     assert (out["active_rule"], out["desired_on"]) == ("shower", True)
+
+
+def test_rule_continue_at_night_after_shower(bp):
+    # a run started by a shower keeps going past 22:00 while RH is above the adaptive stop target
+    w = world(**{"light.fan": _State("on", minutes_ago=20), "sensor.rh": _State("70"),
+                 "weather.primary": primary(dew_point=5.0)})
+    out = render_at(bp, base_ctx(), w, NOW.replace(hour=23))
+    assert (out["active_rule"], out["desired_on"]) == ("continue", True)
 
 
 def test_idle_when_dry(bp):
@@ -1364,10 +1383,9 @@ Step 7: Report `PASS=N FAIL=M`.
 
 **Files:** none edited. Uses `scripts/deploy-blueprint.sh` (already pinned in the TCB roster; not modified by this plan).
 
-- [ ] **Step 1: TCB verify** — `TCB_EXTRA=/home/martin/AI/projects/Blueprints_Home/scripts/deploy-blueprint.sh ~/.claude/skills/convene-board/scripts/tcb-manifest.sh verify /home/martin/AI/reviews/tcb-baseline-16ef53e7f973185a.txt` → rc 0 or HALT.
+- [ ] **Step 1: TCB verify + branch freshness** — `TCB_EXTRA=/home/martin/AI/projects/Blueprints_Home/scripts/deploy-blueprint.sh ~/.claude/skills/convene-board/scripts/tcb-manifest.sh verify /home/martin/AI/reviews/tcb-baseline-16ef53e7f973185a.txt` → rc 0 or HALT. Then `git fetch origin && git checkout main && [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]` — deploy only from a `main` that equals `origin/main` (memory: fetch-origin-before-deploy; a concurrent session's merge must not be reverted by a stale checkout). If the harness classifier blocks the deploy command, render it through `op-templates.sh` (stack-b §4.6) and hand it to Martin — no workaround.
 - [ ] **Step 2: Sensor ids** — `curl …/api/states/sensor.temp_sensor_bathroom_humidity_sensor`; if 404 (Aqara reset re-created the device), find the new ids (`config/entity_registry/list` filtered on `original_name` "Humidity Sensor" + device name "Temp Sensor Bathroom") and edit the instance JSON (commit as a deploy-data fix) before continuing.
-- [ ] **Step 3: Create the boost helper (idempotent)** —
-  `curl -X POST -H "Authorization: Bearer $HASS_TOKEN" -H 'Content-Type: application/json' "$HASS_SERVER/api/config/input_boolean/config/bathroom_fan_boost" --data '{"name":"Bathroom fan boost","icon":"mdi:fan-plus"}'` → then `GET /api/states/input_boolean.bathroom_fan_boost` is `off`.
+- [ ] **Step 3: Create the boost helper (idempotent)** — there is NO REST config endpoint for input_boolean (live probe 2026-09-07: `GET /api/config/input_boolean/config/heating_rack_boost` → 404 even for an existing storage helper). Use the WebSocket storage-collection API: first `hass-cli -o json raw ws input_boolean/list | jq '.result[] | select(.id=="bathroom_fan_boost")'` — if it already exists, skip; else `hass-cli -o json raw ws input_boolean/create --json '{"name":"Bathroom fan boost","icon":"mdi:fan-plus"}'` (HA slugifies the name → id `bathroom_fan_boost` → entity `input_boolean.bathroom_fan_boost`; the probe confirmed the schema requires `name`). Then `GET /api/states/input_boolean.bathroom_fan_boost` is `off`.
 - [ ] **Step 4: Deploy** — `scripts/deploy-blueprint.sh bathroom_ventilator.yaml leviemartin/bathroom_ventilator.yaml deploy/bathroom_ventilator_1774555916056.json` → expect `blueprint/save: ok`, `instance 1774555916056: config written`, `automation.bathroom_ventilator_v1_0_0 state=on`, `deploy complete`. The backup lands in `deploy/1774555916056.prev.json` (do not commit it — add `deploy/*.prev.json` to `.gitignore` in this step and commit the ignore line).
 - [ ] **Step 5: Read-path proof** — `POST /api/services/automation/trigger` with `{"entity_id":"automation.bathroom_ventilator_v1_0_0"}`; read `persistent_notification/get` → `ventilator_debug` must show `weather_used=weather.home_sm`, a numeric `rh_floor`, `stop_target`, `start_threshold`, `active_rule`. Then fetch the latest trace (`trace/list` + `trace/get`) and confirm `changed_variables` contains `active_rule` and `desired_on` (v2-only variables; cannot exist in a v1 render).
 - [ ] **Step 6: Degraded-mode check (sensor still offline)** — with the Aqara sensor still `unavailable`, `active_rule` must read `degraded`; walk into the bathroom (or wait for the next real motion) and confirm the fan turns on and off ≈20 min after motion ends. If the sensor is back: skip, and instead confirm `sensors_ok=True` and `active_rule` in {idle, start, continue}.
