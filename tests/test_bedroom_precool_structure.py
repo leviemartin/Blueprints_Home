@@ -103,3 +103,86 @@ def test_lg_ac_instance_escalation_stages_are_ordered_and_in_range():
     for key, val in (("escalation_stage_1_minutes", s1), ("escalation_stage_2_minutes", s2)):
         sel = inputs[key]["selector"]["number"]
         assert sel["min"] <= val <= sel["max"], f"{key}={val} outside selector range"
+
+
+# --- rendered behaviour (board 20260907-163522 R1-01: realized outputs, not name pins) ---
+
+import ast
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
+
+from jinja2 import Environment
+
+TZ = ZoneInfo("Europe/Amsterdam")
+
+
+def _var_template(bp, name):
+    """Return the template string of an action-level `variables:` key."""
+    for step in bp.get("actions") or bp.get("action") or []:
+        if isinstance(step, dict) and name in (step.get("variables") or {}):
+            return step["variables"][name]
+    raise KeyError(name)
+
+
+def _reparse(rendered):
+    """What HA does to a rendered variables value before the next step sees it."""
+    try:
+        return ast.literal_eval(rendered)
+    except (ValueError, SyntaxError):
+        return rendered
+
+
+def _env(now):
+    env = Environment()
+    env.filters["float"] = lambda v, d=0.0: float(v) if str(v).strip() not in ("", "None") else d
+    env.filters["timestamp_custom"] = (
+        lambda ts, fmt="%Y-%m-%d %H:%M:%S", local=True: datetime.fromtimestamp(float(ts), tz=TZ).strftime(fmt)
+    )
+    env.globals["now"] = lambda: now
+    env.globals["timedelta"] = timedelta
+    env.globals["as_timestamp"] = lambda d: d.timestamp() if hasattr(d, "timestamp") else float(d)
+    env.globals["as_datetime"] = lambda s: datetime.fromisoformat(s) if isinstance(s, str) else s
+    env.globals["today_at"] = lambda hhmmss: datetime.combine(now.date(), time.fromisoformat(hhmmss), tzinfo=TZ)
+    return env
+
+
+def _render(bp, name, now, **ctx):
+    return _env(now).from_string(_var_template(bp, name)).render(**ctx).strip()
+
+
+def test_rendered_turn_on_tod_survives_the_variables_boundary(bp):
+    now = datetime(2026, 9, 7, 18, 32, tzinfo=TZ)
+    ts = _reparse(_render(bp, "turn_on_ts", now, bedtime="21:30:00", lead=194))
+    assert isinstance(ts, float), "turn_on_ts must re-parse to a float, not a string"
+    assert ts == datetime(2026, 9, 7, 18, 16, tzinfo=TZ).timestamp()
+    # the NEXT step receives the re-parsed value (this is where the old .strftime crashed)
+    tod = _render(bp, "turn_on_tod", now, turn_on_ts=ts)
+    assert tod == "18:16:00"
+    # and it still works if the boundary hands over the raw string form
+    assert _render(bp, "turn_on_tod", now, turn_on_ts=str(ts)) == "18:16:00"
+
+
+def test_rendered_bedtime_ts_rolls_to_tomorrow_after_bedtime(bp):
+    before = datetime(2026, 9, 7, 18, 0, tzinfo=TZ)
+    after = datetime(2026, 9, 7, 23, 0, tzinfo=TZ)
+    ts_before = _reparse(_render(bp, "bedtime_ts", before, bedtime="21:30:00"))
+    ts_after = _reparse(_render(bp, "bedtime_ts", after, bedtime="21:30:00"))
+    assert isinstance(ts_before, float) and isinstance(ts_after, float)
+    assert ts_before == datetime(2026, 9, 7, 21, 30, tzinfo=TZ).timestamp()
+    assert ts_after == datetime(2026, 9, 8, 21, 30, tzinfo=TZ).timestamp()
+
+
+def test_rendered_forecast_window_filters_by_reparsed_bedtime_ts(bp):
+    now = datetime(2026, 9, 7, 18, 0, tzinfo=TZ)
+    bedtime_ts = _reparse(_render(bp, "bedtime_ts", now, bedtime="21:30:00"))
+    forecast = [
+        {"datetime": "2026-09-07T17:00:00+02:00", "temperature": 25.0},  # past → excluded
+        {"datetime": "2026-09-07T19:00:00+02:00", "temperature": 24.0},  # in window
+        {"datetime": "2026-09-07T21:00:00+02:00", "temperature": 22.5},  # in window
+        {"datetime": "2026-09-07T23:00:00+02:00", "temperature": 19.0},  # after bedtime → excluded
+    ]
+    out = _render(bp, "forecast_window_temps", now, forecast_list_safe=forecast, bedtime_ts=bedtime_ts)
+    assert _reparse(out) == [24.0, 22.5]
+    # the string form of the boundary value must behave identically
+    out2 = _render(bp, "forecast_window_temps", now, forecast_list_safe=forecast, bedtime_ts=str(bedtime_ts))
+    assert _reparse(out2) == [24.0, 22.5]

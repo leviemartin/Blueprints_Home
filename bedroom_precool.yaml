@@ -681,8 +681,15 @@ action:
       # --- Schedule boundaries as time-of-day strings (HH:MM:SS).
       # Phase derivation compares time-of-day so the overnight window
       # (bedtime -> wake, spanning midnight) is handled without any
-      # date arithmetic. turn_on is the only moving boundary; it is
-      # carried as a same-day timestamp purely for the debug dump. ---
+      # date arithmetic. turn_on is the only moving boundary: turn_on_ts
+      # carries it as a UNIX timestamp (a datetime would arrive in the
+      # next step as a plain string), and turn_on_tod is LOAD-BEARING —
+      # precool_started compares now_tod against it; the debug dump only
+      # reuses the same values. lock_tod / deep_end_tod format their
+      # datetime inside the same template (wall-clock .strftime), while
+      # turn_on_tod is instant-derived via timestamp_custom; the two agree
+      # except inside a DST-skipped hour, unreachable at any bedtime that
+      # keeps turn_on after 03:00. ---
       now_tod: "{{ now().strftime('%H:%M:%S') }}"
       wake_tod: "{{ wake_time }}"
       bedtime_tod: "{{ bedtime }}"
