@@ -31,11 +31,11 @@ declared_tcb_changes:
 ## Global Constraints
 
 Locked decisions (Martin, 2026-09-07 — the plan implements them as stated; they are not re-opened at the board):
-- `comfort_floor_delta` input, default 1.0 °C (0–3, step 0.5): a slot is active only while `indoor_temp < slot_target − delta`; the warmup lead uses the same ΔT (`max(0, target − indoor)`).
+- `comfort_floor_delta` input, default 1.0 °C (0–3, step 0.5): a slot is active only while `indoor_temp < slot_target − delta`; the warmup lead uses the same ΔT (`max(0, target − indoor)`). **Release deadband (triple-check P1, recorded in spec §4.1):** once the blueprint has raised the setpoint (`current_setpoint > idle_setpoint + 0.1`) the floor line moves up by a fixed 0.5 °C (`floor_hysteresis`), so a slot that started heating stays active until `indoor ≥ target − delta + 0.5`. No new input.
 - Predictive motion removed: inputs `hall_motion`, `stairs_motion`, `enable_predictive_motion`, their triggers and every `*_motion_*` variable; `effective_start` = `auto_start`.
 - Warmup-started notification once per transition — condition `desired_setpoint > idle_setpoint + 0.1 and current_setpoint ≤ idle_setpoint + 0.1` (the tick that raises the setpoint; `current_setpoint` is read before the climate call) — dismissed on the tick that lowers the setpoint back to idle. At-target notification removed.
 - `continue_on_error: true` on every `notify.*` call (and on every `persistent_notification.*` call, ventilator parity).
-- `desired_setpoint` rounded half-up to `state_attr(climate, 'target_temp_step')` (0.5 when the attribute is missing or 0): `(((raw / step) + 0.5) | int) * step`. Temperature selectors keep `step: 0.5`.
+- `desired_setpoint` rounded half-up to `state_attr(climate, 'target_temp_step')` (0.5 when the attribute is missing or 0) with epsilon-nudged grid-count arithmetic: `((((raw / step) + 0.501) | int) * step) | round(2)` (memory: jinja grid quantization — `raw/step` is not binary-exact on a 0.1 grid). Temperature selectors keep `step: 0.5`.
 - `to: ["on", "off"]` on the boost, vacation and fan triggers.
 - Boost `input_boolean.turn_off` after the two climate calls.
 - Preset machinery removed: no `desired_preset`, no `climate.set_preset_mode`; idle = `heat_cool` + `idle_setpoint`; `unknown` → `heat_cool` normalisation stays.
@@ -48,13 +48,14 @@ Locked decisions (Martin, 2026-09-07 — the plan implements them as stated; the
 Engineering constraints:
 - Blueprint inputs are removed → the stored instance MUST be migrated in the same deploy (spec §7); an unknown key or a missing required input makes the automation `unavailable`.
 - Every boolean-valued variable is a `{{ … }}` expression, never bare `true`/`false` text (the v1 `vacation_active` else-branch rendered bare `false`, a truthy string; v2 uses `expand(entity_vacation) | selectattr('state','eq','on') | list | length > 0`).
+- Every gate compare on grid-derived temperatures carries `round(2)` on both sides (`indoor_temp | float | round(2) < <p>_floor | float`, where `<p>_floor` is itself `round(2)`).
 - No `delay`, `wait_*`, or `repeat until` in the action; timing comes from `now()`, `today_at()` and `states[x].last_changed`.
 - `mode: restart`, `max_exceeded: silent` (unchanged).
 - Version strings: blueprint name `Bathroom Heating Rack v2.0.0`, description starts with `**Version: 2.0.0**` and contains `comfort floor`.
 - Every input has a `description` (pinned).
 
 **Behaviour stated for the board (not a decision re-open):**
-- *Comfort-floor boundary.* `sensor.bathroom_temperature` (Hue motion sensor) reports every ~5 min at 0.1 °C with ±0.3 °C swings between reports (live history 2026-09-07). While the room hovers at `target − delta` the setpoint can flip target↔idle once per report (≤ 12 `climate.set_temperature` calls/h worst case, typically a handful per window). The element is off on both sides of the flip: the device's own sensor reads ~1.4 °C warmer than the room sensor, so with setpoint `target` it stops heating at room ≈ `target − 1.4`, below the floor line. No hysteresis input is added (spec §4.1 as approved).
+- *Comfort-floor boundary.* `sensor.bathroom_temperature` (Hue motion sensor) reports every ~5 min at 0.1 °C with ±0.3 °C swings between reports (live history 2026-09-07 13:14–13:39: 22.3 → 21.9 → 21.6 → 22.0 → 22.3 → 22.2), and today's room sits exactly at the morning floor line (22.0 against target 23 − 1.0). Without a deadband that sequence alone produces three idle→target rises in 25 minutes, each one a `climate.set_temperature` call plus a "Warmup started" push — the per-tick spam v2 exists to remove (research anti-pattern 6). Hence the fixed 0.5 °C release deadband while the setpoint is raised; at the deadband's upper edge a flip still costs one cloud call per report, but the element is off on both sides of it (the device's own sensor reads ~1.4 °C warmer, so with setpoint `target` it stops heating at room ≈ `target − 1.4`, below the floor line).
 - *Midnight.* Slots are evaluated per calendar day. A window whose hold-until is at or before target-warm is anchored to the next day and therefore runs from `auto_start` until midnight; the after-midnight part is not honoured (documented in the input description and the requirements doc). Martin's four slots all end before midnight.
 - *Warmup push per transition.* A fan pause inside a window lowers the setpoint (dismiss) and the resume raises it again (new push) — by definition of "once per transition" (spec §4.1). v1 pushed on every tick because the Tuya device always reports `preset_mode: eco` (3,336 logged `Service not found` errors since 09-04 = one per active-window minute).
 - *Tuya latency.* If the cloud takes > 60 s to reflect a new setpoint, the next tick still sees `current_setpoint` at idle and repeats the call + notification once. Bounded, not observed today (setpoint attribute updates within seconds in the 09-07 history).
@@ -70,7 +71,7 @@ Engineering constraints:
 - [x] HA 2026.9.0 reachable (`Europe/Amsterdam`); `notify.mobile_app_martin_fold` exists, `notify.mobile_app_martin` does not; `climate.heatingrack_bathroom` state `unknown`, `target_temp_step` 1.0, min 7, max 30, `preset_mode` eco, `temperature` 7.0; `light.heater`, `sensor.bathroom_temperature` (22.0), both helpers present.
 - [x] Live instance config `1776551429917` read (alias "Bathroom Heating Rack v1.0.0", entity `automation.bathroom_heating_rack_v1_0_0`, `on`): keys `hall_motion: binary_sensor.hall_motion_2`, `stairs_motion: binary_sensor.staircase_motion`, `notify_targets: [notify.mobile_app_martin]`, `warmup_min_minutes: 28`, `evening_a_hold_until: 19:45:00`, `evening_b_target_warm: 18:30:00`, `evening_b_hold_until: 20:00:00`, `boost_target_temp: 26`, `boost_runtime_min: 55`, `morning_b_days: [sat, sun]`, `morning_b_hold_until: 09:30:00`, `evening_a_days: [mon…fri]`, `evening_b_days: [sat, sun]`, `vacation_off: [input_boolean.heating_rack_vacation]`, `boost_toggle: input_boolean.heating_rack_boost`.
 - [x] Baseline suite green: `PASS=133 FAIL=0`.
-- [x] Scratch run of the inline artifacts in a throwaway repo copy (lesson from session #11): rack file `PASS=86 FAIL=0` on the v2 YAML; RED against v1.1.1 `PASS=20 FAIL=66`; full suite `PASS=219 FAIL=0`; `scripts/deploy-blueprint.sh --dry-run` on the instance JSON passes; HA `validate_config` on the input-substituted v2 config: `triggers valid, actions valid`.
+- [x] Scratch run of the inline artifacts in a throwaway repo copy (lesson from session #11): rack file `PASS=97 FAIL=0` on the v2 YAML; RED against v1.1.1 `PASS=20 FAIL=77`; full suite `PASS=230 FAIL=0`; `scripts/deploy-blueprint.sh --dry-run` on the instance JSON passes (`18 inputs`); HA `validate_config` on the input-substituted v2 config: `triggers valid, actions valid` (re-run after the triple-check edits).
 - [x] Error baseline recorded: `system_log/list` shows 3,336 occurrences of "Bathroom Heating Rack v1.0.0: Choose at step 9: choice 1: Repeat at step 3: Error executing script. Service not found" (first 2026-09-04) — the v1 warmup notification fires every active-window minute and targets a non-existent service.
 - [ ] At T4 time only: re-read the live instance config (the deploy script backs it up to `deploy/1776551429917.prev.json`, gitignored) and confirm `git rev-parse HEAD` = `origin/main`.
 
@@ -89,7 +90,7 @@ Engineering constraints:
 **Rationale:** Both files below are complete; the task is transcription plus running the suite RED against v1.1.1.
 **Effort:** high (operator `/effort high` checkpoint).
 
-**Context budget:** ~30k tokens · 2 files created · ~640 LOC · fits one Sonnet subagent window.
+**Context budget:** ~30k tokens · 2 files created · ~680 LOC · fits one Sonnet subagent window.
 
 **Files:**
 - Create: `tests/test_bathroom_heating_rack_structure.py`
@@ -98,7 +99,7 @@ Engineering constraints:
 
 **Interfaces:**
 - Consumes: `bathroom_heating_rack.yaml` (v1.1.1 now, v2.0.0 after Task 2); `scripts/deploy-blueprint.sh --dry-run` (unchanged).
-- Produces: the input key set `EXPECTED_INPUTS`, the trigger ids, the action-step order and the variable names Task 2 must emit (in file order across the three `variables:` steps): `indoor_temp_primary, indoor_temp_fallback, indoor_temp_has_primary, indoor_temp_has_fallback, indoor_temp_both_unavailable, indoor_temp, current_setpoint, current_hvac_mode, current_hvac_mode_normalized, setpoint_step, fan_is_on, today_dow, now_dt, vacation_active, boost_runtime_min_int, boost_is_on, boost_age_min, boost_active, boost_expired` · per slot `<p>_in_days, <p>_target_warm_dt, <p>_hold_until_dt, <p>_delta_T, <p>_warmup_min, <p>_auto_start_dt, <p>_in_window, <p>_active` for `p ∈ {ma, mb, ea, eb}` · `morning_active, evening_active, morning_temp, evening_temp` · `desired_mode, desired_setpoint_raw, desired_setpoint, active_priority`. The instance JSON is the file Task 4 deploys.
+- Produces: the input key set `EXPECTED_INPUTS`, the trigger ids, the action-step order and the variable names Task 2 must emit (in file order across the three `variables:` steps): `indoor_temp_primary, indoor_temp_fallback, indoor_temp_has_primary, indoor_temp_has_fallback, indoor_temp_both_unavailable, indoor_temp, current_setpoint, current_hvac_mode, current_hvac_mode_normalized, setpoint_step, fan_is_on, floor_hysteresis, today_dow, now_dt, vacation_active, boost_runtime_min_int, boost_is_on, boost_age_min, boost_active, boost_expired` · per slot `<p>_in_days, <p>_target_warm_dt, <p>_hold_until_dt, <p>_delta_T, <p>_warmup_min, <p>_auto_start_dt, <p>_in_window, <p>_floor, <p>_active` for `p ∈ {ma, mb, ea, eb}` · `morning_active, evening_active, morning_temp, evening_temp` · `desired_mode, desired_setpoint_raw, desired_setpoint, active_priority`. The instance JSON is the file Task 4 deploys.
 
 - [ ] **Step 1: Write `tests/test_bathroom_heating_rack_structure.py` (verbatim)**
 
@@ -478,8 +479,10 @@ def test_slot_templates(bp, slot, prefix):
     assert norm(get_var(bp, f"{prefix}_in_window")) == norm(
         f"{{{{ {prefix}_in_days and as_datetime({prefix}_auto_start_dt) <= as_datetime(now_dt) "
         f"and as_datetime(now_dt) < as_datetime({prefix}_hold_until_dt) }}}}")
+    assert norm(get_var(bp, f"{prefix}_floor")) == norm(
+        f"{{{{ ({slot}_target_temp | float - comfort_floor_delta | float + floor_hysteresis | float) | round(2) }}}}")
     assert norm(get_var(bp, f"{prefix}_active")) == norm(
-        f"{{{{ {prefix}_in_window and indoor_temp | float < {slot}_target_temp | float - comfort_floor_delta | float }}}}")
+        f"{{{{ {prefix}_in_window and indoor_temp | float | round(2) < {prefix}_floor | float }}}}")
     assert norm(get_var(bp, f"{prefix}_auto_start_dt")) == norm(
         f"{{{{ as_datetime({prefix}_target_warm_dt) - timedelta(minutes={prefix}_warmup_min | int) }}}}")
 
@@ -487,7 +490,9 @@ def test_slot_templates(bp, slot, prefix):
 def test_setpoint_rounding_template(bp):
     assert norm(get_var(bp, "desired_setpoint")) == norm(
         "{% if desired_setpoint_raw == 'none' %}none{% else %}"
-        "{{ (((desired_setpoint_raw | float) / (setpoint_step | float) + 0.5) | int) * (setpoint_step | float) }}{% endif %}")
+        "{{ ((((desired_setpoint_raw | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float)) | round(2) }}{% endif %}")
+    assert norm(get_var(bp, "floor_hysteresis")) == norm(
+        "{{ 0.5 if current_setpoint | float > idle_setpoint | float + 0.1 else 0 }}")
     assert norm(get_var(bp, "setpoint_step")) == norm(
         "{% set s = state_attr(entity_climate, 'target_temp_step') | float(0) %}{{ s if s > 0 else 0.5 }}")
 
@@ -565,11 +570,42 @@ def test_today_dow_rows(bp):
 
 @pytest.mark.parametrize("raw,step,expected", [
     (23.5, 1.0, 24.0), (23.5, 0.5, 23.5), (23.2, 1.0, 23.0), (22.5, 1.0, 23.0),
-    (7.0, 1.0, 7.0), (7.0, 0.5, 7.0), (26.0, 1.0, 26.0), (22.3, 0.1, 22.3),
+    (7.0, 1.0, 7.0), (7.0, 0.5, 7.0), (26.0, 1.0, 26.0),
+    # non-dyadic rows (0.1 grid): raw/step is not binary-exact — the epsilon nudge must hold
+    (22.3, 0.1, 22.3), (21.7, 0.1, 21.7), (22.35, 0.1, 22.4), (22.64, 0.1, 22.6), (22.65, 0.1, 22.7),
+    (22.9, 0.1, 22.9), (22.4, 0.1, 22.4),
 ])
 def test_setpoint_rounding_rows(bp, raw, step, expected):
     got = render_tpl(bp, get_var(bp, "desired_setpoint"), world(), desired_setpoint_raw=raw, setpoint_step=step)
     assert got == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("indoor,floor_line_hit,active", [
+    (23.0, True, True),     # at the line but heating already started → deadband keeps it active
+    (23.4, True, True),
+    (23.5, True, False),    # line + 0.5 → released
+    (22.9, False, True),
+])
+def test_comfort_floor_hysteresis_rows(bp, indoor, floor_line_hit, active):
+    raised = {"climate.rack": _State("unknown", attrs={"temperature": 24.0, "current_temperature": 23.4, "target_temp_step": 1.0})}
+    out = render_vars(bp, _evening_ctx(), world(**raised, **{"sensor.t": _State(str(indoor))}), "ea_active", at("19:30"))
+    assert out["floor_hysteresis"] == 0.5
+    assert out["ea_floor"] == 23.5
+    assert out["ea_active"] is active
+    # same rows with the setpoint at idle: no deadband
+    out = render_vars(bp, _evening_ctx(), world(**{"sensor.t": _State(str(indoor))}), "ea_active", at("19:30"))
+    assert out["floor_hysteresis"] == 0
+    assert out["ea_floor"] == 23.0
+    assert out["ea_active"] is (indoor < 23.0)
+
+
+def test_comfort_floor_non_dyadic_rows(bp):
+    # target 23.5, delta 0.5 → floor 23.0; indoor 22.9 from a "22.9" state string
+    ctx = _evening_ctx(evening_a_target_temp=23.5, comfort_floor_delta=0.5)
+    out = render_vars(bp, ctx, world(**{"sensor.t": _State("22.9")}), "ea_active", at("19:30"))
+    assert (out["ea_floor"], out["ea_active"]) == (23.0, True)
+    out = render_vars(bp, ctx, world(**{"sensor.t": _State("23.0")}), "ea_active", at("19:30"))
+    assert out["ea_active"] is False
 
 
 def test_setpoint_rounding_vacation_passthrough(bp):
@@ -829,7 +865,7 @@ Morning A stays on the blueprint defaults (Mon–Fri 06:45→08:00 @ 23) exactly
 - [ ] **Step 3: Run the new file RED against v1.1.1**
 
 Run: `cd ~/AI/projects/Blueprints_Home && ~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests/test_bathroom_heating_rack_structure.py -q`
-Expected: `66 failed, 20 passed` (the 20 are v1-neutral pins: mode, some selectors/defaults, the instance-JSON retune test, boost-age/hvac rows). The dry-run test fails on v1 with `required inputs missing: hall_motion, stairs_motion` — that is the RED signal for the migration.
+Expected: `77 failed, 20 passed` (the 20 are v1-neutral pins: mode, some selectors/defaults, the instance-JSON retune test, boost-age/hvac rows). The dry-run test fails on v1 with `required inputs missing: hall_motion, stairs_motion` — that is the RED signal for the migration.
 
 - [ ] **Step 4: Confirm the rest of the suite is untouched**
 
@@ -843,7 +879,7 @@ git add tests/test_bathroom_heating_rack_structure.py deploy/bathroom_heating_ra
 git commit -m "test(bathroom-heating-rack): v2.0.0 structure + render pins (RED on v1.1.1) and migrated instance JSON"
 ```
 
-Step 6: Report `rack: PASS=20 FAIL=66` and `rest: PASS=133 FAIL=0`.
+Step 6: Report `rack: PASS=20 FAIL=77` and `rest: PASS=133 FAIL=0`.
 
 ---
 
@@ -853,7 +889,7 @@ Step 6: Report `rack: PASS=20 FAIL=66` and `rest: PASS=133 FAIL=0`.
 **Rationale:** The YAML below is complete; the task is transcription, then driving Task 1 to green and fixing any pin mismatch by changing the YAML, never the pin's intent.
 **Effort:** high.
 
-**Context budget:** ~35k tokens · 1 file replaced · ~660 LOC · fits one Sonnet subagent window.
+**Context budget:** ~35k tokens · 1 file replaced · ~680 LOC · fits one Sonnet subagent window.
 
 **Files:**
 - Modify: `bathroom_heating_rack.yaml` (full replacement)
@@ -870,8 +906,8 @@ blueprint:
   name: "Bathroom Heating Rack v2.0.0"
   description: >
     **Version: 2.0.0** — comfort floor: a routine slot heats only while the room is below
-    `target − comfort_floor_delta` (default 1 °C), so a bathroom that is already warm gets no
-    pre-heat and no hold; predictive motion (hall/stairs) is removed — a routine starts at the
+    `target − comfort_floor_delta` (default 1 °C, with a 0.5 °C release deadband once heating has
+    started), so a bathroom that is already warm gets no pre-heat and no hold; predictive motion (hall/stairs) is removed — a routine starts at the
     ΔT-computed auto_start; the warmup-started notification fires once per transition (the tick
     that raises the setpoint from idle) and is dismissed when the setpoint returns to idle; the
     at-target notification is gone; every push call carries `continue_on_error`; the setpoint is
@@ -890,6 +926,7 @@ blueprint:
     - Dual-slot routines per phase (e.g. weekday + weekend morning)
     - Dynamic warmup: lead time follows the indoor ΔT, clamped to a floor and a cap
     - Comfort floor: no heating while the room is already within `comfort_floor_delta` of target
+      (0.5 °C release deadband once heating has started, so a noisy sensor cannot flip the setpoint)
     - Ad-hoc boost toggle with auto-expiry
     - Ventilator coordination: scheduled routines pause while the fan runs
     - Vacation / full-off toggle
@@ -963,9 +1000,10 @@ blueprint:
       name: Comfort Floor Delta (°C)
       description: >-
         A routine slot only heats while the room is below `target − delta`; at or above that line
-        the slot is treated as satisfied (no pre-heat, no hold). 0 disables the floor. The window
-        is evaluated per calendar day: a slot whose hold-until is at or before its target-warm time
-        runs until midnight.
+        the slot is treated as satisfied (no pre-heat, no hold). Once heating has started the slot
+        stays active until the room is 0.5 °C above that line (release deadband against sensor
+        noise). 0 keeps only the deadband. The window is evaluated per calendar day: a slot whose
+        hold-until is at or before its target-warm time runs until midnight.
       default: 1.0
       selector:
         number: {min: 0, max: 3, step: 0.5, unit_of_measurement: "°C"}
@@ -1239,6 +1277,11 @@ action:
       setpoint_step: >-
         {% set s = state_attr(entity_climate, 'target_temp_step') | float(0) %}{{ s if s > 0 else 0.5 }}
       fan_is_on: "{{ is_state(entity_fan, 'on') }}"
+      # Comfort-floor release deadband: once this blueprint has raised the setpoint, a slot stays
+      # active until the room is 0.5 °C above its floor line. The room sensor swings ±0.3 °C
+      # between 5-minute reports; without the deadband the setpoint and the warmup push would flip
+      # on every report while the room hovers at the line (research anti-pattern 6).
+      floor_hysteresis: "{{ 0.5 if current_setpoint | float > idle_setpoint | float + 0.1 else 0 }}"
 
       # Locale-safe weekday token (the %a abbreviation follows the system locale)
       today_dow: "{{ ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'][now().weekday()] }}"
@@ -1275,7 +1318,8 @@ action:
       ma_auto_start_dt: "{{ as_datetime(ma_target_warm_dt) - timedelta(minutes=ma_warmup_min | int) }}"
       ma_in_window: >-
         {{ ma_in_days and as_datetime(ma_auto_start_dt) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(ma_hold_until_dt) }}
-      ma_active: "{{ ma_in_window and indoor_temp | float < morning_a_target_temp | float - comfort_floor_delta | float }}"
+      ma_floor: "{{ (morning_a_target_temp | float - comfort_floor_delta | float + floor_hysteresis | float) | round(2) }}"
+      ma_active: "{{ ma_in_window and indoor_temp | float | round(2) < ma_floor | float }}"
 
       # ----- MORNING B -----
       mb_in_days: "{{ today_dow in morning_b_days }}"
@@ -1291,7 +1335,8 @@ action:
       mb_auto_start_dt: "{{ as_datetime(mb_target_warm_dt) - timedelta(minutes=mb_warmup_min | int) }}"
       mb_in_window: >-
         {{ mb_in_days and as_datetime(mb_auto_start_dt) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(mb_hold_until_dt) }}
-      mb_active: "{{ mb_in_window and indoor_temp | float < morning_b_target_temp | float - comfort_floor_delta | float }}"
+      mb_floor: "{{ (morning_b_target_temp | float - comfort_floor_delta | float + floor_hysteresis | float) | round(2) }}"
+      mb_active: "{{ mb_in_window and indoor_temp | float | round(2) < mb_floor | float }}"
 
       # ----- EVENING A -----
       ea_in_days: "{{ today_dow in evening_a_days }}"
@@ -1307,7 +1352,8 @@ action:
       ea_auto_start_dt: "{{ as_datetime(ea_target_warm_dt) - timedelta(minutes=ea_warmup_min | int) }}"
       ea_in_window: >-
         {{ ea_in_days and as_datetime(ea_auto_start_dt) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(ea_hold_until_dt) }}
-      ea_active: "{{ ea_in_window and indoor_temp | float < evening_a_target_temp | float - comfort_floor_delta | float }}"
+      ea_floor: "{{ (evening_a_target_temp | float - comfort_floor_delta | float + floor_hysteresis | float) | round(2) }}"
+      ea_active: "{{ ea_in_window and indoor_temp | float | round(2) < ea_floor | float }}"
 
       # ----- EVENING B -----
       eb_in_days: "{{ today_dow in evening_b_days }}"
@@ -1323,7 +1369,8 @@ action:
       eb_auto_start_dt: "{{ as_datetime(eb_target_warm_dt) - timedelta(minutes=eb_warmup_min | int) }}"
       eb_in_window: >-
         {{ eb_in_days and as_datetime(eb_auto_start_dt) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(eb_hold_until_dt) }}
-      eb_active: "{{ eb_in_window and indoor_temp | float < evening_b_target_temp | float - comfort_floor_delta | float }}"
+      eb_floor: "{{ (evening_b_target_temp | float - comfort_floor_delta | float + floor_hysteresis | float) | round(2) }}"
+      eb_active: "{{ eb_in_window and indoor_temp | float | round(2) < eb_floor | float }}"
 
       # ----- AGGREGATES -----
       morning_active: "{{ ma_active or mb_active }}"
@@ -1398,7 +1445,9 @@ action:
       desired_mode: "{% if vacation_active %}off{% else %}heat_cool{% endif %}"
       desired_setpoint_raw: "{% if vacation_active %}none{% elif boost_active %}{{ boost_target_temp | float }}{% elif fan_is_on and (morning_active or evening_active) %}{{ idle_setpoint | float }}{% elif evening_active %}{{ evening_temp | float }}{% elif morning_active %}{{ morning_temp | float }}{% else %}{{ idle_setpoint | float }}{% endif %}"
       # Rounded half-up to the device step so the idempotency check below compares like with like.
-      desired_setpoint: "{% if desired_setpoint_raw == 'none' %}none{% else %}{{ (((desired_setpoint_raw | float) / (setpoint_step | float) + 0.5) | int) * (setpoint_step | float) }}{% endif %}"
+      # Grid-count arithmetic with an epsilon nudge (0.501) and round(2): raw/step is not
+      # binary-exact for 0.1-grid values, so a bare +0.5 | int can land one step low.
+      desired_setpoint: "{% if desired_setpoint_raw == 'none' %}none{% else %}{{ ((((desired_setpoint_raw | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float)) | round(2) }}{% endif %}"
       active_priority: "{% if vacation_active %}P1_vacation{% elif boost_active %}P3_boost{% elif fan_is_on and (morning_active or evening_active) %}P2_fan_coord{% elif evening_active %}P4_evening{% elif morning_active %}P5_morning{% else %}P6_idle{% endif %}"
 
   # =============================================
@@ -1514,17 +1563,17 @@ action:
                 **Fan:** {{ 'ON' if fan_is_on else 'OFF' }}
                 | **Vacation:** {{ vacation_active }}
                 | **Boost:** {{ 'ON' if boost_is_on else 'off' }} (age {{ boost_age_min }}m, expires {{ boost_runtime_min_int }}m)
-                | **Comfort floor:** {{ comfort_floor_delta }}°C
+                | **Comfort floor:** {{ comfort_floor_delta }}°C (+{{ floor_hysteresis }} release)
 
                 **Today:** {{ today_dow }}
 
-                **Morning A:** days={{ ma_in_days }}, ΔT={{ ma_delta_T }}°C, warmup={{ ma_warmup_min }}m, auto_start={{ as_datetime(ma_auto_start_dt).strftime('%H:%M') }}, hold_until={{ as_datetime(ma_hold_until_dt).strftime('%a %H:%M') }}, in_window={{ ma_in_window }}, active={{ ma_active }}
+                **Morning A:** days={{ ma_in_days }}, ΔT={{ ma_delta_T }}°C, warmup={{ ma_warmup_min }}m, auto_start={{ as_datetime(ma_auto_start_dt).strftime('%H:%M') }}, hold_until={{ as_datetime(ma_hold_until_dt).strftime('%a %H:%M') }}, floor={{ ma_floor }}°C, in_window={{ ma_in_window }}, active={{ ma_active }}
 
-                **Morning B:** days={{ mb_in_days }}, ΔT={{ mb_delta_T }}°C, warmup={{ mb_warmup_min }}m, auto_start={{ as_datetime(mb_auto_start_dt).strftime('%H:%M') }}, in_window={{ mb_in_window }}, active={{ mb_active }}
+                **Morning B:** days={{ mb_in_days }}, ΔT={{ mb_delta_T }}°C, warmup={{ mb_warmup_min }}m, auto_start={{ as_datetime(mb_auto_start_dt).strftime('%H:%M') }}, floor={{ mb_floor }}°C, in_window={{ mb_in_window }}, active={{ mb_active }}
 
-                **Evening A:** days={{ ea_in_days }}, ΔT={{ ea_delta_T }}°C, warmup={{ ea_warmup_min }}m, auto_start={{ as_datetime(ea_auto_start_dt).strftime('%H:%M') }}, hold_until={{ as_datetime(ea_hold_until_dt).strftime('%a %H:%M') }}, in_window={{ ea_in_window }}, active={{ ea_active }}
+                **Evening A:** days={{ ea_in_days }}, ΔT={{ ea_delta_T }}°C, warmup={{ ea_warmup_min }}m, auto_start={{ as_datetime(ea_auto_start_dt).strftime('%H:%M') }}, hold_until={{ as_datetime(ea_hold_until_dt).strftime('%a %H:%M') }}, floor={{ ea_floor }}°C, in_window={{ ea_in_window }}, active={{ ea_active }}
 
-                **Evening B:** days={{ eb_in_days }}, ΔT={{ eb_delta_T }}°C, warmup={{ eb_warmup_min }}m, auto_start={{ as_datetime(eb_auto_start_dt).strftime('%H:%M') }}, in_window={{ eb_in_window }}, active={{ eb_active }}
+                **Evening B:** days={{ eb_in_days }}, ΔT={{ eb_delta_T }}°C, warmup={{ eb_warmup_min }}m, auto_start={{ as_datetime(eb_auto_start_dt).strftime('%H:%M') }}, floor={{ eb_floor }}°C, in_window={{ eb_in_window }}, active={{ eb_active }}
 
                 **→ Priority:** {{ active_priority }}
                 | **→ Desired:** mode={{ desired_mode }}, setpoint={{ desired_setpoint }} (raw {{ desired_setpoint_raw }})
@@ -1534,12 +1583,12 @@ action:
 - [ ] **Step 2: Run the rack file to green**
 
 Run: `~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests/test_bathroom_heating_rack_structure.py -q`
-Expected: `86 passed`. If a pin fails, the YAML deviates from this plan — diff against Step 1, fix the YAML.
+Expected: `97 passed`. If a pin fails, the YAML deviates from this plan — diff against Step 1, fix the YAML.
 
 - [ ] **Step 3: Full suite**
 
 Run: `~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests -q`
-Expected: `219 passed`.
+Expected: `230 passed`.
 
 - [ ] **Step 4: Offline deploy validation**
 
@@ -1578,7 +1627,7 @@ git add bathroom_heating_rack.yaml
 git commit -m "feat(bathroom-heating-rack): v2.0.0 — comfort floor, predictive motion removed, edge-triggered warmup push, step rounding, to: filters, preset machinery removed"
 ```
 
-Step 7: Report `rack: PASS=86 FAIL=0` and `suite: PASS=219 FAIL=0`.
+Step 7: Report `rack: PASS=97 FAIL=0` and `suite: PASS=230 FAIL=0`.
 
 ---
 
@@ -1608,7 +1657,7 @@ Pre-heats the bathroom with the heating rack (`climate.heatingrack_bathroom`) so
 
 ## Goals
 1. **Scheduled pre-heat** with a dynamic warmup lead based on the indoor-to-target ΔT (self-adjusts across seasons without calendar boundaries).
-2. **Comfort floor:** a slot heats only while the room is below `target − comfort_floor_delta` (default 1 °C). A bathroom that is already warm gets no pre-heat and no hold.
+2. **Comfort floor:** a slot heats only while the room is below `target − comfort_floor_delta` (default 1 °C). A bathroom that is already warm gets no pre-heat and no hold. Once heating has started the slot stays active until the room is 0.5 °C above the line (release deadband — the room sensor swings ±0.3 °C between reports).
 3. **Dual slot per phase:** Morning A (primary, default Mon–Fri) + Morning B (optional, weekend). Evening A (kids bath) + Evening B (optional adult evening).
 4. **Ad-hoc boost:** user-flipped `input_boolean` gives N minutes at a configurable boost temperature, then auto-expires.
 5. **Ventilator coordination:** scheduled routines pause (setpoint → `idle_setpoint`) while the bathroom exhaust fan is running — avoids evicting freshly heated air. Boost is explicit user intent and is not paused.
@@ -1629,7 +1678,8 @@ Pre-heats the bathroom with the heating rack (`climate.heatingrack_bathroom`) so
 warmup_min    = clamp(warmup_base + warmup_per_degree × ΔT, warmup_min_minutes, warmup_max_minutes)
 auto_start    = target_warm − warmup_min
 in_window     = today in days AND auto_start ≤ now < hold_until
-active        = in_window AND indoor_temp < target_temp − comfort_floor_delta
+floor         = target_temp − comfort_floor_delta (+ 0.5 while this blueprint has the setpoint raised)
+active        = in_window AND indoor_temp < floor
 ```
 `hold_until` at or before `target_warm` is taken as the next day; the slot is evaluated per calendar day, so such a window runs until midnight.
 
@@ -1668,7 +1718,7 @@ Pre-heats a bathroom heating rack for scheduled routines (adult morning, kids ba
 
 ### Features
 *   **🌡️ Dynamic Warmup:** Computes lead time from the current indoor-to-target temperature gap (`warmup_base + warmup_per_degree × ΔT`, clamped between a floor and a cap), so cold winter mornings get a longer pre-heat than warm summer mornings without any calendar configuration.
-*   **🎯 Comfort Floor (v2.0.0):** A slot heats only while `indoor < target − comfort_floor_delta`. At or above that line the slot is satisfied — no pre-heat, no hold.
+*   **🎯 Comfort Floor (v2.0.0):** A slot heats only while `indoor < target − comfort_floor_delta`. At or above that line the slot is satisfied — no pre-heat, no hold. A 0.5 °C release deadband once heating has started keeps a noisy sensor from flipping the setpoint.
 *   **📅 Dual-Slot Routines:** Primary + optional secondary slot per phase (e.g., Morning A = Mon–Fri 06:45, Morning B = Sat–Sun 08:30). Evening A for kids bath, Evening B for an optional adult evening. A hold-until at or before target-warm is taken as the next day.
 *   **⚡ Ad-hoc Boost Toggle:** Flip an `input_boolean` for an instant N-minute heat-up at a configurable boost temperature. Auto-expires cleanly; boost is explicit intent and is not paused by the fan.
 *   **🌀 Ventilator Coordination:** Scheduled routines drop to `idle_setpoint` while the exhaust fan entity is on — no point heating air that's being evicted.
@@ -1696,12 +1746,12 @@ Pre-heats a bathroom heating rack for scheduled routines (adult morning, kids ba
 - [ ] **Step 3: Check the README edit is scoped**
 
 Run: `git diff --stat README.md && grep -c "^## " README.md`
-Expected: only `README.md` changed, still 6 top-level `## ` sections (Nightlight, Circadian, LG AC, Ventilator, Heating Rack, Bedroom Pre-Cool); `grep -n "Predictive\|preset=eco\|generic_thermostat" README.md requirements_bathroom_heating_rack.md` prints nothing.
+Expected: only `README.md` changed, still 6 top-level `## ` sections (Nightlight, Circadian, LG AC, Ventilator, Heating Rack, Bedroom Pre-Cool); `grep -n -i "predictive motion override\|preset=eco\|generic_thermostat\|hall_motion\|stairs_motion" README.md requirements_bathroom_heating_rack.md` prints nothing.
 
 - [ ] **Step 4: Suite still green**
 
 Run: `~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests -q`
-Expected: `219 passed`.
+Expected: `230 passed`.
 
 - [ ] **Step 5: Commit**
 
@@ -1710,7 +1760,7 @@ git add requirements_bathroom_heating_rack.md README.md
 git commit -m "docs(bathroom-heating-rack): requirements rewritten against spec §2/§4; README section for v2.0.0"
 ```
 
-Step 6: Report `suite: PASS=219 FAIL=0`.
+Step 6: Report `suite: PASS=230 FAIL=0`.
 
 ---
 
@@ -1727,7 +1777,7 @@ Step 6: Report `suite: PASS=219 FAIL=0`.
 - [ ] **Step 1: TCB verify + branch freshness** — `TCB_EXTRA=/home/martin/AI/projects/Blueprints_Home/scripts/deploy-blueprint.sh ~/.claude/skills/convene-board/scripts/tcb-manifest.sh verify /home/martin/AI/reviews/tcb-baseline-16ef53e7f973185a.txt` → rc 0 or HALT. Then `git fetch origin && git checkout main && [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]`. If the harness classifier blocks the deploy command, render it through `op-templates.sh` (stack-b §4.6) and hand it to Martin — no workaround.
 - [ ] **Step 2: Pre-deploy live read** — `GET /api/config/automation/config/1776551429917` (expect the v1 keys listed in Phase 0) and `GET /api/states/climate.heatingrack_bathroom` (note `temperature` and state); record both in the session log.
 - [ ] **Step 3: Deploy** — `scripts/deploy-blueprint.sh bathroom_heating_rack.yaml leviemartin/bathroom_heating_rack.yaml deploy/bathroom_heating_rack_1776551429917.json` → expect `backup: deploy/1776551429917.prev.json`, `blueprint/save: ok`, `instance 1776551429917: config written`, `automation.bathroom_heating_rack_v1_0_0 state=on`, `deploy complete`. The backup is gitignored; never commit it.
-- [ ] **Step 4: Read-path proof** — `POST /api/services/automation/trigger` with `{"entity_id":"automation.bathroom_heating_rack_v1_0_0"}`; read `persistent_notification/get` → `heating_rack_debug` must show `(step 1.0)`, `Comfort floor: 1.0°C`, per-slot `hold_until=`, `in_window=`, `active=`, and `setpoint=… (raw …)`. Then `trace/list` + `trace/get` for the automation: `changed_variables` contains `setpoint_step`, `ea_in_window`, `desired_setpoint_raw` (v2-only). Confirm the setpoint decision matches the clock: outside every window `active_priority=P6_idle`, `desired_setpoint=7.0`, no `climate.set_temperature` call in the trace.
+- [ ] **Step 4: Read-path proof** — `POST /api/services/automation/trigger` with `{"entity_id":"automation.bathroom_heating_rack_v1_0_0"}`; read `persistent_notification/get` → `heating_rack_debug` must show `(step 1.0)`, `Comfort floor: 1.0°C (+0 release)` (or `+0.5` inside an active window), per-slot `hold_until=`, `floor=`, `in_window=`, `active=`, and `setpoint=… (raw …)`. Then `trace/list` + `trace/get` for the automation: `changed_variables` contains `setpoint_step`, `ea_in_window`, `desired_setpoint_raw` (v2-only). Confirm the setpoint decision matches the clock: outside every window `active_priority=P6_idle`, `desired_setpoint=7.0`, no `climate.set_temperature` call in the trace.
 - [ ] **Step 5: Log gate** — `system_log/list` filtered on `Heating Rack` / `heating_rack`: zero new entries after the deploy timestamp (the pre-deploy count is 3,336 — it must not grow).
 - [ ] **Step 6: Record** — post the deploy evidence (entity state, debug dump excerpt, trace step, log gate) on session #13 via `github-sync` (`gh_scan_body` on the body file); the observation loop then runs against the Phase 0 criteria; `<!-- observe:open -->` stays until criteria 1–5 pass or Martin waives.
 
