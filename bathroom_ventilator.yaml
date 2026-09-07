@@ -165,6 +165,7 @@ blueprint:
           multiple: true
     boost_runtime_min:
       name: Boost Runtime (min)
+      description: How long a boost holds the fan on before the toggle clears itself.
       default: 20
       selector:
         number:
@@ -213,6 +214,7 @@ blueprint:
         time:
     night_end:
       name: Night End (Quiet Hours)
+      description: Normal (non-shower) fan starts resume at this time.
       default: "05:30:00"
       selector:
         time:
@@ -293,6 +295,7 @@ action:
       sensors_lost_minutes: >-
         {% if sensors_ok %}{{ 0 }}
         {% elif not is_number(indoor_rh_raw) and states[sensor_humidity] is not none %}{{ ((now() - states[sensor_humidity].last_changed).total_seconds() / 60) | round(1) }}
+        {% elif not is_number(indoor_rh_raw) %}{{ 9999 }}
         {% elif states[sensor_temperature] is not none %}{{ ((now() - states[sensor_temperature].last_changed).total_seconds() / 60) | round(1) }}
         {% else %}{{ 9999 }}
         {% endif %}
@@ -496,14 +499,21 @@ action:
                 Fan forced ON: humidity {{ indoor_rh }}% is at or above {{ thresh_mold }}%.
                 Indoor dew point {{ indoor_dp }}°C, outdoor {{ outdoor_dp }}°C ({{ weather_used }}).
               notification_id: "ventilator_mold_warning"
-          - repeat:
-              for_each: "{{ notify_list }}"
-              sequence:
-                - service: "{{ repeat.item }}"
-                  continue_on_error: true
-                  data:
-                    title: "Bathroom fan — mold override"
-                    message: "Bathroom at {{ indoor_rh }}% RH (≥ {{ thresh_mold }}%). Fan forced on."
+          # Push only when the fan can actually be commanded: with the plug unavailable the
+          # turn_on below fails, fan_is_on stays false and this edge would re-enter every tick.
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ states[entity_fan] is not none and not is_state(entity_fan, 'unavailable') }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ notify_list }}"
+                      sequence:
+                        - service: "{{ repeat.item }}"
+                          continue_on_error: true
+                          data:
+                            title: "Bathroom fan — mold override"
+                            message: "Bathroom at {{ indoor_rh }}% RH (≥ {{ thresh_mold }}%). Fan forced on."
       - conditions:
           - condition: template
             value_template: "{{ not mold_on }}"
