@@ -12,7 +12,7 @@
       "ac_climate": "climate.bedrooms",
       "outdoor_temp_sensor": "sensor.openweathermap_temperature",
       "weather_entity": "weather.home_sm",
-      "ideal_temp": 20,
+      "ideal_temp": 23,
       "hall_offset": 2,
       "skip_threshold": 21,
       "lead_bias_helper": [
