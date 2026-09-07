@@ -80,7 +80,7 @@ An intelligent bathroom exhaust fan automation using dew point comparison for op
 ### Features
 *   **🌡️ Outdoor-Conditioned Targets (v2.0.0):** The stop target follows the outdoor dew point (Magnus, or the weather entity's native `dew_point`). On a muggy day the fan stops where ventilation stops helping instead of chasing an unreachable RH%.
 *   **🚿 Shower Detection, Any Hour:** A humidity jump between two sensor reports plus recent motion — works with sensors that report on change (Aqara T1: 6 %). Quiet hours only block new non-shower starts.
-*   **⏱️ Bounded, Stateless Runs:** Minimum 15 / maximum 45 min per run (boost and the mold override outrank the cap), re-decided on every trigger from live state; boost and sensor loss interrupt instantly.
+*   **⏱️ Bounded, Stateless Runs:** Minimum 15 / maximum 45 min per shower or high-humidity run (boost, the mold override, degraded mode and the sensor-grace hold outrank these bounds), re-decided on every trigger from live state; boost and sensor loss interrupt instantly.
 *   **🛟 Degraded Mode:** Humidity sensor offline → one push, then motion-timed runs until it returns.
 *   **🔘 Boost Toggle + 📱 Push:** `input_boolean` boost with auto-expiry; mobile push for sensor offline/back and mold override.
 *   **🦠 Mold Safety Override:** RH ≥ 85 % with drier outdoor air forces the fan on.
