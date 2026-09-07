@@ -1,51 +1,62 @@
 blueprint:
-  name: "Bathroom Heating Rack v1.1.1"
+  name: "Bathroom Heating Rack v2.0.0"
   description: >
-    **Version: 1.1.1** — Boost now beats fan coordination in the priority waterfall. Previously, tapping the boost toggle while the exhaust fan was running silently demoted the request to a P2 fan-pause (setpoint stayed at idle_setpoint, no heating). The user-visible symptom was "boost button does nothing during/after showers." v1.1.1 reorders precedence: vacation > **boost** > fan_coord(morning/evening only) > evening > morning > idle, so explicit user intent wins over automatic heat-saving. Fan coordination still pauses the scheduled P4/P5 auto routines during active ventilation. v1.1.0 added opt-in mobile push via `notify_targets`. v1.0.5 drove idle/pause setpoint to `idle_setpoint` (default 7°C). v1.0.4 normalised 'unknown'→'heat_cool' to stop per-tick beeping. v1.0.3 stopped blocking on state='unknown'. v1.0.2 skipped set_preset_mode for integrations that reject 'none'. v1.0.1 fixed datetime arithmetic via as_datetime().
+    **Version: 2.0.0** — comfort floor: a routine slot heats only while the room is below
+    `target − comfort_floor_delta` (default 1 °C, with a 0.5 °C release deadband and a latched
+    opening edge once that slot is heating), so a bathroom that is already warm gets no pre-heat
+    and no hold; without the room sensor slots heat on schedule and a warning is raised; predictive motion (hall/stairs) is removed — a routine starts at the
+    ΔT-computed auto_start; the warmup-started notification fires once per transition (the tick
+    that raises the setpoint from idle) and is dismissed when the setpoint returns to idle; the
+    at-target notification is gone; outage pushes fire once per outage (state triggers with a
+    grace period) while the in-HA warnings follow the state; push targets are filtered to
+    `notify.*` names and every push runs after the climate calls; the setpoint is rounded to the
+    device `target_temp_step` and clamped to its min/max; boost/vacation/fan triggers fire on
+    on↔off only; boost expiry is the last step; the preset (eco) machinery is removed — idle is
+    `heat_cool` at `idle_setpoint`; the weekday lookup is locale-safe; a hold-until at or before
+    target-warm anchors to the next day. History: v1.1.1 boost beats fan coordination ·
+    v1.1.0 mobile push · v1.0.5 idle setpoint · v1.0.4 'unknown'→'heat_cool' · v1.0.1 datetime
+    arithmetic.
 
-    Pre-heats the bathroom heating rack for adult morning and kids bath
-    routines using dynamic ΔT-based warmup, predictive motion override,
-    and ventilator coordination.
+    Pre-heats a bathroom heating rack for scheduled routines (adult morning, kids bath) using a
+    ΔT-based warmup lead and a comfort floor, pauses while the exhaust fan runs, and offers a
+    boost toggle and a vacation switch.
 
     **Features:**
-    - Dual-slot routines per phase (e.g., weekday + weekend morning)
-    - Dynamic warmup: self-adjusts across seasons via indoor ΔT
-    - Predictive motion: hall → morning; stairs → evening
+    - Dual-slot routines per phase (e.g. weekday + weekend morning)
+    - Dynamic warmup: lead time follows the indoor ΔT, clamped to a floor and a cap
+    - Comfort floor: no heating while the room is already within `comfort_floor_delta` of target
+      (0.5 °C release deadband + latched opening edge while that slot heats, so a noisy sensor
+      cannot flip the setpoint); suspended, with a warning, while the room sensor is offline
     - Ad-hoc boost toggle with auto-expiry
-    - Ventilator coordination via eco preset (no heat eviction)
+    - Ventilator coordination: scheduled routines pause while the fan runs
     - Vacation / full-off toggle
+    - Optional mobile push (climate unavailable, room sensor offline, warmup started — once per event)
 
   domain: automation
   input:
     # ----- DEVICES -----
     heating_climate:
       name: Heating Rack Climate Entity
-      description: The climate entity wrapping the heating rack smart plug.
+      description: The climate entity of the heating rack (e.g. a Tuya cloud thermostat element).
       selector:
         entity:
           domain: climate
     bathroom_temp_sensor:
       name: Bathroom Temperature Sensor
-      description: Indoor bathroom temperature sensor (for ΔT-based warmup).
+      description: >-
+        Indoor bathroom temperature sensor used for the ΔT warmup lead and the comfort floor.
+        While it is unavailable the warmup lead falls back to the climate entity's
+        current_temperature (or 20 °C), the comfort floor is suspended (slots heat on schedule)
+        and a warning is raised after 10 minutes.
       selector:
         entity:
           domain: sensor
           device_class: temperature
-    hall_motion:
-      name: Hall Motion Sensor (Morning Predictor)
-      selector:
-        entity:
-          domain: binary_sensor
-          device_class: motion
-    stairs_motion:
-      name: Stairs Motion Sensor (Evening Predictor)
-      selector:
-        entity:
-          domain: binary_sensor
-          device_class: motion
     fan_switch:
       name: Ventilator Switch
-      description: "The exhaust fan entity (coordination target). Matches bathroom_ventilator blueprint's light-domain convention."
+      description: >-
+        The exhaust fan entity (or the group mirroring it) whose ON state pauses scheduled
+        routines. Use the same entity or group the ventilator blueprint switches.
       selector:
         entity:
           domain: light
@@ -53,7 +64,7 @@ blueprint:
     # ----- GLOBAL CONTROLS -----
     vacation_off:
       name: Vacation / Full-Off Toggle (Optional)
-      description: "Optional input_boolean. When ON, heating rack is forced off."
+      description: "Optional input_boolean(s). When any is ON the heating rack is switched off."
       default: []
       selector:
         entity:
@@ -66,27 +77,47 @@ blueprint:
         entity:
           domain: input_boolean
 
-    # ----- BOOST SETTINGS -----
+    # ----- BOOST / IDLE / COMFORT -----
     boost_target_temp:
       name: Boost Target Temperature (°C)
+      description: Setpoint applied while the boost toggle is active (rounded to the device step).
       default: 23
       selector:
         number: {min: 18, max: 28, step: 0.5, unit_of_measurement: "°C"}
     boost_runtime_min:
       name: Boost Runtime (min)
+      description: The boost toggle is switched off this many minutes after it was turned on.
       default: 30
       selector:
         number: {min: 10, max: 120, step: 5, unit_of_measurement: "min"}
     idle_setpoint:
       name: Idle / Pause Setpoint (°C)
-      description: "Setpoint applied when no routine is active (P6 idle) and when the fan is running during a routine (P2 pause). Keeps the heater from warming the room outside active windows. Default 7°C matches typical device min_temp."
+      description: >-
+        Setpoint applied when no routine is active and while the fan pauses a routine. Rounded to
+        the device step and clamped to its min/max before use (default 7 °C matches the device
+        minimum).
       default: 7
       selector:
         number: {min: 5, max: 20, step: 0.5, unit_of_measurement: "°C"}
+    comfort_floor_delta:
+      name: Comfort Floor Delta (°C)
+      description: >-
+        A routine slot only heats while the room is below `target − delta`; at or above that line
+        the slot is treated as satisfied (no pre-heat, no hold). While the device holds that slot's
+        setpoint the slot stays active until the room is 0.5 °C above the line (release deadband
+        against sensor noise) and its opening edge is latched at target-warm − warmup cap. 0 keeps
+        only the deadband. Two slots of one phase with the same target on the same day share the
+        latch: after the earlier slot ends, the later one may open up to the warmup cap early. The
+        window is evaluated per calendar day: a slot whose hold-until is at
+        or before its target-warm time runs until midnight.
+      default: 1.0
+      selector:
+        number: {min: 0, max: 3, step: 0.5, unit_of_measurement: "°C"}
 
     # ----- MORNING A (PRIMARY) -----
     morning_a_days:
       name: Morning A Days
+      description: Weekdays on which the Morning A slot applies.
       default: ["mon", "tue", "wed", "thu", "fri"]
       selector:
         select:
@@ -101,14 +132,17 @@ blueprint:
             - {label: Sunday, value: sun}
     morning_a_target_warm:
       name: Morning A Target-Warm Time
+      description: Time the bathroom should be warm; heating starts warmup_min minutes earlier.
       default: "06:45:00"
       selector: {time: {}}
     morning_a_hold_until:
       name: Morning A Hold-Until Time
+      description: End of the slot. If at or before target-warm it is taken as the next day (the slot is evaluated per calendar day, so it still ends at midnight).
       default: "08:00:00"
       selector: {time: {}}
     morning_a_target_temp:
       name: Morning A Target Temperature (°C)
+      description: Slot setpoint (rounded to the device step).
       default: 23
       selector:
         number: {min: 18, max: 28, step: 0.5, unit_of_measurement: "°C"}
@@ -116,6 +150,7 @@ blueprint:
     # ----- MORNING B (OPTIONAL) -----
     morning_b_days:
       name: Morning B Days (leave empty to disable)
+      description: Weekdays on which the Morning B slot applies.
       default: []
       selector:
         select:
@@ -130,14 +165,17 @@ blueprint:
             - {label: Sunday, value: sun}
     morning_b_target_warm:
       name: Morning B Target-Warm Time
+      description: Time the bathroom should be warm; heating starts warmup_min minutes earlier.
       default: "08:30:00"
       selector: {time: {}}
     morning_b_hold_until:
       name: Morning B Hold-Until Time
+      description: End of the slot. If at or before target-warm it is taken as the next day (the slot is evaluated per calendar day, so it still ends at midnight).
       default: "10:00:00"
       selector: {time: {}}
     morning_b_target_temp:
       name: Morning B Target Temperature (°C)
+      description: Slot setpoint (rounded to the device step).
       default: 23
       selector:
         number: {min: 18, max: 28, step: 0.5, unit_of_measurement: "°C"}
@@ -145,6 +183,7 @@ blueprint:
     # ----- EVENING A (KIDS BATH) -----
     evening_a_days:
       name: Evening A (Kids Bath) Days
+      description: Weekdays on which the Evening A slot applies.
       default: []
       selector:
         select:
@@ -159,14 +198,17 @@ blueprint:
             - {label: Sunday, value: sun}
     evening_a_target_warm:
       name: Evening A Target-Warm Time
+      description: Time the bathroom should be warm; heating starts warmup_min minutes earlier.
       default: "18:15:00"
       selector: {time: {}}
     evening_a_hold_until:
       name: Evening A Hold-Until Time
+      description: End of the slot. If at or before target-warm it is taken as the next day (the slot is evaluated per calendar day, so it still ends at midnight).
       default: "19:30:00"
       selector: {time: {}}
     evening_a_target_temp:
       name: Evening A Target Temperature (°C)
+      description: Slot setpoint (rounded to the device step).
       default: 25
       selector:
         number: {min: 18, max: 28, step: 0.5, unit_of_measurement: "°C"}
@@ -174,6 +216,7 @@ blueprint:
     # ----- EVENING B (OPTIONAL ADULT EVENING) -----
     evening_b_days:
       name: Evening B Days (leave empty to disable)
+      description: Weekdays on which the Evening B slot applies.
       default: []
       selector:
         select:
@@ -188,14 +231,17 @@ blueprint:
             - {label: Sunday, value: sun}
     evening_b_target_warm:
       name: Evening B Target-Warm Time
+      description: Time the bathroom should be warm; heating starts warmup_min minutes earlier.
       default: "20:30:00"
       selector: {time: {}}
     evening_b_hold_until:
       name: Evening B Hold-Until Time
+      description: End of the slot. If at or before target-warm it is taken as the next day (the slot is evaluated per calendar day, so it still ends at midnight).
       default: "22:00:00"
       selector: {time: {}}
     evening_b_target_temp:
       name: Evening B Target Temperature (°C)
+      description: Slot setpoint (rounded to the device step).
       default: 23
       selector:
         number: {min: 18, max: 28, step: 0.5, unit_of_measurement: "°C"}
@@ -203,41 +249,44 @@ blueprint:
     # ----- WARMUP FORMULA TUNING -----
     warmup_base_min:
       name: Warmup Base Minutes
+      description: Fixed part of the warmup lead (minutes).
       default: 10
       selector:
         number: {min: 5, max: 30, step: 1, unit_of_measurement: "min"}
     warmup_per_degree_min:
       name: Warmup Minutes per °C
+      description: Added to the lead for every °C the room is below the slot target.
       default: 5
       selector:
         number: {min: 1, max: 15, step: 1, unit_of_measurement: "min/°C"}
     warmup_min_minutes:
       name: Warmup Floor (min)
+      description: Shortest lead time regardless of ΔT.
       default: 10
       selector:
         number: {min: 5, max: 30, step: 1, unit_of_measurement: "min"}
     warmup_max_minutes:
       name: Warmup Cap (min)
+      description: Longest lead time regardless of ΔT.
       default: 60
       selector:
         number: {min: 20, max: 120, step: 5, unit_of_measurement: "min"}
 
-    # ----- BEHAVIOR TOGGLES -----
-    enable_predictive_motion:
-      name: Enable Predictive Motion Override
-      default: true
-      selector: {boolean: {}}
+    # ----- NOTIFICATIONS -----
     enable_notifications:
-      name: Enable Persistent Notifications
+      name: Enable Warmup-Started Notifications
+      description: Persistent notification (and push) once per warmup transition.
       default: true
       selector: {boolean: {}}
     notify_targets:
       name: Mobile Push Targets
       description: >-
-        List of notify services to push high-priority events to. Enter the
-        full service name including the `notify.` prefix (e.g.,
-        notify.mobile_app_martin). Leave empty to disable push. Events that
-        push: climate unavailable, sensor warning, warmup started.
+        List of notify services to push high-priority events to. Enter the full service name
+        including the `notify.` prefix (e.g. notify.mobile_app_martin_fold); entries that do not
+        look like `notify.<name>` are ignored. A target that does not exist aborts the run at the
+        push step (HA does not suppress a missing action), so check it exists after editing. Leave
+        empty to disable push. Events that push: climate unavailable (after 5 min), room sensor
+        offline (after 10 min), warmup started.
       default: []
       selector:
         text:
@@ -248,32 +297,25 @@ max_exceeded: silent
 
 # =============================================
 # TOP-LEVEL VARIABLES — !input pass-through
-# (matches bathroom_ventilator.yaml pattern; guarantees !input
-#  resolves at automation creation and is available everywhere below)
 # =============================================
 variables:
-  # Entity mappings
   entity_climate: !input heating_climate
   sensor_bathroom_temp: !input bathroom_temp_sensor
-  sensor_hall_motion: !input hall_motion
-  sensor_stairs_motion: !input stairs_motion
   entity_fan: !input fan_switch
   entity_vacation: !input vacation_off
   entity_boost: !input boost_toggle
 
-  # Settings
   boost_runtime_min: !input boost_runtime_min
   boost_target_temp: !input boost_target_temp
   idle_setpoint: !input idle_setpoint
+  comfort_floor_delta: !input comfort_floor_delta
   warmup_base_min: !input warmup_base_min
   warmup_per_degree_min: !input warmup_per_degree_min
   warmup_min_minutes: !input warmup_min_minutes
   warmup_max_minutes: !input warmup_max_minutes
-  enable_predictive_motion: !input enable_predictive_motion
   enable_notifications: !input enable_notifications
   notify_targets: !input notify_targets
 
-  # Routine slot inputs
   morning_a_days: !input morning_a_days
   morning_a_target_warm: !input morning_a_target_warm
   morning_a_hold_until: !input morning_a_hold_until
@@ -291,50 +333,56 @@ variables:
   evening_b_hold_until: !input evening_b_hold_until
   evening_b_target_temp: !input evening_b_target_temp
 
-# Triggers and action will be added in later tasks.
 trigger:
-  # T1: Periodic 1-minute tick for dynamic auto_start + boost expiry
+  # T1: 1-minute tick — auto_start, comfort floor, boost expiry
   - platform: time_pattern
     minutes: "/1"
     id: periodic
 
-  # T2: Hall motion (morning predictive accelerator)
-  - platform: state
-    entity_id: !input hall_motion
-    to: "on"
-    id: hall_motion_on
-
-  # T3: Stairs motion (evening predictive accelerator)
-  - platform: state
-    entity_id: !input stairs_motion
-    to: "on"
-    id: stairs_motion_on
-
-  # T4: Boost toggle state change
+  # T2: boost toggle on/off (attribute-only updates ignored)
   - platform: state
     entity_id: !input boost_toggle
+    to: ["on", "off"]
     id: boost_change
 
-  # T5: Vacation toggle state change
+  # T3: vacation toggle on/off
   - platform: state
     entity_id: !input vacation_off
+    to: ["on", "off"]
     id: vacation_change
 
-  # T6: Fan state change (ventilator coordination)
+  # T4: fan on/off (ventilator coordination; Hue group attribute updates ignored)
   - platform: state
     entity_id: !input fan_switch
+    to: ["on", "off"]
     id: fan_change
 
-  # T7: HA restart
+  # T5: HA restart
   - platform: homeassistant
     event: start
     id: ha_start
+
+  # T6: climate entity offline for 5 min (one push per outage; 'unknown' is the device's normal ON state)
+  - platform: state
+    entity_id: !input heating_climate
+    to: unavailable
+    for:
+      minutes: 5
+    id: climate_lost
+
+  # T7: room temperature sensor non-numeric for 10 min (one push per outage)
+  - platform: state
+    entity_id: !input bathroom_temp_sensor
+    to: [unavailable, unknown]
+    for:
+      minutes: 10
+    id: temp_lost
+
 action:
   # =============================================
-  # STEP 1: COMPUTE LIVE STATE (inside action for trace visibility)
+  # STEP 1: LIVE STATE (inside action for trace visibility)
   # =============================================
   - variables:
-      # --- Live sensor reads ---
       indoor_temp_primary: "{{ states(sensor_bathroom_temp) | float(-99) }}"
       indoor_temp_fallback: "{{ state_attr(entity_climate, 'current_temperature') | float(-99) }}"
       indoor_temp_has_primary: "{{ indoor_temp_primary | float(-99) > -50 }}"
@@ -345,23 +393,34 @@ action:
 
       current_setpoint: "{{ state_attr(entity_climate, 'temperature') | float(7) }}"
       current_hvac_mode: "{{ states(entity_climate) }}"
-      # Tuya Cloud climate entities persistently report state='unknown' even when
-      # in heat_cool mode. Normalising 'unknown' → 'heat_cool' prevents the
-      # idempotent service-call check from firing set_hvac_mode every tick
-      # (which causes the device to beep each time).
+      # Tuya cloud climate entities report state 'unknown' while the switch DP is on and the
+      # mode DP is eco (HA core tuya/climate.py hvac_mode) and 'off' when the switch is off.
+      # 'unknown' is therefore the normal ON state: normalising it to 'heat_cool' keeps the
+      # idempotent mode call from re-firing (and beeping) every tick.
       current_hvac_mode_normalized: "{{ 'heat_cool' if current_hvac_mode == 'unknown' else current_hvac_mode }}"
-      current_preset: "{{ state_attr(entity_climate, 'preset_mode') }}"
+      # Device setpoint grid and range; defaults when the attributes are missing or zero.
+      setpoint_step: >-
+        {% set s = state_attr(entity_climate, 'target_temp_step') | float(0) %}{{ s if s > 0 else 0.5 }}
+      setpoint_min: "{{ state_attr(entity_climate, 'min_temp') | float(7) }}"
+      setpoint_max: "{{ state_attr(entity_climate, 'max_temp') | float(30) }}"
+      # The idle value the device can actually hold: rounded half-up to the step (epsilon-nudged
+      # grid count, round(2)) and clamped to the range. Every idle comparison uses this value.
+      idle_setpoint_dev: "{{ [setpoint_max | float, [setpoint_min | float, ((((idle_setpoint | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}"
       fan_is_on: "{{ is_state(entity_fan, 'on') }}"
+      # Push targets: only well-formed notify service names are dispatched (a typo would otherwise
+      # be called as an arbitrary service). A well-formed name that does not exist still aborts the
+      # run at the push step — HA does not suppress a missing action — so every push runs after
+      # the climate calls and the deploy procedure (plan Task 4 step 2) checks each target exists.
+      notify_list: "{{ (notify_targets if (notify_targets is iterable and notify_targets is not string) else ([notify_targets] if notify_targets else [])) | select('match', '^notify[.][a-z0-9_]+$') | list }}"
 
-      # --- Time helpers ---
-      today_dow: "{{ now().strftime('%a') | lower }}"
+      # Locale-safe weekday token (the %a abbreviation follows the system locale)
+      today_dow: "{{ ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'][now().weekday()] }}"
       now_dt: "{{ now() }}"
 
-      # --- Vacation (safely handle empty list default) ---
-      vacation_active: >-
-        {% if entity_vacation is iterable and entity_vacation | length > 0 %}{{ expand(entity_vacation) | selectattr('state','eq','on') | list | length > 0 }}{% else %}false{% endif %}
+      # Vacation: any listed toggle ON (an empty list renders False, never bare text)
+      vacation_active: "{{ expand(entity_vacation) | selectattr('state', 'eq', 'on') | list | length > 0 }}"
 
-      # --- Boost (stateless age-based expiry) ---
+      # Boost (stateless age-based expiry)
       boost_runtime_min_int: "{{ (boost_runtime_min | float) | int }}"
       boost_is_on: "{{ is_state(entity_boost, 'on') }}"
       boost_age_min: >-
@@ -370,41 +429,49 @@ action:
       boost_expired: "{{ boost_is_on and boost_age_min >= boost_runtime_min_int }}"
 
   # =============================================
-  # STEP 1b: ROUTINE SLOT RESOLUTION
+  # STEP 2: ROUTINE SLOT RESOLUTION
+  # Per slot: in_days → target_warm/hold_until (hold anchored to the next day when it is at or
+  # before target_warm) → heating? → ΔT → warmup lead → auto_start → open edge → in_window →
+  # active (comfort floor with deadband, suspended without the room sensor).
   # =============================================
   - variables:
       # ----- MORNING A -----
       ma_in_days: "{{ today_dow in morning_a_days }}"
       ma_target_warm_dt: "{{ today_at(morning_a_target_warm) }}"
-      ma_hold_until_dt: "{{ today_at(morning_a_hold_until) }}"
+      ma_hold_until_dt: >-
+        {% set w = today_at(morning_a_target_warm) %}{% set h = today_at(morning_a_hold_until) %}{{ h + timedelta(days=1) if h <= w else h }}
+      # This slot's setpoint as the device holds it; while the device is at that value the slot is
+      # the one heating: its floor gets the 0.5 °C release deadband and its opening edge is
+      # latched at target_warm − warmup cap (the ΔT-derived auto_start moves with sensor noise).
+      # Only while the device is ON: a setpoint retained through a vacation must not latch.
+      ma_target_dev: "{{ [setpoint_max | float, [setpoint_min | float, ((((morning_a_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}"
+      ma_heating: "{{ not boost_active and current_hvac_mode_normalized == 'heat_cool' and (current_setpoint | float - ma_target_dev | float) | abs < 0.1 }}"
       ma_delta_T: "{{ [0, morning_a_target_temp | float - indoor_temp | float] | max }}"
       ma_warmup_min: >-
         {{ [warmup_max_minutes | int,
             [warmup_min_minutes | int,
              (warmup_base_min | int) + (warmup_per_degree_min | int) * (ma_delta_T | float)] | max
            ] | min | int }}
-      ma_auto_start_dt: >-
-        {{ as_datetime(ma_target_warm_dt) - timedelta(minutes=ma_warmup_min | int) }}
-      ma_motion_lead_dt: >-
-        {{ as_datetime(ma_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int) + 30) }}
-      # Fallback to yesterday-midnight when motion sensor is missing — guarantees motion_in_lead=false
-      ma_motion_last: >-
-        {% if states[sensor_hall_motion] %}{{ states[sensor_hall_motion].last_changed }}{% else %}{{ today_at('00:00:00') - timedelta(days=1) }}{% endif %}
-      ma_motion_in_lead: >-
-        {{ enable_predictive_motion and
-           as_datetime(ma_motion_last) > as_datetime(ma_motion_lead_dt) and
-           as_datetime(ma_motion_last) < as_datetime(ma_target_warm_dt) }}
-      ma_effective_start: >-
-        {% if ma_motion_in_lead %}{{ [as_datetime(ma_auto_start_dt), as_datetime(ma_motion_last)] | min }}{% else %}{{ ma_auto_start_dt }}{% endif %}
-      ma_active: >-
-        {{ ma_in_days and
-           as_datetime(ma_effective_start) <= as_datetime(now_dt) and
-           as_datetime(now_dt) < as_datetime(ma_hold_until_dt) }}
+      ma_auto_start_dt: "{{ as_datetime(ma_target_warm_dt) - timedelta(minutes=ma_warmup_min | int) }}"
+      ma_open_dt: "{{ as_datetime(ma_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if ma_heating else ma_warmup_min | int)) }}"
+      ma_in_window: >-
+        {{ ma_in_days and as_datetime(ma_open_dt) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(ma_hold_until_dt) }}
+      ma_floor: "{{ (morning_a_target_temp | float - comfort_floor_delta | float + (0.5 if ma_heating else 0)) | round(2) }}"
+      # Without the room sensor the floor is suspended: the slot heats on schedule (v1 behaviour,
+      # the device thermostat bounds the temperature) and the sensor warning below says so.
+      ma_active: "{{ ma_in_window and (not indoor_temp_has_primary or indoor_temp | float | round(2) < ma_floor | float) }}"
 
       # ----- MORNING B -----
       mb_in_days: "{{ today_dow in morning_b_days }}"
       mb_target_warm_dt: "{{ today_at(morning_b_target_warm) }}"
-      mb_hold_until_dt: "{{ today_at(morning_b_hold_until) }}"
+      mb_hold_until_dt: >-
+        {% set w = today_at(morning_b_target_warm) %}{% set h = today_at(morning_b_hold_until) %}{{ h + timedelta(days=1) if h <= w else h }}
+      # This slot's setpoint as the device holds it; while the device is at that value the slot is
+      # the one heating: its floor gets the 0.5 °C release deadband and its opening edge is
+      # latched at target_warm − warmup cap (the ΔT-derived auto_start moves with sensor noise).
+      # Only while the device is ON: a setpoint retained through a vacation must not latch.
+      mb_target_dev: "{{ [setpoint_max | float, [setpoint_min | float, ((((morning_b_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}"
+      mb_heating: "{{ not boost_active and current_hvac_mode_normalized == 'heat_cool' and (current_setpoint | float - mb_target_dev | float) | abs < 0.1 }}"
       mb_delta_T: "{{ [0, morning_b_target_temp | float - indoor_temp | float] | max }}"
       mb_warmup_min: >-
         {{ [warmup_max_minutes | int,
@@ -412,22 +479,25 @@ action:
              (warmup_base_min | int) + (warmup_per_degree_min | int) * (mb_delta_T | float)] | max
            ] | min | int }}
       mb_auto_start_dt: "{{ as_datetime(mb_target_warm_dt) - timedelta(minutes=mb_warmup_min | int) }}"
-      mb_motion_lead_dt: "{{ as_datetime(mb_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int) + 30) }}"
-      mb_motion_last: >-
-        {% if states[sensor_hall_motion] %}{{ states[sensor_hall_motion].last_changed }}{% else %}{{ today_at('00:00:00') - timedelta(days=1) }}{% endif %}
-      mb_motion_in_lead: >-
-        {{ enable_predictive_motion and
-           as_datetime(mb_motion_last) > as_datetime(mb_motion_lead_dt) and
-           as_datetime(mb_motion_last) < as_datetime(mb_target_warm_dt) }}
-      mb_effective_start: >-
-        {% if mb_motion_in_lead %}{{ [as_datetime(mb_auto_start_dt), as_datetime(mb_motion_last)] | min }}{% else %}{{ mb_auto_start_dt }}{% endif %}
-      mb_active: >-
-        {{ mb_in_days and as_datetime(mb_effective_start) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(mb_hold_until_dt) }}
+      mb_open_dt: "{{ as_datetime(mb_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if mb_heating else mb_warmup_min | int)) }}"
+      mb_in_window: >-
+        {{ mb_in_days and as_datetime(mb_open_dt) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(mb_hold_until_dt) }}
+      mb_floor: "{{ (morning_b_target_temp | float - comfort_floor_delta | float + (0.5 if mb_heating else 0)) | round(2) }}"
+      # Without the room sensor the floor is suspended: the slot heats on schedule (v1 behaviour,
+      # the device thermostat bounds the temperature) and the sensor warning below says so.
+      mb_active: "{{ mb_in_window and (not indoor_temp_has_primary or indoor_temp | float | round(2) < mb_floor | float) }}"
 
       # ----- EVENING A -----
       ea_in_days: "{{ today_dow in evening_a_days }}"
       ea_target_warm_dt: "{{ today_at(evening_a_target_warm) }}"
-      ea_hold_until_dt: "{{ today_at(evening_a_hold_until) }}"
+      ea_hold_until_dt: >-
+        {% set w = today_at(evening_a_target_warm) %}{% set h = today_at(evening_a_hold_until) %}{{ h + timedelta(days=1) if h <= w else h }}
+      # This slot's setpoint as the device holds it; while the device is at that value the slot is
+      # the one heating: its floor gets the 0.5 °C release deadband and its opening edge is
+      # latched at target_warm − warmup cap (the ΔT-derived auto_start moves with sensor noise).
+      # Only while the device is ON: a setpoint retained through a vacation must not latch.
+      ea_target_dev: "{{ [setpoint_max | float, [setpoint_min | float, ((((evening_a_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}"
+      ea_heating: "{{ not boost_active and current_hvac_mode_normalized == 'heat_cool' and (current_setpoint | float - ea_target_dev | float) | abs < 0.1 }}"
       ea_delta_T: "{{ [0, evening_a_target_temp | float - indoor_temp | float] | max }}"
       ea_warmup_min: >-
         {{ [warmup_max_minutes | int,
@@ -435,22 +505,25 @@ action:
              (warmup_base_min | int) + (warmup_per_degree_min | int) * (ea_delta_T | float)] | max
            ] | min | int }}
       ea_auto_start_dt: "{{ as_datetime(ea_target_warm_dt) - timedelta(minutes=ea_warmup_min | int) }}"
-      ea_motion_lead_dt: "{{ as_datetime(ea_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int) + 30) }}"
-      ea_motion_last: >-
-        {% if states[sensor_stairs_motion] %}{{ states[sensor_stairs_motion].last_changed }}{% else %}{{ today_at('00:00:00') - timedelta(days=1) }}{% endif %}
-      ea_motion_in_lead: >-
-        {{ enable_predictive_motion and
-           as_datetime(ea_motion_last) > as_datetime(ea_motion_lead_dt) and
-           as_datetime(ea_motion_last) < as_datetime(ea_target_warm_dt) }}
-      ea_effective_start: >-
-        {% if ea_motion_in_lead %}{{ [as_datetime(ea_auto_start_dt), as_datetime(ea_motion_last)] | min }}{% else %}{{ ea_auto_start_dt }}{% endif %}
-      ea_active: >-
-        {{ ea_in_days and as_datetime(ea_effective_start) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(ea_hold_until_dt) }}
+      ea_open_dt: "{{ as_datetime(ea_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if ea_heating else ea_warmup_min | int)) }}"
+      ea_in_window: >-
+        {{ ea_in_days and as_datetime(ea_open_dt) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(ea_hold_until_dt) }}
+      ea_floor: "{{ (evening_a_target_temp | float - comfort_floor_delta | float + (0.5 if ea_heating else 0)) | round(2) }}"
+      # Without the room sensor the floor is suspended: the slot heats on schedule (v1 behaviour,
+      # the device thermostat bounds the temperature) and the sensor warning below says so.
+      ea_active: "{{ ea_in_window and (not indoor_temp_has_primary or indoor_temp | float | round(2) < ea_floor | float) }}"
 
       # ----- EVENING B -----
       eb_in_days: "{{ today_dow in evening_b_days }}"
       eb_target_warm_dt: "{{ today_at(evening_b_target_warm) }}"
-      eb_hold_until_dt: "{{ today_at(evening_b_hold_until) }}"
+      eb_hold_until_dt: >-
+        {% set w = today_at(evening_b_target_warm) %}{% set h = today_at(evening_b_hold_until) %}{{ h + timedelta(days=1) if h <= w else h }}
+      # This slot's setpoint as the device holds it; while the device is at that value the slot is
+      # the one heating: its floor gets the 0.5 °C release deadband and its opening edge is
+      # latched at target_warm − warmup cap (the ΔT-derived auto_start moves with sensor noise).
+      # Only while the device is ON: a setpoint retained through a vacation must not latch.
+      eb_target_dev: "{{ [setpoint_max | float, [setpoint_min | float, ((((evening_b_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}"
+      eb_heating: "{{ not boost_active and current_hvac_mode_normalized == 'heat_cool' and (current_setpoint | float - eb_target_dev | float) | abs < 0.1 }}"
       eb_delta_T: "{{ [0, evening_b_target_temp | float - indoor_temp | float] | max }}"
       eb_warmup_min: >-
         {{ [warmup_max_minutes | int,
@@ -458,17 +531,13 @@ action:
              (warmup_base_min | int) + (warmup_per_degree_min | int) * (eb_delta_T | float)] | max
            ] | min | int }}
       eb_auto_start_dt: "{{ as_datetime(eb_target_warm_dt) - timedelta(minutes=eb_warmup_min | int) }}"
-      eb_motion_lead_dt: "{{ as_datetime(eb_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int) + 30) }}"
-      eb_motion_last: >-
-        {% if states[sensor_stairs_motion] %}{{ states[sensor_stairs_motion].last_changed }}{% else %}{{ today_at('00:00:00') - timedelta(days=1) }}{% endif %}
-      eb_motion_in_lead: >-
-        {{ enable_predictive_motion and
-           as_datetime(eb_motion_last) > as_datetime(eb_motion_lead_dt) and
-           as_datetime(eb_motion_last) < as_datetime(eb_target_warm_dt) }}
-      eb_effective_start: >-
-        {% if eb_motion_in_lead %}{{ [as_datetime(eb_auto_start_dt), as_datetime(eb_motion_last)] | min }}{% else %}{{ eb_auto_start_dt }}{% endif %}
-      eb_active: >-
-        {{ eb_in_days and as_datetime(eb_effective_start) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(eb_hold_until_dt) }}
+      eb_open_dt: "{{ as_datetime(eb_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if eb_heating else eb_warmup_min | int)) }}"
+      eb_in_window: >-
+        {{ eb_in_days and as_datetime(eb_open_dt) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(eb_hold_until_dt) }}
+      eb_floor: "{{ (evening_b_target_temp | float - comfort_floor_delta | float + (0.5 if eb_heating else 0)) | round(2) }}"
+      # Without the room sensor the floor is suspended: the slot heats on schedule (v1 behaviour,
+      # the device thermostat bounds the temperature) and the sensor warning below says so.
+      eb_active: "{{ eb_in_window and (not indoor_temp_has_primary or indoor_temp | float | round(2) < eb_floor | float) }}"
 
       # ----- AGGREGATES -----
       morning_active: "{{ ma_active or mb_active }}"
@@ -479,108 +548,86 @@ action:
         {% if ea_active %}{{ evening_a_target_temp | float }}{% else %}{{ evening_b_target_temp | float }}{% endif %}
 
   # =============================================
-  # STEP 2: SENSOR VALIDATION
+  # STEP 3: CLIMATE VALIDATION — 'unavailable' or a missing entity is a hard stop ('unknown' is the Tuya device's
+  # normal ON state). The in-HA warning follows the state (created every tick of the outage,
+  # idempotent by id; dismissed when the entity is back); the push fires once, on the
+  # climate_lost trigger. Nothing below can run without the entity, so the push before `stop` is
+  # safe here; every other push sits after the climate calls.
+  # The temp_lost edge fires once, so its push is also delivered from this branch (it would
+  # otherwise be swallowed by the stop when both entities are down at the same moment).
   # =============================================
-  # Only treat 'unavailable' as a true hard-stop. 'unknown' is NOT checked
-  # here because some integrations (notably Tuya Cloud climate entities)
-  # report state='unknown' as a normal operating state even when the device
-  # is online, temperatures are updating, and service calls succeed.
-  # Blocking on 'unknown' would prevent the priority waterfall from ever
-  # running against those devices.
   - choose:
-      # Climate entity unavailable — hard stop
       - conditions:
           - condition: template
-            value_template: >-
-              {{ states(entity_climate) == 'unavailable' }}
+            value_template: "{{ states[entity_climate] is none or states(entity_climate) == 'unavailable' }}"
         sequence:
           - service: persistent_notification.create
+            continue_on_error: true
             data:
               title: "Heating Rack — Climate Unavailable"
               message: >
                 {{ entity_climate }} is {{ states(entity_climate) }}.
                 Holding current state.
               notification_id: "heating_rack_climate_unavailable"
-          - repeat:
-              for_each: "{{ notify_targets }}"
-              sequence:
-                - service: "{{ repeat.item }}"
-                  data:
-                    title: "Heating Rack — Climate Unavailable"
-                    message: >-
-                      {{ entity_climate }} is {{ states(entity_climate) }}.
-                      Holding current state.
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.id | default('') == 'climate_lost' }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ notify_list }}"
+                      sequence:
+                        - service: "{{ repeat.item }}"
+                          continue_on_error: true
+                          data:
+                            title: "Heating Rack — Climate Unavailable"
+                            message: >-
+                              {{ entity_climate }} has been unavailable for 5 min.
+                              Holding current state.
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.id | default('') == 'temp_lost' }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ notify_list }}"
+                      sequence:
+                        - service: "{{ repeat.item }}"
+                          continue_on_error: true
+                          data:
+                            title: "Heating Rack — Room Sensor Offline"
+                            message: >-
+                              {{ sensor_bathroom_temp }} non-numeric for 10 min while the climate entity
+                              is unavailable. Comfort floor suspended; slots heat on schedule once both return.
           - stop: "Climate entity unavailable"
-
-      # Both primary temp sensor AND climate.current_temperature unavailable — soft warn, continue
       - conditions:
           - condition: template
-            value_template: "{{ indoor_temp_both_unavailable }}"
+            value_template: "{{ states[entity_climate] is not none and states(entity_climate) != 'unavailable' }}"
         sequence:
-          - service: persistent_notification.create
+          - service: persistent_notification.dismiss
+            continue_on_error: true
             data:
-              title: "Heating Rack — Temperature Sensor Warning"
-              message: >
-                Both {{ sensor_bathroom_temp }} and
-                {{ entity_climate }}.current_temperature are unavailable.
-                Warmup formula is using 20°C as a fallback — ΔT-based
-                lead time will be inaccurate until a sensor returns.
-              notification_id: "heating_rack_sensor_warning"
-          - repeat:
-              for_each: "{{ notify_targets }}"
-              sequence:
-                - service: "{{ repeat.item }}"
-                  data:
-                    title: "Heating Rack — Temperature Sensor Warning"
-                    message: >-
-                      Both {{ sensor_bathroom_temp }} and
-                      {{ entity_climate }}.current_temperature are
-                      unavailable. Warmup using 20°C fallback — ETA
-                      inaccurate until a sensor returns.
+              notification_id: "heating_rack_climate_unavailable"
 
   # =============================================
-  # STEP 3: BOOST EXPIRY CLEANUP
-  # =============================================
-  - choose:
-      - conditions:
-          - condition: template
-            value_template: "{{ boost_expired }}"
-        sequence:
-          - service: input_boolean.turn_off
-            target:
-              entity_id: "{{ entity_boost }}"
-
-  # =============================================
-  # STEP 4: PRIORITY CHOOSE (P1–P6)
-  # Each branch resolves desired_mode, desired_preset, desired_setpoint
-  # via a nested variables block, then falls through to the idempotent
-  # service-call block at the end.
-  #
-  # NOTE: all desired_* templates are single-line to avoid embedded
-  # whitespace/newlines in the output string (which would break
-  # equality checks like `desired_setpoint != 'none'`).
-  #
-  # Precedence (v1.1.1+): P1 vacation > P3 boost > P2 fan_coord > P4 evening
-  # > P5 morning > P6 idle. Boost beats fan_coord because a user tapping
-  # boost is explicit intent that should win over the automatic heat-saving
-  # fan pause. Fan_coord still pauses P4/P5 auto routines during active
-  # ventilation. P2/P3 labels are historical — the numeric suffix no
-  # longer reflects the evaluation order.
+  # STEP 4: PRIORITY (first match wins)
+  # P1 vacation > P3 boost > P2 fan pause (scheduled routines only) > P4 evening > P5 morning
+  # > P6 idle. Labels are historical: the numeric suffix is not the evaluation order.
+  # Every desired_* template is single-line so the rendered value carries no whitespace.
   # =============================================
   - variables:
       desired_mode: "{% if vacation_active %}off{% else %}heat_cool{% endif %}"
-      desired_preset: "{% if vacation_active %}none{% elif boost_active %}none{% elif fan_is_on and (morning_active or evening_active) %}eco{% elif evening_active or morning_active %}none{% else %}eco{% endif %}"
-      # P2 (fan pause) and P6 (idle) drive the setpoint to `idle_setpoint` (default 7°C)
-      # rather than leaving the previous active-routine setpoint in place. Earlier
-      # versions left setpoint='none' for these states assuming preset=eco would
-      # impose a low frost-protect value; on the Tuya ECOSO device the explicit
-      # setpoint always wins regardless of preset, so we'd continue to heat to the
-      # previous target (e.g. 23°C from a boost) during idle. See v1.0.5 notes.
-      desired_setpoint: "{% if vacation_active %}none{% elif boost_active %}{{ boost_target_temp | float }}{% elif fan_is_on and (morning_active or evening_active) %}{{ idle_setpoint | float }}{% elif evening_active %}{{ evening_temp | float }}{% elif morning_active %}{{ morning_temp | float }}{% else %}{{ idle_setpoint | float }}{% endif %}"
+      desired_setpoint_raw: "{% if vacation_active %}none{% elif boost_active %}{{ boost_target_temp | float }}{% elif fan_is_on and (morning_active or evening_active) %}{{ idle_setpoint | float }}{% elif evening_active %}{{ evening_temp | float }}{% elif morning_active %}{{ morning_temp | float }}{% else %}{{ idle_setpoint | float }}{% endif %}"
+      # Rounded half-up to the device step so the idempotency check below compares like with like,
+      # then clamped to the device range (a value outside it is rejected by HA and would abort the
+      # run). Grid-count arithmetic with an epsilon nudge (0.501) and round(2): raw/step is not
+      # binary-exact for 0.1-grid values, so a bare +0.5 | int can land one step low.
+      desired_setpoint: "{% if desired_setpoint_raw == 'none' %}none{% else %}{{ [setpoint_max | float, [setpoint_min | float, ((((desired_setpoint_raw | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}{% endif %}"
       active_priority: "{% if vacation_active %}P1_vacation{% elif boost_active %}P3_boost{% elif fan_is_on and (morning_active or evening_active) %}P2_fan_coord{% elif evening_active %}P4_evening{% elif morning_active %}P5_morning{% else %}P6_idle{% endif %}"
 
   # =============================================
-  # STEP 4b: IDEMPOTENT SERVICE CALLS
+  # STEP 5: IDEMPOTENT SERVICE CALLS — continue_on_error so a cloud error never skips the
+  # notification edges or the boost expiry below; the next tick retries the call.
   # =============================================
   - choose:
       - conditions:
@@ -588,30 +635,11 @@ action:
             value_template: "{{ current_hvac_mode_normalized != desired_mode }}"
         sequence:
           - service: climate.set_hvac_mode
+            continue_on_error: true
             target:
               entity_id: "{{ entity_climate }}"
             data:
               hvac_mode: "{{ desired_mode }}"
-
-  # Set preset_mode only when we want a real preset (e.g. "eco").
-  # Skipping the service call when desired_preset == 'none' is an explicit
-  # workaround: many HA climate integrations (including generic_thermostat
-  # with only ["eco"] in preset_modes) reject set_preset_mode: 'none' with
-  # "not a valid preset". On those integrations, explicit setpoint changes
-  # (climate.set_temperature) automatically pull the thermostat out of the
-  # previous preset, so skipping here is safe.
-  - choose:
-      - conditions:
-          - condition: template
-            value_template: >-
-              {{ desired_preset != 'none'
-                 and (current_preset | default('none')) != desired_preset }}
-        sequence:
-          - service: climate.set_preset_mode
-            target:
-              entity_id: "{{ entity_climate }}"
-            data:
-              preset_mode: "{{ desired_preset }}"
 
   - choose:
       - conditions:
@@ -621,23 +649,69 @@ action:
                  and (current_setpoint | float - desired_setpoint | float) | abs > 0.1 }}
         sequence:
           - service: climate.set_temperature
+            continue_on_error: true
             target:
               entity_id: "{{ entity_climate }}"
             data:
               temperature: "{{ desired_setpoint | float }}"
 
   # =============================================
-  # STEP 5: NOTIFICATIONS
+  # STEP 6: ROOM SENSOR WARNING — state-driven in HA (created every tick while the room sensor is
+  # non-numeric, dismissed when it is back); the push fires once, on the temp_lost trigger.
+  # Sits after the climate calls so a push problem can never block a setpoint write.
   # =============================================
   - choose:
-      # Warmup started — transitioning to P3/P4/P5 from non-active
+      - conditions:
+          - condition: template
+            value_template: "{{ not indoor_temp_has_primary }}"
+        sequence:
+          - service: persistent_notification.create
+            continue_on_error: true
+            data:
+              title: "Heating Rack — Room Sensor Offline"
+              message: >
+                {{ sensor_bathroom_temp }} is non-numeric. Warmup lead uses
+                {% if indoor_temp_has_fallback %}{{ entity_climate }}.current_temperature ({{ indoor_temp }}°C, the rack's own sensor, reads warm){% else %}a 20°C fallback{% endif %};
+                the comfort floor is suspended, so routine slots heat on schedule until the sensor returns.
+              notification_id: "heating_rack_sensor_warning"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.id | default('') == 'temp_lost' }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ notify_list }}"
+                      sequence:
+                        - service: "{{ repeat.item }}"
+                          continue_on_error: true
+                          data:
+                            title: "Heating Rack — Room Sensor Offline"
+                            message: >-
+                              {{ sensor_bathroom_temp }} non-numeric for 10 min.
+                              Comfort floor suspended; slots heat on schedule until it returns.
+      - conditions:
+          - condition: template
+            value_template: "{{ indoor_temp_has_primary }}"
+        sequence:
+          - service: persistent_notification.dismiss
+            continue_on_error: true
+            data:
+              notification_id: "heating_rack_sensor_warning"
+
+  # =============================================
+  # STEP 7: WARMUP-STARTED NOTIFICATION — edge-triggered on the setpoint leaving idle
+  # (current_setpoint was read before the set_temperature call above); dismissed on the tick
+  # that returns the setpoint to idle. Compares against idle_setpoint_dev, the idle value the
+  # device actually holds.
+  # =============================================
+  - choose:
       - conditions:
           - condition: template
             value_template: >-
               {{ enable_notifications
-                 and active_priority in ['P3_boost','P4_evening','P5_morning']
-                 and (current_hvac_mode == 'off' or
-                      (current_preset | default('none')) == 'eco') }}
+                 and desired_setpoint != 'none'
+                 and desired_setpoint | float > idle_setpoint_dev | float + 0.1
+                 and current_setpoint | float <= idle_setpoint_dev | float + 0.1 }}
         sequence:
           - variables:
               eta_delta: "{{ [0, desired_setpoint | float - indoor_temp | float] | max }}"
@@ -647,6 +721,7 @@ action:
                      (warmup_base_min | int) + (warmup_per_degree_min | int) * (eta_delta | float)] | max
                    ] | min | int }}
           - service: persistent_notification.create
+            continue_on_error: true
             data:
               title: "Heating Rack — Warmup Started"
               message: >
@@ -655,34 +730,30 @@ action:
                 {{ desired_setpoint }}°C. ETA ~{{ eta_min }} min.
               notification_id: "heating_rack_warmup_started"
           - repeat:
-              for_each: "{{ notify_targets }}"
+              for_each: "{{ notify_list }}"
               sequence:
                 - service: "{{ repeat.item }}"
+                  continue_on_error: true
                   data:
                     title: "Heating Rack — Warmup Started"
                     message: >-
                       {{ active_priority }}: {{ indoor_temp | round(1) }}°C
                       → {{ desired_setpoint }}°C. ETA ~{{ eta_min }} min.
 
-      # Target reached — within 0.5°C of desired while routine active
       - conditions:
           - condition: template
             value_template: >-
-              {{ enable_notifications
-                 and active_priority in ['P3_boost','P4_evening','P5_morning']
-                 and desired_setpoint != 'none'
-                 and (indoor_temp | float - desired_setpoint | float) | abs < 0.5 }}
+              {{ desired_setpoint != 'none'
+                 and desired_setpoint | float <= idle_setpoint_dev | float + 0.1
+                 and current_setpoint | float > idle_setpoint_dev | float + 0.1 }}
         sequence:
-          - service: persistent_notification.create
+          - service: persistent_notification.dismiss
+            continue_on_error: true
             data:
-              title: "Heating Rack — At Target"
-              message: >
-                Bathroom at {{ indoor_temp | round(1) }}°C
-                (target {{ desired_setpoint }}°C). {{ active_priority }}.
-              notification_id: "heating_rack_target_reached"
+              notification_id: "heating_rack_warmup_started"
 
   # =============================================
-  # STEP 6: DEBUG NOTIFICATION (Manual Run Only)
+  # STEP 8: DEBUG NOTIFICATION (manual run only)
   # =============================================
   - choose:
       - conditions:
@@ -690,28 +761,44 @@ action:
             value_template: "{{ trigger.id | default('manual') == 'manual' }}"
         sequence:
           - service: persistent_notification.create
+            continue_on_error: true
             data:
               title: "Heating Rack Debug — {{ now().strftime('%H:%M:%S') }}"
               message: >
                 **Indoor:** {{ indoor_temp | round(1) }}°C
-                | **Setpoint:** {{ current_setpoint }}°C
+                | **Setpoint:** {{ current_setpoint }}°C (step {{ setpoint_step }}, range {{ setpoint_min }}–{{ setpoint_max }}, idle {{ idle_setpoint_dev }})
                 | **Mode:** {{ current_hvac_mode }}
-                | **Preset:** {{ current_preset | default('none') }}
+                | **Push:** {{ notify_list }}
 
                 **Fan:** {{ 'ON' if fan_is_on else 'OFF' }}
                 | **Vacation:** {{ vacation_active }}
                 | **Boost:** {{ 'ON' if boost_is_on else 'off' }} (age {{ boost_age_min }}m, expires {{ boost_runtime_min_int }}m)
+                | **Comfort floor:** {{ comfort_floor_delta }}°C{{ '' if indoor_temp_has_primary else ' (SUSPENDED — room sensor offline)' }}
 
                 **Today:** {{ today_dow }}
 
-                **Morning A:** days={{ ma_in_days }}, ΔT={{ ma_delta_T }}°C, warmup={{ ma_warmup_min }}m, auto_start={{ as_datetime(ma_auto_start_dt).strftime('%H:%M') }}, eff_start={{ as_datetime(ma_effective_start).strftime('%H:%M') }}, active={{ ma_active }}
+                **Morning A:** days={{ ma_in_days }}, ΔT={{ ma_delta_T }}°C, warmup={{ ma_warmup_min }}m, auto_start={{ as_datetime(ma_auto_start_dt).strftime('%H:%M') }}, open={{ as_datetime(ma_open_dt).strftime('%H:%M') }}, hold_until={{ as_datetime(ma_hold_until_dt).strftime('%a %H:%M') }}, heating={{ ma_heating }}, floor={{ ma_floor }}°C, in_window={{ ma_in_window }}, active={{ ma_active }}
 
-                **Morning B:** days={{ mb_in_days }}, active={{ mb_active }}
+                **Morning B:** days={{ mb_in_days }}, ΔT={{ mb_delta_T }}°C, warmup={{ mb_warmup_min }}m, auto_start={{ as_datetime(mb_auto_start_dt).strftime('%H:%M') }}, open={{ as_datetime(mb_open_dt).strftime('%H:%M') }}, hold_until={{ as_datetime(mb_hold_until_dt).strftime('%a %H:%M') }}, heating={{ mb_heating }}, floor={{ mb_floor }}°C, in_window={{ mb_in_window }}, active={{ mb_active }}
 
-                **Evening A:** days={{ ea_in_days }}, ΔT={{ ea_delta_T }}°C, warmup={{ ea_warmup_min }}m, auto_start={{ as_datetime(ea_auto_start_dt).strftime('%H:%M') }}, eff_start={{ as_datetime(ea_effective_start).strftime('%H:%M') }}, active={{ ea_active }}
+                **Evening A:** days={{ ea_in_days }}, ΔT={{ ea_delta_T }}°C, warmup={{ ea_warmup_min }}m, auto_start={{ as_datetime(ea_auto_start_dt).strftime('%H:%M') }}, open={{ as_datetime(ea_open_dt).strftime('%H:%M') }}, hold_until={{ as_datetime(ea_hold_until_dt).strftime('%a %H:%M') }}, heating={{ ea_heating }}, floor={{ ea_floor }}°C, in_window={{ ea_in_window }}, active={{ ea_active }}
 
-                **Evening B:** days={{ eb_in_days }}, active={{ eb_active }}
+                **Evening B:** days={{ eb_in_days }}, ΔT={{ eb_delta_T }}°C, warmup={{ eb_warmup_min }}m, auto_start={{ as_datetime(eb_auto_start_dt).strftime('%H:%M') }}, open={{ as_datetime(eb_open_dt).strftime('%H:%M') }}, hold_until={{ as_datetime(eb_hold_until_dt).strftime('%a %H:%M') }}, heating={{ eb_heating }}, floor={{ eb_floor }}°C, in_window={{ eb_in_window }}, active={{ eb_active }}
 
                 **→ Priority:** {{ active_priority }}
-                | **→ Desired:** mode={{ desired_mode }}, preset={{ desired_preset }}, setpoint={{ desired_setpoint }}
+                | **→ Desired:** mode={{ desired_mode }}, setpoint={{ desired_setpoint }} (raw {{ desired_setpoint_raw }})
               notification_id: "heating_rack_debug"
+
+  # =============================================
+  # STEP 9: BOOST EXPIRY — the LAST step: the turn_off restarts this automation (mode: restart,
+  # boost_change), which would abort anything after it; by now the setpoint is lowered and the
+  # warmup notification dismissed.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ boost_expired }}"
+        sequence:
+          - service: input_boolean.turn_off
+            target:
+              entity_id: "{{ entity_boost }}"
