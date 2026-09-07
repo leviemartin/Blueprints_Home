@@ -1,6 +1,6 @@
 {
   "id": "1775578219942",
-  "alias": "LG AC Climate Control v1.0.0",
+  "alias": "LG AC Climate Control v1.2.0",
   "description": "",
   "use_blueprint": {
     "path": "leviemartin/lg_ac_climate.yaml",
