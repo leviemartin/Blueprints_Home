@@ -54,6 +54,24 @@ def test_dry_run_rejects_missing_required(tmp_path):
     assert "required inputs missing: humidity_sensor" in r.stdout
 
 
+def test_dry_run_rejects_unsafe_instance_id(tmp_path):
+    # code board 20260907-143611 R2-002: the id is spliced into URLs and backup paths
+    p = instance(tmp_path)
+    cfg = json.loads(p.read_text())
+    cfg["id"] = "../1774555916056"
+    p.write_text(json.dumps(cfg))
+    r = run("--dry-run", str(BP), HA_PATH, str(p))
+    assert r.returncode == 1
+    assert "instance id must match" in r.stdout
+
+
+def test_token_never_in_curl_argv():
+    # code board 20260907-143611 R2-001: the Authorization header comes from a 0600 temp file
+    src = SCRIPT.read_text()
+    assert 'Bearer $HASS_TOKEN"' not in src
+    assert "-H @\"$HDR\"" in src and "chmod 600" in src and "trap 'rm -f \"$HDR\"' EXIT" in src
+
+
 def test_dry_run_rejects_bad_ha_path():
     r = run("--dry-run", str(BP), "bogus")
     assert r.returncode == 1

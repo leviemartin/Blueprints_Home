@@ -361,9 +361,13 @@ def test_mold_edge_branches(bp):
     c = ch[0]["sequence"][0]
     assert c["data"]["notification_id"] == "ventilator_mold_warning"
     assert c["continue_on_error"] is True
-    # create → push; no bare `condition` step (board R1-01/R1-02: rule 3 outranks rule 5, so the
-    # edge already fires once per mold episode)
-    assert [step_kind(s) for s in ch[0]["sequence"]] == ["service:persistent_notification.create", "repeat"]
+    # create → push gated on a commandable fan (code board 20260907-143611 R1-02: an unavailable
+    # plug keeps fan_is_on false, so an ungated push would repeat every tick); no bare condition step
+    assert [step_kind(s) for s in ch[0]["sequence"]] == ["service:persistent_notification.create", "choose"]
+    gate = ch[0]["sequence"][1]["choose"]
+    assert branch_cond(gate[0]) == "{{ states[entity_fan] is not none and not is_state(entity_fan, 'unavailable') }}"
+    assert [step_kind(s) for s in gate[0]["sequence"]] == ["repeat"]
+    assert gate[0]["sequence"][0]["repeat"]["for_each"] == "{{ notify_list }}"
     assert branch_cond(ch[1]) == "{{ not mold_on }}"
     d = ch[1]["sequence"][0]
     assert step_kind(d) == "service:persistent_notification.dismiss"
@@ -530,6 +534,8 @@ def _shower_ctx(from_rh, to_rh, motion_minutes_ago, trigger_id="humidity_change"
 @pytest.mark.parametrize("frm,to,motion_ago,tid,expected", [
     (55, 61, 5, "humidity_change", True),
     (55, 60, 5, "humidity_change", False),
+    (55, 61, 14, "humidity_change", True),    # presence window boundary (15): just inside
+    (55, 61, 16, "humidity_change", False),   # just outside
     (55, 61, 20, "humidity_change", False),
     (55, 61, 5, "periodic", False),
     (61, 55, 5, "humidity_change", False),
@@ -573,6 +579,22 @@ def test_rule_degraded_after_grace(bp):
     out = render_chain(bp, base_ctx(), w, "desired_on")
     assert out["sensors_lost_minutes"] == 45.0
     assert (out["active_rule"], out["desired_on"]) == ("degraded", True)
+
+
+def test_missing_humidity_entity_is_degraded_not_flapping(bp):
+    # code board 20260907-143611 R1-04: an absent entity (renamed / re-paired) must not fall through
+    # to the still-reporting temperature sensor's clock
+    w = world()
+    del w.table["sensor.rh"]
+    out = render_chain(bp, base_ctx(), w, "desired_on")
+    assert out["sensors_ok"] is False
+    assert out["sensors_lost_minutes"] == 9999
+    assert out["active_rule"] == "degraded"
+
+
+def test_every_input_has_a_description(inputs):
+    missing = [k for k, v in inputs.items() if not str(v.get("description", "")).strip()]
+    assert missing == []
 
 
 def test_rule_hold_within_grace(bp):
