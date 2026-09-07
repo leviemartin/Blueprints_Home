@@ -1480,7 +1480,7 @@ Expected: `instance …: ok (id 1774555916056, 8 inputs)` then `dry-run: validat
 Demand-controlled bathroom exhaust fan for the Dutch climate (Laren). An on/off fan on a smart plug is driven by indoor humidity, outdoor dew point, presence and a manual boost. The fan never runs on a timer schedule: trickle vents supply background air, the fan exhausts on demand (ASHRAE 62.2 §5 demand-controlled mode; Bbl art. 3.67 lid 6 is a capacity minimum, met by the TURBOE.125 at 230–345 m³/h).
 
 ## Goals
-1. **Outdoor-conditioned targets:** the effective stop target is the higher of the configured target (60 % RH) and the indoor RH whose dew point equals outdoor dew point + margin (2 °C). The start threshold sits hysteresis (5 %) above it. The fan stops where ventilation stops helping.
+1. **Outdoor-conditioned targets:** the effective stop target is the higher of the configured target (60 % RH) and the indoor RH whose dew point equals outdoor dew point + margin (2 °C). The start threshold is the higher of the configured high-humidity start (75 %) and the effective stop target plus hysteresis (5 %). The fan stops where ventilation stops helping.
 2. **Shower detection at any hour:** a humidity jump of ≥ 6 % between two consecutive sensor reports (the Aqara T1 reports instantly on that change) with bathroom motion within the last 15 min. Quiet hours (22:00–05:30) only block new non-shower starts.
 3. **Bounded runs:** every run lasts at least 15 min and at most 45 min; a run continues while RH is above the effective stop target.
 4. **Mold safety:** RH ≥ 85 % with drier outdoor air forces the fan on at any hour, with one notification.
@@ -1498,7 +1498,7 @@ Demand-controlled bathroom exhaust fan for the Dutch climate (Laren). An on/off 
 
 ## Decision order (first match wins)
 1. boost active → ON
-2. sensors unavailable → ON iff motion within the last 20 min
+2. sensors unavailable for ≥ 10 min → ON iff motion within the last 20 min (a shorter outage holds the fan as it is)
 3. mold override (RH ≥ 85 %, indoor dew point above outdoor) → ON
 4. fan on for < 15 min → stay ON
 5. fan on for ≥ 45 min → OFF
