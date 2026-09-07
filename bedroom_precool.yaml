@@ -1,7 +1,7 @@
 blueprint:
-  name: "Bedroom Sleep Pre-Cool v1.0.0"
+  name: "Bedroom Sleep Pre-Cool v1.0.1"
   description: >
-    **Version: 1.0.0**
+    **Version: 1.0.1**
 
     Predictive pre-cooling of bedrooms via a single hall LG air conditioner.
     Reaches an ideal sleep temperature by a fixed bedtime, then holds the room
@@ -470,7 +470,6 @@ action:
   # entry on any template failure.
   # =============================================
   - variables:
-      now_dt: "{{ now() }}"
       # True only on a real trigger (periodic / vacation_change / ha_start);
       # a manual "Run" has no trigger.id. STEP 6's phase dispatch is gated on
       # this so a manual Run is debug-inspect-only — it never actuates the AC
@@ -593,9 +592,12 @@ action:
               and weather_entity in hourly_forecast_resp
               and hourly_forecast_resp[weather_entity].forecast is defined
            else [] }}
-      bedtime_dt: >-
+      # Variables are re-parsed between steps: a datetime becomes a plain
+      # string and any later .strftime()/comparison on it raises. Carry
+      # instants as UNIX timestamps (floats survive the round-trip).
+      bedtime_ts: >-
         {% set bt = today_at(bedtime) %}
-        {{ bt if bt >= now() else bt + timedelta(days=1) }}
+        {{ as_timestamp(bt if bt >= now() else bt + timedelta(days=1)) }}
       forecast_window_temps: >-
         {% set ns = namespace(vals=[]) %}
         {% for f in forecast_list_safe %}
@@ -603,7 +605,7 @@ action:
           {% set tp = f.temperature | default(none) %}
           {% if ts is not none and tp is not none %}
             {% set fdt = as_datetime(ts) %}
-            {% if fdt is not none and fdt >= now() and fdt <= bedtime_dt %}
+            {% if fdt is not none and fdt >= now() and as_timestamp(fdt) <= bedtime_ts | float %}
               {% set ns.vals = ns.vals + [tp | float] %}
             {% endif %}
           {% endif %}
@@ -680,7 +682,7 @@ action:
       # Phase derivation compares time-of-day so the overnight window
       # (bedtime -> wake, spanning midnight) is handled without any
       # date arithmetic. turn_on is the only moving boundary; it is
-      # carried as a same-day datetime purely for the debug dump. ---
+      # carried as a same-day timestamp purely for the debug dump. ---
       now_tod: "{{ now().strftime('%H:%M:%S') }}"
       wake_tod: "{{ wake_time }}"
       bedtime_tod: "{{ bedtime }}"
@@ -689,8 +691,8 @@ action:
       deep_tod: "{{ deep_night_check }}"
       deep_end_tod: >-
         {{ (today_at(deep_night_check) + timedelta(minutes=10)).strftime('%H:%M:%S') }}
-      turn_on_dt: "{{ today_at(bedtime) - timedelta(minutes=lead | int) }}"
-      turn_on_tod: "{{ turn_on_dt.strftime('%H:%M:%S') }}"
+      turn_on_ts: "{{ as_timestamp(today_at(bedtime) - timedelta(minutes=lead | int)) }}"
+      turn_on_tod: "{{ turn_on_ts | float | timestamp_custom('%H:%M:%S') }}"
       # --- Phase derivation (all time-of-day string comparisons) ---
       # The "day side" of the schedule runs wake -> bedtime_lock.
       on_day_side: "{{ wake_tod <= now_tod and now_tod < lock_tod }}"
@@ -1158,8 +1160,8 @@ action:
                 (configured={{ lead_bias_configured }})
 
                 **lead:** {{ lead }} min
-                | **turn_on:** {{ turn_on_dt.strftime('%H:%M') }}
-                | **bedtime:** {{ bedtime_dt.strftime('%H:%M') }}
+                | **turn_on:** {{ turn_on_ts | float | timestamp_custom('%H:%M') }}
+                | **bedtime:** {{ bedtime_ts | float | timestamp_custom('%H:%M') }}
 
                 **cooling_needed:** {{ cooling_needed }}
 

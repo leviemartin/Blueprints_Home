@@ -1,0 +1,23 @@
+{
+  "id": "1779553673971",
+  "alias": "Bedroom Sleep Pre-Cool v1.0.1",
+  "description": "",
+  "use_blueprint": {
+    "path": "leviemartin/bedroom_precool.yaml",
+    "input": {
+      "bedroom_temp_sensors": [
+        "sensor.temperature_sensor_2",
+        "sensor.temperature_sensor_3"
+      ],
+      "ac_climate": "climate.bedrooms",
+      "outdoor_temp_sensor": "sensor.openweathermap_temperature",
+      "weather_entity": "weather.home_sm",
+      "ideal_temp": 20,
+      "hall_offset": 2,
+      "skip_threshold": 21,
+      "lead_bias_helper": [
+        "input_number.autolearner"
+      ]
+    }
+  }
+}
