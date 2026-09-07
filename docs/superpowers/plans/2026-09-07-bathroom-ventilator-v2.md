@@ -790,7 +790,7 @@ def test_idle_when_dry(bp):
 - [ ] **Step 2: Run the file RED against v1.0.0**
 
 Run: `cd ~/AI/projects/Blueprints_Home && ~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests/test_bathroom_ventilator_structure.py -q`
-Expected: many FAILs (`test_version_bumped`, schema, triggers, every render test) and zero collection errors. The existing suite must still be green: run `… -m pytest tests -q` and report `PASS=N FAIL=M` (expected `PASS=58 FAIL=<all new tests>`).
+Expected: 54 FAILs (`test_version_bumped`, schema, triggers, decision/shower/degraded render tests) and zero collection errors. Ten new tests pass incidentally against v1.0.0 — the four `test_indoor_dew_point_rows` rows and five `test_is_night_rows` rows (v1 already carries the same Magnus formula and the midnight-crossing window) plus `test_no_bare_condition_steps_anywhere` — that is expected, not a sign they are implemented. The existing suite must still be green: run `… -m pytest tests -q` and report `PASS=N FAIL=M` (expected `PASS=73 FAIL=54`).
 
 - [ ] **Step 3: Commit (tests pillar)**
 
