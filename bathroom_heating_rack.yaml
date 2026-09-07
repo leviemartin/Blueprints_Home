@@ -409,7 +409,7 @@ action:
       # be called as an arbitrary service). A well-formed name that does not exist still aborts the
       # run at the push step — HA does not suppress a missing action — so every push runs after
       # the climate calls and the deploy step checks each target exists.
-      notify_list: "{{ notify_targets | select('match', '^notify[.][a-z0-9_]+$') | list }}"
+      notify_list: "{{ (notify_targets if (notify_targets is iterable and notify_targets is not string) else ([notify_targets] if notify_targets else [])) | select('match', '^notify[.][a-z0-9_]+$') | list }}"
 
       # Locale-safe weekday token (the %a abbreviation follows the system locale)
       today_dow: "{{ ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'][now().weekday()] }}"
@@ -441,8 +441,8 @@ action:
       # This slot's setpoint as the device holds it; while the device is at that value the slot is
       # the one heating: its floor gets the 0.5 °C release deadband and its opening edge is
       # latched at target_warm − warmup cap (the ΔT-derived auto_start moves with sensor noise).
-      ma_target_dev: "{{ ((((morning_a_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float)) | round(2) }}"
-      ma_heating: "{{ (current_setpoint | float - ma_target_dev | float) | abs < 0.1 }}"
+      ma_target_dev: "{{ [setpoint_max | float, [setpoint_min | float, ((((morning_a_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}"
+      ma_heating: "{{ not boost_active and (current_setpoint | float - ma_target_dev | float) | abs < 0.1 }}"
       ma_delta_T: "{{ [0, morning_a_target_temp | float - indoor_temp | float] | max }}"
       ma_warmup_min: >-
         {{ [warmup_max_minutes | int,
@@ -466,8 +466,8 @@ action:
       # This slot's setpoint as the device holds it; while the device is at that value the slot is
       # the one heating: its floor gets the 0.5 °C release deadband and its opening edge is
       # latched at target_warm − warmup cap (the ΔT-derived auto_start moves with sensor noise).
-      mb_target_dev: "{{ ((((morning_b_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float)) | round(2) }}"
-      mb_heating: "{{ (current_setpoint | float - mb_target_dev | float) | abs < 0.1 }}"
+      mb_target_dev: "{{ [setpoint_max | float, [setpoint_min | float, ((((morning_b_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}"
+      mb_heating: "{{ not boost_active and (current_setpoint | float - mb_target_dev | float) | abs < 0.1 }}"
       mb_delta_T: "{{ [0, morning_b_target_temp | float - indoor_temp | float] | max }}"
       mb_warmup_min: >-
         {{ [warmup_max_minutes | int,
@@ -491,8 +491,8 @@ action:
       # This slot's setpoint as the device holds it; while the device is at that value the slot is
       # the one heating: its floor gets the 0.5 °C release deadband and its opening edge is
       # latched at target_warm − warmup cap (the ΔT-derived auto_start moves with sensor noise).
-      ea_target_dev: "{{ ((((evening_a_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float)) | round(2) }}"
-      ea_heating: "{{ (current_setpoint | float - ea_target_dev | float) | abs < 0.1 }}"
+      ea_target_dev: "{{ [setpoint_max | float, [setpoint_min | float, ((((evening_a_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}"
+      ea_heating: "{{ not boost_active and (current_setpoint | float - ea_target_dev | float) | abs < 0.1 }}"
       ea_delta_T: "{{ [0, evening_a_target_temp | float - indoor_temp | float] | max }}"
       ea_warmup_min: >-
         {{ [warmup_max_minutes | int,
@@ -516,8 +516,8 @@ action:
       # This slot's setpoint as the device holds it; while the device is at that value the slot is
       # the one heating: its floor gets the 0.5 °C release deadband and its opening edge is
       # latched at target_warm − warmup cap (the ΔT-derived auto_start moves with sensor noise).
-      eb_target_dev: "{{ ((((evening_b_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float)) | round(2) }}"
-      eb_heating: "{{ (current_setpoint | float - eb_target_dev | float) | abs < 0.1 }}"
+      eb_target_dev: "{{ [setpoint_max | float, [setpoint_min | float, ((((evening_b_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}"
+      eb_heating: "{{ not boost_active and (current_setpoint | float - eb_target_dev | float) | abs < 0.1 }}"
       eb_delta_T: "{{ [0, evening_b_target_temp | float - indoor_temp | float] | max }}"
       eb_warmup_min: >-
         {{ [warmup_max_minutes | int,
@@ -542,7 +542,7 @@ action:
         {% if ea_active %}{{ evening_a_target_temp | float }}{% else %}{{ evening_b_target_temp | float }}{% endif %}
 
   # =============================================
-  # STEP 3: CLIMATE VALIDATION — 'unavailable' is a hard stop ('unknown' is the Tuya device's
+  # STEP 3: CLIMATE VALIDATION — 'unavailable' or a missing entity is a hard stop ('unknown' is the Tuya device's
   # normal ON state). The in-HA warning follows the state (created every tick of the outage,
   # idempotent by id; dismissed when the entity is back); the push fires once, on the
   # climate_lost trigger. Nothing below can run without the entity, so the push before `stop` is
@@ -551,7 +551,7 @@ action:
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ states(entity_climate) == 'unavailable' }}"
+            value_template: "{{ states[entity_climate] is none or states(entity_climate) == 'unavailable' }}"
         sequence:
           - service: persistent_notification.create
             continue_on_error: true
@@ -579,7 +579,7 @@ action:
           - stop: "Climate entity unavailable"
       - conditions:
           - condition: template
-            value_template: "{{ states(entity_climate) != 'unavailable' }}"
+            value_template: "{{ states[entity_climate] is not none and states(entity_climate) != 'unavailable' }}"
         sequence:
           - service: persistent_notification.dismiss
             continue_on_error: true

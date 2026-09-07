@@ -25,7 +25,6 @@ Pre-heats the bathroom with the heating rack (`climate.heatingrack_bathroom`) so
 ΔT            = max(0, target_temp − indoor_temp)
 warmup_min    = clamp(warmup_base + warmup_per_degree × ΔT, warmup_min_minutes, warmup_max_minutes)
 auto_start    = target_warm − warmup_min
-in_window     = today in days AND auto_start ≤ now < hold_until
 heating       = device setpoint == this slot's rounded target
 open          = target_warm − (warmup_max_minutes if heating else warmup_min)
 in_window     = today in days AND open ≤ now < hold_until
@@ -45,7 +44,7 @@ active        = in_window AND (room sensor offline OR indoor_temp < floor)
 Labels in traces (`P1_vacation`, `P3_boost`, `P2_fan_coord`, `P4_evening`, `P5_morning`, `P6_idle`) are historical: the numeric suffix is not the evaluation order.
 
 ## Triggers
-Every minute (`periodic`), boost/vacation/fan `on`↔`off` (attribute-only updates ignored), HA start, climate entity `unavailable` for 5 min (`climate_lost`), room sensor non-numeric for 10 min (`temp_lost`). `mode: restart`.
+Every minute (`periodic`), boost/vacation/fan `on`↔`off` (attribute-only updates ignored), HA start, climate entity `unavailable` for 5 min (`climate_lost`), room sensor unavailable/unknown for 10 min (`temp_lost`; the in-HA warning covers any non-numeric state). `mode: restart`.
 
 ## Notifications
 - **Climate unavailable** — in-HA warning follows the state (created while unavailable, dismissed when back); one push after 5 min (`climate_lost`); the run stops while the entity is unavailable.

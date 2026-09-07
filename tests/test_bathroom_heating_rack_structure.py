@@ -122,7 +122,7 @@ class _States:
 
     def __call__(self, eid):
         s = self.table.get(eid)
-        return s.state if s else "unavailable"
+        return s.state if s else "unknown"
 
     def __getitem__(self, eid):
         return self.table.get(eid)
@@ -335,10 +335,10 @@ def test_action_shape(bp):
     chooses = choose_steps(bp)
     # climate validation: unavailable → create + (push on the edge) + stop; available → dismiss
     unavailable, available = chooses[0]["choose"]
-    assert branch_cond(unavailable) == "{{ states(entity_climate) == 'unavailable' }}"
+    assert branch_cond(unavailable) == "{{ states[entity_climate] is none or states(entity_climate) == 'unavailable' }}"
     assert service_of(unavailable["sequence"]) == "persistent_notification.create"
     assert unavailable["sequence"][-1] == {"stop": "Climate entity unavailable"}
-    assert branch_cond(available) == "{{ states(entity_climate) != 'unavailable' }}"
+    assert branch_cond(available) == "{{ states[entity_climate] is not none and states(entity_climate) != 'unavailable' }}"
     assert available["sequence"] == [{"service": "persistent_notification.dismiss", "continue_on_error": True,
                                       "data": {"notification_id": "heating_rack_climate_unavailable"}}]
     assert service_of(chooses[1]["choose"][0]["sequence"]) == "climate.set_hvac_mode"
@@ -404,9 +404,9 @@ def test_slot_templates(bp, slot, prefix):
         f"{{% set w = today_at({slot}_target_warm) %}}{{% set h = today_at({slot}_hold_until) %}}"
         "{{ h + timedelta(days=1) if h <= w else h }}")
     assert norm(get_var(bp, f"{prefix}_target_dev")) == norm(
-        f"{{{{ (((({slot}_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float)) | round(2) }}}}")
+        f"{{{{ [setpoint_max | float, [setpoint_min | float, (((({slot}_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}}}")
     assert norm(get_var(bp, f"{prefix}_heating")) == norm(
-        f"{{{{ (current_setpoint | float - {prefix}_target_dev | float) | abs < 0.1 }}}}")
+        f"{{{{ not boost_active and (current_setpoint | float - {prefix}_target_dev | float) | abs < 0.1 }}}}")
     assert norm(get_var(bp, f"{prefix}_open_dt")) == norm(
         f"{{{{ as_datetime({prefix}_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if {prefix}_heating else {prefix}_warmup_min | int)) }}}}")
     assert norm(get_var(bp, f"{prefix}_in_window")) == norm(
@@ -428,7 +428,8 @@ def test_setpoint_rounding_template(bp):
         "{{ [setpoint_max | float, [setpoint_min | float, ((((idle_setpoint | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}")
     assert norm(get_var(bp, "setpoint_min")) == "{{ state_attr(entity_climate, 'min_temp') | float(7) }}"
     assert norm(get_var(bp, "setpoint_max")) == "{{ state_attr(entity_climate, 'max_temp') | float(30) }}"
-    assert norm(get_var(bp, "notify_list")) == "{{ notify_targets | select('match', '^notify[.][a-z0-9_]+$') | list }}"
+    assert norm(get_var(bp, "notify_list")) == norm(
+        "{{ (notify_targets if (notify_targets is iterable and notify_targets is not string) else ([notify_targets] if notify_targets else [])) | select('match', '^notify[.][a-z0-9_]+$') | list }}")
     assert "floor_hysteresis" not in BP_PATH.read_text()
     assert norm(get_var(bp, "setpoint_step")) == norm(
         "{% set s = state_attr(entity_climate, 'target_temp_step') | float(0) %}{{ s if s > 0 else 0.5 }}")
@@ -550,6 +551,7 @@ def test_setpoint_range_defaults_when_attrs_missing(bp):
     (["notify.mobile_app_martin_fold"], ["notify.mobile_app_martin_fold"]),
     (["notify.mobile_app_martin_fold", "mobile_app_x", "notify.Bad-Name", "script.foo", "notify.a b"], ["notify.mobile_app_martin_fold"]),
     ([], []),
+    ("notify.mobile_app_martin_fold", ["notify.mobile_app_martin_fold"]),   # scalar guard (ventilator parity)
 ])
 def test_notify_list_filters_names(bp, targets, expected):
     assert render_vars(bp, base_ctx(notify_targets=targets), world(), "notify_list")["notify_list"] == expected
@@ -820,6 +822,43 @@ def test_warmup_eta_rows(bp):
     ctx["eta_delta"] = parse(env.from_string(str(eta_vars["eta_delta"])).render(**ctx))
     ctx["eta_min"] = parse(env.from_string(str(eta_vars["eta_min"])).render(**ctx))
     assert (ctx["eta_delta"], ctx["eta_min"]) == (2.0, 20)
+
+
+@pytest.mark.parametrize("climate,expected", [
+    (_State("unavailable", attrs={}), True),
+    (_State("unknown", attrs={"temperature": 7.0}), False),   # the Tuya device's normal ON state
+    (_State("off", attrs={"temperature": 7.0}), False),
+    (None, True),                                               # entity deleted/renamed: HA reads 'unknown', must still hard-stop
+])
+def test_climate_hard_stop_rows(bp, climate, expected):
+    w = world()
+    if climate is None:
+        del w.table["climate.rack"]
+    else:
+        w.table["climate.rack"] = climate
+    tpl = choose_steps(bp)[0]["choose"][0]["conditions"][0]["value_template"]
+    assert render_tpl(bp, tpl, w, entity_climate="climate.rack") is expected
+    tpl_ok = choose_steps(bp)[0]["choose"][1]["conditions"][0]["value_template"]
+    assert render_tpl(bp, tpl_ok, w, entity_climate="climate.rack") is (not expected)
+
+
+def test_boost_does_not_alias_slot_heating(bp):
+    # blueprint defaults: boost_target_temp 23 == morning target 23 — an active boost must not latch the slot
+    ctx = base_ctx(morning_a_days=["tue"], boost_target_temp=23)
+    w = world(**_rack(23.0), **{"input_boolean.boost": _State("on", minutes_ago=5)})
+    out = render_vars(bp, ctx, w, "ma_active", at("07:00"))
+    assert (out["boost_active"], out["ma_heating"], out["ma_floor"]) == (True, False, 22.0)
+    # once the boost has expired and the device still holds 23, the slot adopts it
+    w = world(**_rack(23.0), **{"input_boolean.boost": _State("off", minutes_ago=1)})
+    out = render_vars(bp, ctx, w, "ma_active", at("07:00"))
+    assert (out["boost_active"], out["ma_heating"], out["ma_floor"]) == (False, True, 22.5)
+
+
+def test_target_dev_clamped_to_device_range(bp):
+    attrs = {"temperature": 25.0, "current_temperature": 23.4, "target_temp_step": 1.0, "min_temp": 7.0, "max_temp": 25.0}
+    ctx = base_ctx(morning_a_days=["tue"], morning_a_target_temp=28)
+    out = render_vars(bp, ctx, world(**{"climate.rack": _State("unknown", attrs=attrs)}), "ma_active", at("07:00"))
+    assert (out["ma_target_dev"], out["ma_heating"]) == (25.0, True)
 
 
 # ---------------------------------------------------------------- instance + deploy dry-run
