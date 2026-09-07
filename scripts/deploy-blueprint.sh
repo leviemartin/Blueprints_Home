@@ -55,7 +55,9 @@ unknown = sorted(given - set(schema["keys"]))
 missing = sorted(set(schema["required"]) - given)
 if unknown: problems.append("unknown input keys (would make the instance unavailable): " + ", ".join(unknown))
 if missing: problems.append("required inputs missing: " + ", ".join(missing))
-if not str(inst.get("id", "")).strip(): problems.append("instance has no id")
+import re
+if not re.fullmatch(r"[A-Za-z0-9_-]+", str(inst.get("id", ""))):
+    problems.append("instance id must match ^[A-Za-z0-9_-]+$ (it is used in URLs and backup paths)")
 if problems:
     print(f"instance {sys.argv[1]}: INVALID\n  - " + "\n  - ".join(problems)); sys.exit(1)
 print(f"instance {sys.argv[1]}: ok (id {inst['id']}, {len(given)} inputs)")
@@ -70,7 +72,12 @@ if [ "$DRY_RUN" = 1 ]; then printf 'dry-run: validation passed, nothing deployed
 [ -n "${HASS_SERVER:-}" ] && [ -n "${HASS_TOKEN:-}" ] || die "HASS_SERVER / HASS_TOKEN not set"
 command -v hass-cli >/dev/null || die "hass-cli not on PATH"
 command -v jq >/dev/null || die "jq not on PATH"
-api() { curl -sS --fail-with-body -H "Authorization: Bearer $HASS_TOKEN" -H 'Content-Type: application/json' "$@"; }
+# The token never appears in argv (process listings): curl reads the header from a 0600 temp file.
+HDR=$(mktemp) || die "mktemp failed"
+chmod 600 "$HDR"
+printf 'Authorization: Bearer %s\n' "$HASS_TOKEN" > "$HDR"
+trap 'rm -f "$HDR"' EXIT
+api() { curl -sS --fail-with-body -H @"$HDR" -H 'Content-Type: application/json' "$@"; }
 
 # --- 3. back up current instance configs -----------------------------------------------
 mkdir -p deploy
