@@ -20,6 +20,7 @@ tcb_manifest_sha: 4a438dd869bcabb21e5ca110d95a40a5b33a183ac1c7fb461d2c5ba581372c
 tcb_baseline: /home/martin/AI/reviews/tcb-baseline-16ef53e7f973185a.txt
 TCB_EXTRA: /home/martin/AI/projects/Blueprints_Home/scripts/deploy-blueprint.sh
 declared_tcb_changes:
+  c48beb2e4ec438f8a2bea059a1dd2e63d7cda48de1faf0897f9cb90af53101b5  /home/martin/AI/projects/Blueprints_Home/scripts/deploy-blueprint.sh    # code-time board 20260907-143611 R2-001/R2-002: token via 0600 header file, instance-id validation (re-baseline at [7] merge)
 ```
 
 **Execution mode:** subagent-driven — T1 and T2 to Sonnet subagents (well-specified: the test code and the YAML are in this plan verbatim), T3 to Sonnet, T4 in the main loop (operator-visible live deploy). Boards at standard dial (R1 Opus + R2 Codex) at design-time (before T1) and code-time (after T3, before T4). `/effort xhigh` at both gates, `high` otherwise.
@@ -1574,3 +1575,13 @@ Step 9: Report `deploy: PASS=N FAIL=M` over the eight steps above.
 - **[4] design-time board** runs on spec + this plan before Task 1 (`triple-check` → `convene-board`, standard dial, R1 Opus + R2 Codex, `/effort xhigh`).
 - **[6] code-time board** runs on the branch diff after Task 3 (`review-shipped` → `convene-board`), then `code-review-gate`, PR with `Session: #11`, merge, Task 4.
 - **Session 2 (heating rack v2.0.0)** gets its own plan after this session closes; spec §4 is its input.
+
+---
+
+## Code-time board 20260907-143611 — fix wave (post-execution)
+
+The inline test/YAML blocks above are the pre-board plan text; the shipped files on the branch are authoritative after this wave. Changes applied in-session:
+- `scripts/deploy-blueprint.sh`: Authorization header via a 0600 temp file (`-H @file`, removed on EXIT) — token never in argv (R2-001, RED→GREEN verified in `ps`); instance id validated against `^[A-Za-z0-9_-]+$` (R2-002). Declared TCB change (header above).
+- `bathroom_ventilator.yaml`: mold push nested in a choose gated on the fan entity existing and not `unavailable` (R1-02); `sensors_lost_minutes = 9999` when the humidity entity is absent (R1-04); `night_end` + `boost_runtime_min` descriptions (R1-06).
+- Tests: mold gate shape + condition pin; presence boundary rows 14/16 (R1-05); missing-entity → degraded row; every-input-has-description pin; deploy tests for unsafe id and token-not-in-argv.
+- Docs/spec: run-cap exceptions (boost/mold) and manual-off semantics (R1-03, R2-003); degraded drill via a forced `unavailable` state, not entity-disable (R1-01); token/id hardening in spec §5.
