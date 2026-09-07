@@ -9,3 +9,4 @@ ruvector.db
 agentdb.rvf*
 __pycache__/
 deploy/*.prev.json
+reviews/.board-*/
