@@ -47,7 +47,7 @@ New:
 | `boost_runtime_min` | 20 | 5–60 min | Boost auto-expires: the toggle is switched off after this long. |
 | `sensor_grace_min` | 10 | 1–60 min | Sensor must be unavailable/unknown this long before degraded mode. |
 | `degraded_run_min` | 20 | 5–60 min | In degraded mode the fan runs this long after the last motion. |
-| `notify_targets` | `[]` | text, multiple | `notify.*` services for push (cloned from the rack convention). |
+| `notify_targets` | `[]` | text, multiple | `notify.*` services for push (cloned from the rack convention). Entries are filtered to `^notify[.][a-z0-9_]+$` before dispatch, so a typo or a non-notify service name is dropped rather than called. |
 
 Removed (instance migration drops them): `shower_humidity_rise`, `shower_motion_minutes`, `post_shower_min_runtime` → `min_runtime`, `post_shower_max_runtime` → `max_runtime`, `high_humidity_max_runtime` (unified into `max_runtime`), `enable_refresh_cycles`, `refresh_interval_hours`, `refresh_duration_minutes`, `refresh_skip_below`.
 
@@ -85,7 +85,8 @@ Removed (instance migration drops them): `shower_humidity_rise`, `shower_motion_
 | # | Condition | Desired |
 |---|---|---|
 | 1 | `boost_active` | ON |
-| 2 | `not sensors_ok` (degraded mode) | `degraded_on` |
+| 2 | `not sensors_ok and sensors_lost_minutes ≥ sensor_grace_min` (degraded mode) | `degraded_on` |
+| 2b | `not sensors_ok` within the grace window (hold) | unchanged (`fan_is_on`) |
 | 3 | `mold_on` (any hour) | ON |
 | 4 | `fan_is_on and fan_on_minutes < min_runtime` | ON |
 | 5 | `fan_is_on and fan_on_minutes ≥ max_runtime` | OFF |
@@ -99,9 +100,9 @@ The fan service (`homeassistant.turn_on/off`) is called only when `desired != fa
 ### 3.5 Side effects
 
 - `boost_expired` → `input_boolean.turn_off` on that toggle (done after the fan call so the resulting `boost_change` run sees a consistent state).
-- `sensors_lost` trigger → persistent notification `ventilator_sensor_warning` (create once) + push once: "Bathroom humidity sensor offline for N min — fan now runs 20 min after motion."
-- `sensors_back` trigger with `now − trigger.from_state.last_changed ≥ sensor_grace_min` → dismiss `ventilator_sensor_warning` + push "sensor back, normal control resumed". Shorter blips stay silent.
-- `mold_on and not fan_is_on` (edge) → persistent `ventilator_mold_warning` on every edge; the push additionally requires the fan to have been unchanged for ≥ 60 min, because a persisting mold condition re-enters this edge after every max-run cycle (45 on / 5 off) and would otherwise push every ~50 min. `not mold_on` → dismiss (no-op when absent).
+- Sensor warning is **state-driven**: every run creates `ventilator_sensor_warning` while `not sensors_ok and sensors_lost_minutes ≥ sensor_grace_min` (idempotent per id) and dismisses it while `sensors_ok`. That way an outage that is already live when v2 is deployed (the Aqara sensor today) is announced in HA even though no edge fires for it. `sensors_lost_minutes` is derived from the failing sensor's `last_changed`.
+- Mobile push is **edge-driven**: `sensors_lost` trigger → one push "Bathroom humidity sensor offline for N min — fan now runs 20 min after motion"; `sensors_back` trigger with `now − trigger.from_state.last_changed ≥ sensor_grace_min` and `sensors_ok` → one push "sensor back, normal control resumed". Shorter blips stay silent; an outage live at (re)load gets no "offline" push but does get the "back" push when it ends.
+- `mold_on and not fan_is_on` (edge) → persistent `ventilator_mold_warning` + push. Rule 3 outranks rule 5, so the fan stays on for the whole mold episode and this edge fires once per episode; no extra de-duplication is needed. `not mold_on` → dismiss (no-op when absent).
 - Recovery push (`sensors_back`) requires both sensors numeric at that moment; if only the temperature sensor returns later, degraded mode ends silently on the next tick (both live on one Aqara device, so this is theoretical).
 - Push fan-out mirrors the rack: `repeat for_each notify_targets` with `continue_on_error: true` on each call.
 - Manual run (`trigger.id` missing) → debug persistent notification with every computed variable, including the chosen weather entity and `rh_floor`.
@@ -110,10 +111,10 @@ The fan service (`homeassistant.turn_on/off`) is called only when `desired != fa
 
 | Case | Behaviour |
 |---|---|
-| Sensor died with the fan on | Degraded mode: rule 2 turns the fan off 20 min after the last motion. |
+| Sensor died with the fan on | For the first `sensor_grace_min` the fan is held as-is (rule 2b); then degraded mode (rule 2) turns it off 20 min after the last motion. |
 | Outdoor dew point + delta ≥ indoor temperature | `rh_floor` = 100 → rules 7/8 never fire; mold override still requires `dp_delta > 0`. |
 | Both weather entities unavailable | Conservative default outdoor_dp (13 °C) keeps ventilation allowed; debug dump says "weather: none". |
-| Manual plug press (Hue button, app) | Plug `last_changed` restarts the run clock; rules apply on the next trigger (min-run respected). A manual ON is therefore capped at `max_runtime` (45 min) by rule 5 and may be restarted by rule 8 in daytime; the boost toggle is the intended manual path and behaves the same way but announces itself in the trace. |
+| Manual plug press (Hue button, app) | Plug `last_changed` restarts the run clock. With normal indoor RH a manual ON is held only by rule 4 (`min_runtime`, 15 min) and then falls through to rule 9, so it is switched off after ~15 min; with RH above the stop target it continues under rule 7 up to `max_runtime`. The boost toggle is the intended manual path: rule 1 holds the fan for the full `boost_runtime_min` regardless of RH. |
 | HA restart | Hue entities re-enter the state machine at startup, so `last_changed` for the plug and the motion sensor equals the restart time: an already-running fan gets a fresh run budget (bounded by `max_runtime`) and presence reads "recent" for `presence_window_min`. Both are harmless and bounded. |
 | HA restart mid-run | `ha_start` re-evaluates; `last_changed` survives for Hue entities within the restart (state restored from the bridge), worst case one extra min-run. |
 | Aqara re-pair changes entity ids | Deploy script re-points the instance inputs from a mapping file. |
@@ -156,8 +157,9 @@ Basis: 10-day bathroom presence clusters on weekdays 19:19–20:53 local; the cu
 
 ## 5. Deploy script — `scripts/deploy-blueprint.sh`
 
-`deploy-blueprint.sh <yaml-file> <ha-blueprint-path> [instance.json ...]`
+`deploy-blueprint.sh [--dry-run] <yaml-file> <ha-blueprint-path> [instance.json ...]`
 
+0. `--dry-run` (first argument) runs step 2 only and exits 0 on success, 1 on any validation problem; no credentials are read and nothing is sent. This is the mode the structure tests and the plan's pre-deploy checks use.
 1. Sources `~/.config/hass-cli/env` (never echoes the token); refuses to run without `HASS_SERVER`/`HASS_TOKEN`.
 2. Validates the YAML parses and that every input key referenced by each `instance.json` exists in the blueprint's input schema (catches the "unknown key → unavailable" trap before touching HA).
 3. `blueprint/save` (WS, `allow_override: true`) via `hass-cli raw ws`.
