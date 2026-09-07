@@ -101,25 +101,25 @@ An intelligent bathroom exhaust fan automation using dew point comparison for op
 ## Bathroom Heating Rack Blueprint
 
 ### Overview
-Pre-heats a bathroom heating rack for scheduled routines (adult morning, kids bath) using a dynamic **ΔT-based warmup formula** that self-adjusts across seasons — no calendar boundaries needed. Predictive motion in the hall (morning) or on the stairs (evening) pulls the warmup start forward when someone is up early. Coordinates with the exhaust fan via `preset=eco` to avoid evicting freshly heated air during showers.
+Pre-heats a bathroom heating rack for scheduled routines (adult morning, kids bath) using a dynamic **ΔT-based warmup formula** that self-adjusts across seasons — no calendar boundaries needed. A **comfort floor** keeps the rack off while the room is already within `comfort_floor_delta` (default 1 °C) of the slot target, so a warm bathroom gets no pre-heat and no hold. Scheduled routines pause while the exhaust fan runs; a boost toggle gives an ad-hoc heat-up; a vacation toggle switches the rack off.
 
 ### Features
-*   **🌡️ Dynamic Warmup:** Computes lead time from the current indoor-to-target temperature gap, so cold winter mornings get a longer pre-heat than warm summer mornings without any calendar configuration.
-*   **📅 Dual-Slot Routines:** Primary + optional secondary slot per phase (e.g., Morning A = Mon–Fri 06:45, Morning B = Sat–Sun 08:30). Evening A for kids bath, Evening B for an optional adult evening.
-*   **🏃 Predictive Motion Override:** Hall motion (morning) and stairs motion (evening) within a calculated lead window start the warmup immediately — useful when you're up before the scheduled time.
-*   **⚡ Ad-hoc Boost Toggle:** Flip an `input_boolean` for an instant N-minute heat-up at a configurable boost temperature. Auto-expires cleanly.
-*   **🌀 Ventilator Coordination:** Pauses active heating (via `preset=eco`) while the exhaust fan is running — no point heating air that's being evicted.
-*   **🏖️ Vacation Mode:** Optional `input_boolean` cleanly disables the whole blueprint.
-*   **🪶 Idempotent:** Evaluates every minute for precise timing, but only sends climate service calls on actual state transitions — ~4–10 service calls/day.
-*   **🔍 Debug-Friendly:** Manual "Run" produces a persistent notification dumping all computed state (ΔT, warmup, each slot's auto_start / effective_start / active flags, winning priority).
-*   **📱 Mobile Push (v1.1.0+):** Opt-in push notifications via HA Companion (`notify.mobile_app_*`) for three high-signal events — climate unavailable, temperature-sensor warning, and warmup started. Multi-target fan-out; empty list disables push. Per-user opt-in via the `Mobile Push Targets` input; all five in-HA persistent notifications still fire.
+*   **🌡️ Dynamic Warmup:** Computes lead time from the current indoor-to-target temperature gap (`warmup_base + warmup_per_degree × ΔT`, clamped between a floor and a cap), so cold winter mornings get a longer pre-heat than warm summer mornings without any calendar configuration.
+*   **🎯 Comfort Floor (v2.0.0):** A slot heats only while `indoor < target − comfort_floor_delta`. At or above that line the slot is satisfied — no pre-heat, no hold. While the device holds that slot's setpoint a 0.5 °C release deadband and a latched opening edge keep a noisy sensor from flipping the setpoint; without the room sensor the floor is suspended and a warning is raised.
+*   **📅 Dual-Slot Routines:** Primary + optional secondary slot per phase (e.g., Morning A = Mon–Fri 06:45, Morning B = Sat–Sun 08:30). Evening A for kids bath, Evening B for an optional adult evening. A hold-until at or before target-warm is taken as the next day.
+*   **⚡ Ad-hoc Boost Toggle:** Flip an `input_boolean` for an instant N-minute heat-up at a configurable boost temperature. Auto-expires cleanly; boost is explicit intent and is not paused by the fan.
+*   **🌀 Ventilator Coordination:** Scheduled routines drop to `idle_setpoint` while the exhaust fan entity is on — no point heating air that's being evicted.
+*   **🏖️ Vacation Mode:** Optional `input_boolean`(s) switch the rack off.
+*   **🪶 Idempotent:** Evaluates every minute for precise timing, rounds the setpoint to the device `target_temp_step` and clamps it to the device range, and only sends climate service calls on actual transitions.
+*   **🔍 Debug-Friendly:** Manual "Run" produces a persistent notification dumping all computed state (indoor temp, step, each slot's ΔT / warmup / auto_start / hold_until / in_window / active, winning priority, desired mode + setpoint).
+*   **📱 Mobile Push:** Opt-in push via HA Companion (`notify.mobile_app_*`) for three high-signal events — climate unavailable (once, after 5 min), room sensor offline (once, after 10 min), and warmup started (once per transition, dismissed when the setpoint returns to idle). Targets are filtered to `notify.*` names, every push runs after the climate calls, and an empty list disables push. A target that does not exist aborts the run at the push step (HA does not suppress a missing action) — check it exists after editing.
 
 ### Requirements
-*   `climate` entity wrapping the heating rack (e.g., a `generic_thermostat` over a smart plug + bathroom temp sensor)
-*   Bathroom temperature sensor (e.g., Aqara)
-*   Hall + stairs motion sensors for predictive start (e.g., Philips Hue)
-*   Ventilator switch entity (for coordination — matches bathroom_ventilator blueprint's light-domain convention)
+*   `climate` entity for the heating rack (tested on a Tuya cloud thermostat element that reports `unknown` while on)
+*   Bathroom temperature sensor (`device_class: temperature`); the climate entity's `current_temperature` is the fallback
+*   Ventilator entity (or the group mirroring it) for coordination
 *   Two `input_boolean` helpers: one for Ad-hoc Boost (required), one for Vacation (optional)
+*   Optional: `notify.*` services for mobile push
 
 ### Installation
 1. Click the button below to import this blueprint into your Home Assistant instance:

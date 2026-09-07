@@ -1,61 +1,59 @@
-# Requirements: Bathroom Heating Rack Blueprint
+# Requirements: Bathroom Heating Rack Blueprint (v2.0.0)
 
 ## Overview
-Pre-heats the bathroom using the smart heating rack (`climate.heatingrack_bathroom`) so it is at comfort temperature in time for scheduled routines — adult morning and kids bath — while idling in eco the rest of the day.
+Pre-heats the bathroom with the heating rack (`climate.heatingrack_bathroom`) so it is warm in time for scheduled routines — adult morning and kids bath — and idles at a frost-protect setpoint the rest of the day. v2.0.0 adds a comfort floor (no heating when the room is already warm), removes predictive motion, and makes every notification edge-triggered.
 
 ## Goals
-1. **Scheduled pre-heat** with dynamic warmup based on current indoor-to-target ΔT (self-adjusts across seasons without calendar boundaries).
-2. **Dual slot per phase:** Morning A (primary, default Mon–Fri) + Morning B (optional, weekend). Evening A (kids bath) + Evening B (optional adult evening).
-3. **Predictive motion override:** hall motion pulls morning auto-start forward; stairs motion does the same for evening.
+1. **Scheduled pre-heat** with a dynamic warmup lead based on the indoor-to-target ΔT (self-adjusts across seasons without calendar boundaries).
+2. **Comfort floor:** a slot heats only while the room is below `target − comfort_floor_delta` (default 1 °C). A bathroom that is already warm gets no pre-heat and no hold. While the device holds that slot's setpoint the slot is "heating": it stays active until the room is 0.5 °C above the line (release deadband — the room sensor swings ±0.3 °C between reports) and its opening edge is latched at `target_warm − warmup_max` (the ΔT lead moves with sensor noise). Without the room sensor the floor is suspended: slots heat on schedule (v1 behaviour, the device thermostat bounds the temperature) and a warning is raised.
+3. **Dual slot per phase:** Morning A (primary, default Mon–Fri) + Morning B (optional, weekend). Evening A (kids bath) + Evening B (optional adult evening).
 4. **Ad-hoc boost:** user-flipped `input_boolean` gives N minutes at a configurable boost temperature, then auto-expires.
-5. **Ventilator coordination:** pause active heating (via `preset=eco`) while the bathroom exhaust fan is running — avoids evicting freshly heated air.
-6. **Idle eco:** when no routine is active, hold `preset=eco` so the thermostat stays on a frost-protect floor and resumes quickly.
-7. **Vacation / full-off:** optional `input_boolean` cleanly disables the whole blueprint.
-8. **Idempotent:** ~1440 ticks/day but only 4–10 service calls/day (only on transitions).
+5. **Ventilator coordination:** scheduled routines pause (setpoint → `idle_setpoint`) while the bathroom exhaust fan is running — avoids evicting freshly heated air. Boost is explicit user intent and is not paused.
+6. **Idle:** when no routine is active the thermostat holds `idle_setpoint` (default 7 °C, the device minimum) in `heat_cool`.
+7. **Vacation / full-off:** optional `input_boolean` switches the rack off.
+8. **Idempotent:** ~1440 ticks/day but only a handful of service calls/day (on transitions only). The setpoint is rounded to the device `target_temp_step` and clamped to its `min_temp`/`max_temp` so the comparison is exact and HA never rejects the value.
 
-## Hardware
-- `climate.heatingrack_bathroom` — generic_thermostat wrapping the heating rack's smart plug (`switch.heating_switch`) with `sensor.bathroom_temperature` as the temp source
-- `sensor.bathroom_temperature` (Aqara) — indoor temp for ΔT calculation (primary)
-- `binary_sensor.hall_motion` — morning predictive-motion trigger
-- `binary_sensor.stairs_motion` — evening predictive-motion trigger
-- `light.heater` — ventilator smart plug, observed for coordination
+## Hardware (live 2026-09-07)
+- `climate.heatingrack_bathroom` — Tuya cloud "ECOSO WIFI Element" (category wk). HA state is `unknown` while the switch is on and the mode is eco (the normal ON state — the blueprint treats it as `heat_cool`) and `off` when the switch is off. No `hvac_action`. `target_temp_step` 1.0, min 7, max 30. Its own sensor reads ~1.4 °C warmer than the room sensor and governs the element while a slot is active.
+- `sensor.bathroom_temperature` — the Hue motion sensor's temperature (reports every ~5 min, 0.1 °C); primary input for ΔT and the comfort floor. Fallback: the climate entity's `current_temperature`.
+- `light.heater` — Hue room group mirroring the exhaust-fan plug (`light.on_off_plug_1`, the ventilator blueprint's target); observed for coordination.
+- `input_boolean.heating_rack_boost`, `input_boolean.heating_rack_vacation` — helpers.
+- `notify.mobile_app_martin_fold` — the only push target.
 
-## Warmup Formula
+## Warmup formula
 ```
-ΔT            = max(0, target_temp - indoor_temp)
-warmup_min    = clamp(
-                  warmup_base + warmup_per_degree * ΔT,
-                  warmup_min_minutes, warmup_max_minutes
-                )
-auto_start    = target_warm − warmup_min minutes
+ΔT            = max(0, target_temp − indoor_temp)
+warmup_min    = clamp(warmup_base + warmup_per_degree × ΔT, warmup_min_minutes, warmup_max_minutes)
+auto_start    = target_warm − warmup_min
+in_window     = today in days AND auto_start ≤ now < hold_until
+heating       = device setpoint == this slot's rounded target
+open          = target_warm − (warmup_max_minutes if heating else warmup_min)
+in_window     = today in days AND open ≤ now < hold_until
+floor         = target_temp − comfort_floor_delta (+ 0.5 while heating)
+active        = in_window AND (room sensor offline OR indoor_temp < floor)
 ```
+`hold_until` at or before `target_warm` is taken as the next day; the slot is evaluated per calendar day, so such a window runs until midnight.
 
-## Priority Order (v1.1.1+)
-1. Vacation / Off (highest)
-2. Ad-hoc Boost (explicit user intent — beats fan coordination)
-3. Ventilator coordination (pause via eco; applies to scheduled P4/P5 routines only)
-4. Evening Routine (A or B)
-5. Morning Routine (A or B)
-6. Idle (default — mode=heat_cool, preset=eco)
+## Priority order (first match wins)
+1. Vacation / Off — `hvac_mode: off`, setpoint untouched
+2. Ad-hoc Boost — `boost_target_temp`
+3. Ventilator coordination (scheduled routines only) — `idle_setpoint`
+4. Evening routine (A or B) — slot target
+5. Morning routine (A or B) — slot target
+6. Idle — `idle_setpoint`
 
-Prior to v1.1.1, fan coordination was evaluated before Boost. Tapping the boost toggle while the exhaust fan was running silently demoted the request to a fan-pause (setpoint pinned to `idle_setpoint`, no heating). v1.1.1 reorders the waterfall so an explicit user Boost overrides automatic fan coordination. Scheduled P4/P5 routines remain fan-paused because those don't represent an explicit user action. The labels `P2_fan_coord` and `P3_boost` are historical — the numeric suffix no longer reflects evaluation order.
+Labels in traces (`P1_vacation`, `P3_boost`, `P2_fan_coord`, `P4_evening`, `P5_morning`, `P6_idle`) are historical: the numeric suffix is not the evaluation order.
 
-## Testing & Debugging
-Manual "Run" in HA produces a persistent notification dumping all computed variables (indoor temp, ΔT, warmup_min, each slot's auto_start / effective_start / active flags, current priority winner, service-call decisions).
+## Triggers
+Every minute (`periodic`), boost/vacation/fan `on`↔`off` (attribute-only updates ignored), HA start, climate entity `unavailable` for 5 min (`climate_lost`), room sensor non-numeric for 10 min (`temp_lost`). `mode: restart`.
 
-## Mobile Push Notifications (v1.1.0+)
+## Notifications
+- **Climate unavailable** — in-HA warning follows the state (created while unavailable, dismissed when back); one push after 5 min (`climate_lost`); the run stops while the entity is unavailable.
+- **Room sensor offline** — in-HA warning follows the state (created while `sensor.bathroom_temperature` is non-numeric, dismissed when back) and names the fallback in use (the rack's own sensor, or 20 °C); one push after 10 min (`temp_lost`). The comfort floor is suspended meanwhile; the run continues.
+- **Warmup started** — once per transition, on the tick that raises the setpoint from idle (`enable_notifications` gates persistent + push); dismissed on the tick that returns the setpoint to idle. Idle is compared as the device holds it (rounded to the step, clamped to the range). A fan pause and resume inside a window is a new transition.
+- **Debug** — manual run only: every computed variable (indoor temp, step/range/idle, push list, each slot's ΔT / warmup / auto_start / open / hold_until / heating / floor / in_window / active, the priority winner, desired mode and setpoint).
 
-In addition to the persistent notifications always shown inside Home Assistant, the blueprint can fan out a subset of events to any number of HA Companion `notify.mobile_app_*` services (or other `notify.*` services) via the `notify_targets` multi-select input.
+Push fan-out: `notify_targets` entries are filtered to well-formed `notify.<name>` service names before dispatch; each call carries `continue_on_error: true`, which covers runtime errors from a reachable service but **not** a missing action — HA aborts the run at a `notify.*` name that does not exist (verified live 2026-09-07 with a throwaway script). Every push therefore runs after the climate calls, and the deploy step checks that each target exists.
 
-**Input:** `notify_targets` — list of full notify service names (e.g. `notify.mobile_app_martin`). Default is empty (push disabled).
-
-**Events that push** (when `notify_targets` is non-empty):
-1. **Climate unavailable** — hard error, automation halts. Fires unconditionally.
-2. **Temperature sensor warning** — both primary sensor and `climate.current_temperature` unavailable; warmup formula falls back to 20°C and lead time becomes inaccurate. Fires unconditionally.
-3. **Warmup started** — transition into an active routine (P3 boost / P4 evening / P5 morning). Gated by the existing `enable_notifications` input (push and persistent share the same gate for this event).
-
-**Events that do NOT push** (stay persistent-notification-only):
-- Target reached — fires on many consecutive minute ticks while within 0.5°C of setpoint; pushing would be spam.
-- Debug (manual-run dump) — only fires on a manual `automation.trigger` call, when the user is already at the HA UI.
-
-**Failure isolation:** if a single target in the list is mistyped or its device is logged out, that iteration errors in the automation trace but the remaining targets still receive the push and the automation does not halt.
+## Testing
+`tests/test_bathroom_heating_rack_structure.py` pins the input schema, the trigger roster (`to:` filters, the two `for:` outage triggers), the action shape (pushes after the climate calls, edge-gated outage pushes, boost expiry last, no preset calls, no motion remnants), and renders the templates for weekday, setpoint rounding and clamping, the device idle value, the notify filter, warmup lead, comfort-floor gating with the slot-keyed deadband and latched opening edge, the suspended floor without the room sensor, window bounds, hold-until anchoring, priority rows and both notification edges; it also dry-runs the deploy script against the instance JSON.
