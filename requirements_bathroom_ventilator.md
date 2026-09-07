@@ -1,41 +1,40 @@
-# Requirements: Bathroom Ventilator Blueprint
+# Requirements: Bathroom Ventilator Blueprint (v2.0.0)
 
 ## Overview
-An intelligent bathroom ventilator automation using dew point comparison for the Dutch climate (Laren, Netherlands). Controls an exhaust fan via a smart plug based on indoor/outdoor moisture conditions.
+Demand-controlled bathroom exhaust fan for the Dutch climate (Laren). An on/off fan on a smart plug is driven by indoor humidity, outdoor dew point, presence and a manual boost. The fan never runs on a timer schedule: trickle vents supply background air, the fan exhausts on demand (ASHRAE 62.2 §5 demand-controlled mode; Bbl art. 3.67 lid 6 is a capacity minimum, met by the TURBOE.125 at 230–345 m³/h).
 
 ## Goals
-1. **Humidity Management:** Keep bathroom humidity below 60% RH to prevent mold.
-2. **Dew Point Intelligence:** Use indoor vs. outdoor dew point comparison (not raw RH%) to determine if ventilation is effective.
-3. **Shower Detection:** Automatically detect showers via sustained motion + humidity spike, and ventilate for 15-45 min.
-4. **Night Mode:** No fan activity between 22:00-05:30 except for shower detection.
-5. **Air Refresh:** Periodic 10-min cycles every 3 hours (daytime only), toggleable for when trickle vents are installed.
-6. **Mold Safety:** Force fan ON if humidity exceeds 85% for 60+ minutes, regardless of all other conditions.
+1. **Outdoor-conditioned targets:** the effective stop target is the higher of the configured target (60 % RH) and the indoor RH whose dew point equals outdoor dew point + margin (2 °C). The start threshold sits hysteresis (5 %) above it. The fan stops where ventilation stops helping.
+2. **Shower detection at any hour:** a humidity jump of ≥ 6 % between two consecutive sensor reports (the Aqara T1 reports instantly on that change) with bathroom motion within the last 15 min. Quiet hours (22:00–05:30) only block new non-shower starts.
+3. **Bounded runs:** every run lasts at least 15 min and at most 45 min; a run continues while RH is above the effective stop target.
+4. **Mold safety:** RH ≥ 85 % with drier outdoor air forces the fan on at any hour, with one notification.
+5. **Degraded mode:** humidity sensor unavailable ≥ 10 min → one push + persistent notification; the fan then runs 20 min after any motion until the sensor returns (second push on recovery).
+6. **Boost:** an `input_boolean` toggle forces the fan on for 20 min, then clears itself.
+7. **Stateless:** every trigger re-decides from live entity state; timing comes from `last_changed`; no delays, so boost and sensor loss interrupt instantly.
 
-## Hardware
-- Smart plug (switch entity) controlling the ventilator
-- Aqara temperature + humidity sensor (indoor)
-- Philips Hue motion sensor
-- OpenWeatherMap weather entity (outdoor temp + humidity)
+## Hardware (live 2026-09-07)
+- `light.on_off_plug_1` — innr On/Off plug on the Hue bridge, feeds the TURBOE.125 tube fan (25–29 W, 29–34 dBA)
+- `sensor.temp_sensor_bathroom` + `sensor.temp_sensor_bathroom_humidity_sensor` — Aqara T1 via Aqara Hub M2 (HomeKit); reports on ΔRH ≥ 6 % / ΔT ≥ 0.5 °C, else hourly
+- `binary_sensor.bathroom_motion` — Hue motion sensor (bridge-controlled clear delay)
+- `weather.home_sm` (Met.no, has `dew_point`) primary; `weather.openweathermap` fallback
+- `input_boolean.bathroom_fan_boost` — dashboard boost toggle
+- `notify.mobile_app_martin_fold` — push target
 
-## Key Thresholds (all configurable)
-- Target humidity: 60% RH (fan stops below this)
-- High humidity: 75% RH (non-shower ventilation trigger)
-- Mold alarm: 85% RH sustained 60+ min
-- Dew point delta minimum: 2.0°C (below this, ventilation is ineffective)
-- Shower detection: 10% RH rise + 5 min sustained motion
-- Hysteresis: 5% RH buffer to prevent cycling
+## Decision order (first match wins)
+1. boost active → ON
+2. sensors unavailable → ON iff motion within the last 20 min
+3. mold override (RH ≥ 85 %, indoor dew point above outdoor) → ON
+4. fan on for < 15 min → stay ON
+5. fan on for ≥ 45 min → OFF
+6. shower signature → ON
+7. fan on and RH > effective stop target → stay ON
+8. fan off, RH > start threshold, not quiet hours → ON
+9. otherwise → OFF
 
-## Dew Point Logic
-Uses the Magnus formula to compute dew point from temperature and relative humidity:
-- Td = (243.04 * alpha) / (17.625 - alpha)
-- alpha = (17.625 * T) / (243.04 + T) + ln(RH / 100)
+## Psychrometrics
+Magnus: α = 17.625·T/(243.04+T) + ln(RH/100); Td = 243.04·α/(17.625−α).
+Adaptive floor: RH_floor = 100·exp(17.625·Td'/(243.04+Td') − 17.625·T/(243.04+T)) with Td' = outdoor dew point + margin; 100 when Td' ≥ T.
+Example: bathroom 22 °C, outdoor dew point 16 °C, margin 2 → floor 78.1 %; the fan stops at 78 % instead of running toward an unreachable 60 %.
 
-Ventilation is effective when indoor dew point exceeds outdoor dew point by > 2°C.
-
-## Priority Order
-1. Mold safety override (always)
-2. Target achieved — stop fan
-3. Post-shower ventilation (day + night)
-4. High humidity, non-shower (day only, dew point gated)
-5. Air refresh cycle (day only, humidity gated, toggleable)
-6. Default — fan OFF
+## Testing & debugging
+Manual "Run" writes a persistent notification with every computed variable (weather entity used, outdoor dew point, floor, stop/start targets, fan minutes, presence, flags, decision). `tests/test_bathroom_ventilator_structure.py` pins the schema, triggers, decision order and renders the psychrometric and decision rows.
