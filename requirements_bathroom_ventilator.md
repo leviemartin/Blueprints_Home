@@ -6,7 +6,7 @@ Demand-controlled bathroom exhaust fan for the Dutch climate (Laren). An on/off 
 ## Goals
 1. **Outdoor-conditioned targets:** the effective stop target is the higher of the configured target (60 % RH) and the indoor RH whose dew point equals outdoor dew point + margin (2 °C). The start threshold is the higher of the configured high-humidity start (75 %) and the effective stop target plus hysteresis (5 %). The fan stops where ventilation stops helping.
 2. **Shower detection at any hour:** a humidity jump of ≥ 6 % between two consecutive sensor reports (the Aqara T1 reports instantly on that change) with bathroom motion within the last 15 min. Quiet hours (22:00–05:30) only block new non-shower starts.
-3. **Bounded runs:** every run lasts at least 15 min and at most 45 min; a run continues while RH is above the effective stop target.
+3. **Bounded runs:** every run lasts at least 15 min and at most 45 min, except while a boost or the mold override is active (those outrank the cap: a boost runs its full runtime, the mold override runs until RH drops below 85 % or the outdoor air is no drier); a run continues while RH is above the effective stop target. A manual OFF on the plug is honoured for shower/high-humidity runs; mold override and degraded mode re-assert on the next evaluation.
 4. **Mold safety:** RH ≥ 85 % with drier outdoor air forces the fan on at any hour, with one notification.
 5. **Degraded mode:** humidity sensor unavailable ≥ 10 min → one push + persistent notification; the fan then runs 20 min after any motion until the sensor returns (second push on recovery).
 6. **Boost:** an `input_boolean` toggle forces the fan on for 20 min, then clears itself.
