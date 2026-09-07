@@ -65,11 +65,79 @@ declared_tcb_changes:
 
 **Files:**
 - Create: `tests/test_bathroom_ventilator_structure.py`
-- Test: itself
+- Create: `tests/test_deploy_blueprint_script.py`
+- Test: both files
 
 **Interfaces:**
 - Consumes: `bathroom_ventilator.yaml` (v1.0.0 now, v2.0.0 after Task 2).
-- Produces: helpers `get_var`, `render_chain`, `world`, `base_ctx` used by nothing else; the expected variable names Task 2 must emit: `indoor_temp_raw, indoor_rh_raw, sensors_ok, indoor_temp, indoor_rh, weather_candidates, weather_used, outdoor_temp, outdoor_rh, outdoor_dp, indoor_dp, dp_delta, rh_floor, stop_target, start_threshold, fan_is_on, fan_on_minutes, is_night, minutes_since_motion, presence_recent, shower_signal, boost_list, boost_active, boost_expired_list, degraded_on, mold_on, active_rule, desired_on`.
+- Produces: helpers `get_var`, `render_chain`, `render_at`, `world`, `base_ctx` used by nothing else; the expected variable names Task 2 must emit, in this file order: `indoor_temp_raw, indoor_rh_raw, sensors_ok, indoor_temp, indoor_rh, sensors_lost_minutes, notify_list, weather_candidates, weather_used, outdoor_temp, outdoor_rh, outdoor_dp, indoor_dp, dp_delta, rh_floor, stop_target, start_threshold, fan_is_on, fan_on_minutes, is_night, minutes_since_motion, presence_recent, shower_signal, boost_list, boost_active, boost_expired_list, degraded_on, mold_on, active_rule, desired_on`.
+
+- [ ] **Step 0: Write the deploy-script test (verbatim) — `tests/test_deploy_blueprint_script.py`** (spec §6 last bullet; the script itself is already committed and pinned, not edited here)
+
+```python
+"""Offline checks for scripts/deploy-blueprint.sh: syntax + the --dry-run input-key validation."""
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+SCRIPT = ROOT / "scripts" / "deploy-blueprint.sh"
+BP = ROOT / "bathroom_ventilator.yaml"
+HA_PATH = "leviemartin/bathroom_ventilator.yaml"
+REQUIRED = {
+    "fan_switch": "light.x", "humidity_sensor": "sensor.rh", "temperature_sensor": "sensor.t",
+    "motion_sensor": "binary_sensor.m", "weather_entity": "weather.w",
+}
+
+
+def run(*args):
+    return subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True)
+
+
+def instance(tmp_path, **extra):
+    cfg = {"id": "1774555916056", "alias": "x", "description": "",
+           "use_blueprint": {"path": HA_PATH, "input": {**REQUIRED, **extra}}}
+    p = tmp_path / "inst.json"
+    p.write_text(json.dumps(cfg))
+    return p
+
+
+def test_script_syntax():
+    assert subprocess.run(["bash", "-n", str(SCRIPT)]).returncode == 0
+
+
+def test_dry_run_accepts_valid_instance(tmp_path):
+    r = run("--dry-run", str(BP), HA_PATH, str(instance(tmp_path)))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "dry-run: validation passed" in r.stdout
+    assert "ok (id 1774555916056" in r.stdout
+
+
+def test_dry_run_rejects_unknown_key(tmp_path):
+    r = run("--dry-run", str(BP), HA_PATH, str(instance(tmp_path, refresh_bogus=1)))
+    assert r.returncode == 1
+    assert "unknown input keys" in r.stdout
+
+
+def test_dry_run_rejects_missing_required(tmp_path):
+    p = instance(tmp_path)
+    cfg = json.loads(p.read_text())
+    del cfg["use_blueprint"]["input"]["humidity_sensor"]
+    p.write_text(json.dumps(cfg))
+    r = run("--dry-run", str(BP), HA_PATH, str(p))
+    assert r.returncode == 1
+    assert "required inputs missing: humidity_sensor" in r.stdout
+
+
+def test_dry_run_rejects_bad_ha_path():
+    r = run("--dry-run", str(BP), "bogus")
+    assert r.returncode == 1
+    assert "ha-blueprint-path must look like" in r.stderr
+```
+
+This file is green against v1.0.0 and v2.0.0 alike (both require the same five device inputs); it exists to catch a regression in the pinned script's validation, not to gate the blueprint.
 
 - [ ] **Step 1: Write the test file (verbatim)**
 
@@ -199,6 +267,7 @@ def parse(s):
 
 def make_env(states):
     env = Environment()
+    env.tests["match"] = lambda v, pattern: re.match(pattern, str(v)) is not None   # HA's `match` test
     env.globals.update(
         states=states,
         now=lambda: NOW,
@@ -388,8 +457,9 @@ def test_trigger_roster(bp):
 
 
 def test_action_shape(bp):
+    # variables · sensor warning (state) · pushes (edge) · mold · fan · boost expiry · debug
     assert [step_kind(s) for s in bp["action"]] == [
-        "variables", "choose", "choose", "choose", "repeat", "choose",
+        "variables", "choose", "choose", "choose", "choose", "repeat", "choose",
     ]
     for s in bp["action"]:
         for d in walk(s):
@@ -398,30 +468,46 @@ def test_action_shape(bp):
                 assert "until" not in d["repeat"] and "while" not in d["repeat"]
 
 
-def test_sensor_loss_branches(bp):
+def test_sensor_warning_is_state_driven(bp):
+    # board R1-03: the Aqara outage is already live at deploy, so an edge trigger alone would never
+    # announce it; the persistent warning follows state (create past grace / dismiss when ok).
     ch = bp["action"][1]["choose"]
+    assert branch_cond(ch[0]) == (
+        "{{ (not sensors_ok) and sensors_lost_minutes | float >= sensor_grace_min | float }}"
+    )
+    c = ch[0]["sequence"][0]
+    assert step_kind(c) == "service:persistent_notification.create"
+    assert c["data"]["notification_id"] == "ventilator_sensor_warning"
+    assert c["continue_on_error"] is True
+    assert [step_kind(s) for s in ch[0]["sequence"]] == ["service:persistent_notification.create"]
+    assert branch_cond(ch[1]) == "{{ sensors_ok }}"
+    d = ch[1]["sequence"][0]
+    assert step_kind(d) == "service:persistent_notification.dismiss"
+    assert d["data"]["notification_id"] == "ventilator_sensor_warning"
+    assert d["continue_on_error"] is True
+
+
+def test_sensor_push_branches_are_edge_triggered(bp):
+    ch = bp["action"][2]["choose"]
     assert branch_cond(ch[0]) == "{{ trigger.id | default('') == 'sensors_lost' }}"
-    assert ch[0]["sequence"][0]["data"]["notification_id"] == "ventilator_sensor_warning"
-    assert step_kind(ch[0]["sequence"][0]) == "service:persistent_notification.create"
-    assert step_kind(ch[0]["sequence"][1]) == "repeat"
+    assert [step_kind(s) for s in ch[0]["sequence"]] == ["repeat"]
     assert branch_cond(ch[1]) == (
         "{{ trigger.id | default('') == 'sensors_back' and sensors_ok and "
         "trigger.from_state is not none and "
         "(now() - trigger.from_state.last_changed).total_seconds() >= sensor_grace_min | float * 60 }}"
     )
-    assert step_kind(ch[1]["sequence"][0]) == "service:persistent_notification.dismiss"
-    assert ch[1]["sequence"][0]["data"]["notification_id"] == "ventilator_sensor_warning"
+    assert [step_kind(s) for s in ch[1]["sequence"]] == ["repeat"]
 
 
 def test_mold_edge_branches(bp):
-    ch = bp["action"][2]["choose"]
+    ch = bp["action"][3]["choose"]
     assert branch_cond(ch[0]) == "{{ mold_on and not fan_is_on }}"
-    assert ch[0]["sequence"][0]["data"]["notification_id"] == "ventilator_mold_warning"
-    # create → hour-gate → push: a persisting mold condition must not push every max-run cycle
-    assert [step_kind(s) for s in ch[0]["sequence"]] == [
-        "service:persistent_notification.create", "condition", "repeat",
-    ]
-    assert norm(ch[0]["sequence"][1]["value_template"]) == "{{ minutes_since_fan_change | float >= 60 }}"
+    c = ch[0]["sequence"][0]
+    assert c["data"]["notification_id"] == "ventilator_mold_warning"
+    assert c["continue_on_error"] is True
+    # create → push; no bare `condition` step (board R1-01/R1-02: rule 3 outranks rule 5, so the
+    # edge already fires once per mold episode)
+    assert [step_kind(s) for s in ch[0]["sequence"]] == ["service:persistent_notification.create", "repeat"]
     assert branch_cond(ch[1]) == "{{ not mold_on }}"
     d = ch[1]["sequence"][0]
     assert step_kind(d) == "service:persistent_notification.dismiss"
@@ -430,20 +516,33 @@ def test_mold_edge_branches(bp):
 
 
 def test_fan_call_idempotent(bp):
-    ch = bp["action"][3]["choose"]
+    ch = bp["action"][4]["choose"]
     assert branch_cond(ch[0]) == "{{ desired_on and not fan_is_on }}"
     on = ch[0]["sequence"][0]
     assert step_kind(on) == "service:homeassistant.turn_on"
     assert on["target"]["entity_id"] == "{{ entity_fan }}"
+    assert on["continue_on_error"] is True          # a bridge hiccup must not abort boost expiry/debug
     assert branch_cond(ch[1]) == "{{ (not desired_on) and fan_is_on }}"
     off = ch[1]["sequence"][0]
     assert step_kind(off) == "service:homeassistant.turn_off"
     assert off["target"]["entity_id"] == "{{ entity_fan }}"
-    assert len(ch) == 2 and "default" not in bp["action"][3]
+    assert off["continue_on_error"] is True
+    assert len(ch) == 2 and "default" not in bp["action"][4]
+
+
+def test_no_bare_condition_steps_anywhere(bp):
+    # a bare `condition:` action inside a choose stops that choose's remaining actions (HA docs);
+    # this blueprint expresses every gate as a choose branch instead
+    for d in walk(bp["action"]):
+        if "condition" in d and "conditions" not in d and "value_template" in d:
+            for step in bp["action"]:
+                for seq_holder in walk(step):
+                    if "sequence" in seq_holder:
+                        assert d not in seq_holder["sequence"]
 
 
 def test_boost_expiry_step(bp):
-    rep = bp["action"][4]["repeat"]
+    rep = bp["action"][5]["repeat"]
     assert rep["for_each"] == "{{ boost_expired_list }}"
     s = rep["sequence"][0]
     assert step_kind(s) == "service:input_boolean.turn_off"
@@ -451,21 +550,25 @@ def test_boost_expiry_step(bp):
     assert s["continue_on_error"] is True
 
 
-def test_notify_fanout_continue_on_error(bp):
+def test_notify_fanout_continue_on_error_and_filtered_list(bp):
     hits = 0
     for d in walk(bp["action"]):
         if d.get("service") == "{{ repeat.item }}":
             hits += 1
             assert d.get("continue_on_error") is True
+        if "repeat" in d and d["repeat"].get("for_each") != "{{ boost_expired_list }}":
+            # board R2-001: only the filtered notify list may be dispatched as a service name
+            assert d["repeat"]["for_each"] == "{{ notify_list }}"
     assert hits >= 3   # sensors_lost, sensors_back, mold — each pushes
 
 
 def test_debug_block_manual_only(bp):
-    ch = bp["action"][5]["choose"]
+    ch = bp["action"][6]["choose"]
     assert branch_cond(ch[0]) == "{{ trigger.id | default('manual') == 'manual' }}"
+    assert ch[0]["sequence"][0]["continue_on_error"] is True
     msg = ch[0]["sequence"][0]["data"]["message"]
     for token in ("weather_used", "outdoor_dp", "rh_floor", "stop_target", "start_threshold",
-                  "active_rule", "fan_on_minutes", "minutes_since_motion"):
+                  "active_rule", "fan_on_minutes", "minutes_since_motion", "sensors_lost_minutes"):
         assert token in msg, token
     assert ch[0]["sequence"][0]["data"]["notification_id"] == "ventilator_debug"
 
@@ -478,10 +581,11 @@ def test_no_bare_boolean_text(bp):
 
 def test_decision_label_order(bp):
     ar = norm(get_var(bp, "active_rule"))
-    order = ["boost", "degraded", "mold", "min_run", "max_run", "shower", "continue", "start", "idle"]
+    order = ["boost", "degraded", "hold", "mold", "min_run", "max_run", "shower", "continue", "start", "idle"]
     idx = [ar.index(f"%}}{lbl}") if f"%}}{lbl}" in ar else ar.index(f"%}} {lbl}") for lbl in order]
     assert idx == sorted(idx)
     assert "{% if boost_active %}" in ar
+    assert "{% elif not sensors_ok and sensors_lost_minutes | float >= sensor_grace_min | float %}" in ar
     assert "{% elif not sensors_ok %}" in ar
     assert "{% elif mold_on %}" in ar
     assert "{% elif fan_is_on and fan_on_minutes | int < min_runtime | int %}" in ar
@@ -603,13 +707,35 @@ def test_rule_boost(bp):
     assert render_chain(bp, base_ctx(), w, "boost_expired_list")["boost_expired_list"] == ["input_boolean.boost"]
 
 
-def test_rule_degraded(bp):
-    w = world(**{"sensor.rh": _State("unavailable"), "binary_sensor.motion": _State("off", minutes_ago=10)})
+def test_rule_degraded_after_grace(bp):
+    # sensor unavailable for 30 min (> grace 10): degraded, fan follows motion recency
+    w = world(**{"sensor.rh": _State("unavailable", minutes_ago=30), "binary_sensor.motion": _State("off", minutes_ago=10)})
     assert _decide(bp, base_ctx(), w) == ("degraded", True)
-    w = world(**{"sensor.rh": _State("unavailable"), "binary_sensor.motion": _State("off", minutes_ago=30)})
+    w = world(**{"sensor.rh": _State("unavailable", minutes_ago=30), "binary_sensor.motion": _State("off", minutes_ago=30)})
     assert _decide(bp, base_ctx(), w) == ("degraded", False)
-    w = world(**{"sensor.t": _State("unknown"), "binary_sensor.motion": _State("on")})
-    assert _decide(bp, base_ctx(), w) == ("degraded", True)
+    w = world(**{"sensor.t": _State("unknown", minutes_ago=45), "binary_sensor.motion": _State("on")})
+    out = render_chain(bp, base_ctx(), w, "desired_on")
+    assert out["sensors_lost_minutes"] == 45.0
+    assert (out["active_rule"], out["desired_on"]) == ("degraded", True)
+
+
+def test_rule_hold_within_grace(bp):
+    # board R2-002: a 5-min blip (< grace 10) must not flip the fan either way
+    w = world(**{"sensor.rh": _State("unavailable", minutes_ago=5), "binary_sensor.motion": _State("on")})
+    assert _decide(bp, base_ctx(), w) == ("hold", False)          # fan was off → stays off
+    w = world(**{"sensor.rh": _State("unavailable", minutes_ago=5), "light.fan": _State("on", minutes_ago=3)})
+    assert _decide(bp, base_ctx(), w) == ("hold", True)           # fan was on → stays on
+    out = render_chain(bp, base_ctx(), w, "sensors_lost_minutes")
+    assert out["sensors_lost_minutes"] == 5.0
+
+
+def test_notify_list_filters_non_notify_services(bp):
+    ctx = base_ctx(notify_targets=["notify.mobile_app_martin_fold", "homeassistant.restart",
+                                   "mobile_app_pixel", "notify.bad-name", "notify.ok_2"])
+    out = render_chain(bp, ctx, world(), "notify_list")
+    assert out["notify_list"] == ["notify.mobile_app_martin_fold", "notify.ok_2"]
+    out = render_chain(bp, base_ctx(notify_targets=[]), world(), "notify_list")
+    assert out["notify_list"] == []
 
 
 def test_rule_mold_requires_drier_outdoor_air(bp):
@@ -669,8 +795,8 @@ Expected: many FAILs (`test_version_bumped`, schema, triggers, every render test
 - [ ] **Step 3: Commit (tests pillar)**
 
 ```bash
-git add tests/test_bathroom_ventilator_structure.py
-git commit -m "test(ventilator): v2.0.0 structure + rendered-logic pins (RED against v1.0.0)"
+git add tests/test_bathroom_ventilator_structure.py tests/test_deploy_blueprint_script.py
+git commit -m "test(ventilator): v2.0.0 structure + rendered-logic pins (RED against v1.0.0); deploy-script dry-run checks"
 ```
 
 Step 4: Report `PASS=N FAIL=M` for the full suite.
@@ -984,6 +1110,18 @@ action:
       sensors_ok: "{{ is_number(indoor_temp_raw) and is_number(indoor_rh_raw) }}"
       indoor_temp: "{{ indoor_temp_raw | float(20) }}"
       indoor_rh: "{{ indoor_rh_raw | float(50) }}"
+      # How long the failing sensor has been non-numeric (its last_changed is the moment it went
+      # unavailable/unknown). Drives the grace window for degraded mode and the warning.
+      sensors_lost_minutes: >-
+        {% if sensors_ok %}{{ 0 }}
+        {% elif not is_number(indoor_rh_raw) and states[sensor_humidity] is not none %}{{ ((now() - states[sensor_humidity].last_changed).total_seconds() / 60) | round(1) }}
+        {% elif states[sensor_temperature] is not none %}{{ ((now() - states[sensor_temperature].last_changed).total_seconds() / 60) | round(1) }}
+        {% else %}{{ 9999 }}
+        {% endif %}
+      # Only real notify services may be called by the push fan-out (an operator typo such as a
+      # bare service name or any non-notify service is dropped, never dispatched).
+      notify_list: >-
+        {{ (notify_targets if (notify_targets is iterable and notify_targets is not string) else ([notify_targets] if notify_targets else [])) | select('match', '^notify[.][a-z0-9_]+$') | list }}
 
       # --- Weather: first candidate with usable data ---
       weather_candidates: >-
@@ -1042,8 +1180,6 @@ action:
       fan_is_on: "{{ is_state(entity_fan, 'on') }}"
       fan_on_minutes: >-
         {{ (((now() - states[entity_fan].last_changed).total_seconds() / 60) | int) if (fan_is_on and states[entity_fan] is not none) else 0 }}
-      minutes_since_fan_change: >-
-        {{ (((now() - states[entity_fan].last_changed).total_seconds() / 60) | round(1)) if states[entity_fan] is not none else 9999 }}
       is_night: >-
         {% set t = now().strftime('%H:%M') %}
         {% set s = t_night_start[:5] %}
@@ -1088,9 +1224,11 @@ action:
       mold_on: "{{ sensors_ok and indoor_rh | float >= thresh_mold | float and dp_delta | float > 0 }}"
 
       # --- Decision: first match wins (spec §3.4) ---
+      # 'hold' = sensor non-numeric for less than the grace window: keep the fan as it is.
       active_rule: >-
         {% if boost_active %}boost
-        {% elif not sensors_ok %}degraded
+        {% elif not sensors_ok and sensors_lost_minutes | float >= sensor_grace_min | float %}degraded
+        {% elif not sensors_ok %}hold
         {% elif mold_on %}mold
         {% elif fan_is_on and fan_on_minutes | int < min_runtime | int %}min_run
         {% elif fan_is_on and fan_on_minutes | int >= max_runtime | int %}max_run
@@ -1100,26 +1238,46 @@ action:
         {% else %}idle
         {% endif %}
       desired_on: >-
-        {% if active_rule == 'degraded' %}{{ degraded_on }}{% else %}{{ active_rule in ['boost', 'mold', 'min_run', 'shower', 'continue', 'start'] }}{% endif %}
+        {% if active_rule == 'degraded' %}{{ degraded_on }}{% elif active_rule == 'hold' %}{{ fan_is_on }}{% else %}{{ active_rule in ['boost', 'mold', 'min_run', 'shower', 'continue', 'start'] }}{% endif %}
 
   # =============================================
-  # STEP 2: SENSOR OFFLINE / BACK (edge-triggered, once per transition)
+  # STEP 2a: SENSOR WARNING — state-driven, so an outage that is already live when the
+  # blueprint is (re)loaded is still announced in HA; idempotent per notification_id.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ (not sensors_ok) and sensors_lost_minutes | float >= sensor_grace_min | float }}"
+        sequence:
+          - service: persistent_notification.create
+            continue_on_error: true
+            data:
+              title: "Ventilator — Sensor Offline"
+              message: >
+                {{ sensor_humidity }} / {{ sensor_temperature }} non-numeric for
+                {{ sensors_lost_minutes }} min. Degraded mode: the fan runs
+                {{ degraded_run_min }} min after any bathroom motion until the sensor returns.
+              notification_id: "ventilator_sensor_warning"
+      - conditions:
+          - condition: template
+            value_template: "{{ sensors_ok }}"
+        sequence:
+          - service: persistent_notification.dismiss
+            continue_on_error: true
+            data:
+              notification_id: "ventilator_sensor_warning"
+
+  # =============================================
+  # STEP 2b: MOBILE PUSH — edge-triggered, once per transition (an outage already live at
+  # (re)load produces no 'lost' push; the 'back' push fires when it ends)
   # =============================================
   - choose:
       - conditions:
           - condition: template
             value_template: "{{ trigger.id | default('') == 'sensors_lost' }}"
         sequence:
-          - service: persistent_notification.create
-            data:
-              title: "Ventilator — Sensor Offline"
-              message: >
-                {{ sensor_humidity }} has been {{ states(sensor_humidity) }} for
-                {{ sensor_grace_min }} min. Degraded mode: the fan runs
-                {{ degraded_run_min }} min after any bathroom motion until the sensor returns.
-              notification_id: "ventilator_sensor_warning"
           - repeat:
-              for_each: "{{ notify_targets }}"
+              for_each: "{{ notify_list }}"
               sequence:
                 - service: "{{ repeat.item }}"
                   continue_on_error: true
@@ -1133,12 +1291,8 @@ action:
                  trigger.from_state is not none and
                  (now() - trigger.from_state.last_changed).total_seconds() >= sensor_grace_min | float * 60 }}
         sequence:
-          - service: persistent_notification.dismiss
-            continue_on_error: true
-            data:
-              notification_id: "ventilator_sensor_warning"
           - repeat:
-              for_each: "{{ notify_targets }}"
+              for_each: "{{ notify_list }}"
               sequence:
                 - service: "{{ repeat.item }}"
                   continue_on_error: true
@@ -1147,7 +1301,9 @@ action:
                     message: "Humidity sensor reporting again ({{ indoor_rh }}% RH). Normal control resumed."
 
   # =============================================
-  # STEP 3: MOLD OVERRIDE NOTIFICATION (edge: only when it takes over from an idle fan)
+  # STEP 3: MOLD OVERRIDE NOTIFICATION — edge: fires when the override takes over from an
+  # idle fan. Rule 3 (mold) outranks rule 5 (max_run), so the fan stays ON for the whole
+  # mold episode and this edge occurs once per episode; no extra de-dup needed.
   # =============================================
   - choose:
       - conditions:
@@ -1155,19 +1311,15 @@ action:
             value_template: "{{ mold_on and not fan_is_on }}"
         sequence:
           - service: persistent_notification.create
+            continue_on_error: true
             data:
               title: "Ventilator — Mold Safety Override"
               message: >
                 Fan forced ON: humidity {{ indoor_rh }}% is at or above {{ thresh_mold }}%.
                 Indoor dew point {{ indoor_dp }}°C, outdoor {{ outdoor_dp }}°C ({{ weather_used }}).
               notification_id: "ventilator_mold_warning"
-          # Push only when the fan has been untouched for an hour: a persisting mold condition
-          # re-enters this branch after every max-run cycle (45 on / 5 off) and would otherwise
-          # push every ~50 min. The persistent notification above is refreshed on every edge.
-          - condition: template
-            value_template: "{{ minutes_since_fan_change | float >= 60 }}"
           - repeat:
-              for_each: "{{ notify_targets }}"
+              for_each: "{{ notify_list }}"
               sequence:
                 - service: "{{ repeat.item }}"
                   continue_on_error: true
@@ -1192,6 +1344,7 @@ action:
             value_template: "{{ desired_on and not fan_is_on }}"
         sequence:
           - service: homeassistant.turn_on
+            continue_on_error: true
             target:
               entity_id: "{{ entity_fan }}"
       - conditions:
@@ -1199,6 +1352,7 @@ action:
             value_template: "{{ (not desired_on) and fan_is_on }}"
         sequence:
           - service: homeassistant.turn_off
+            continue_on_error: true
             target:
               entity_id: "{{ entity_fan }}"
 
@@ -1222,10 +1376,11 @@ action:
             value_template: "{{ trigger.id | default('manual') == 'manual' }}"
         sequence:
           - service: persistent_notification.create
+            continue_on_error: true
             data:
               title: "Ventilator Debug — {{ now().strftime('%H:%M:%S') }}"
               message: >
-                **Indoor:** {{ indoor_temp }}°C / {{ indoor_rh }}% RH / DP {{ indoor_dp }}°C (sensors_ok={{ sensors_ok }})
+                **Indoor:** {{ indoor_temp }}°C / {{ indoor_rh }}% RH / DP {{ indoor_dp }}°C (sensors_ok={{ sensors_ok }}, sensors_lost_minutes {{ sensors_lost_minutes }})
 
                 **Outdoor:** weather_used={{ weather_used if weather_used else 'none' }} · {{ outdoor_temp }}°C / {{ outdoor_rh }}% RH / outdoor_dp {{ outdoor_dp }}°C · dp_delta {{ dp_delta }}°C
 
