@@ -1,5 +1,7 @@
 # Bathroom Ventilator v2.0.0 — Implementation Plan (epic #10, session #11)
 
+> **Status: Done — deployed 2026-09-07 15:09Z.** T1–T3 shipped (commits 5652747, 60dd137, ff9c876/954abca + board fix waves), merged via PR #12 (`17972cc`), deployed with `scripts/deploy-blueprint.sh` + helper `input_boolean.bathroom_fan_boost`; read-path trace gate PASSED (`active_rule=degraded` while the Aqara sensor is offline, state-driven warning present, Met.no `dew_point` primary). Design board 20260907-134749 PASS · code board 20260907-143611 PASS (2 cycles). **Open on #11 (`observe:open`):** T4 step 6 (real-motion degraded run) and the observation criteria 1–5; the Aqara sensor rejoin is Martin's action.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship `bathroom_ventilator.yaml` v2.0.0 — outdoor-conditioned adaptive targets, rate-of-rise shower detection, stateless rules, degraded mode, boost toggle, mobile push — with structure/render tests, the migrated instance config, docs, and a live deploy.
@@ -47,7 +49,7 @@ declared_tcb_changes:
 - [x] TCB baseline computed with `TCB_EXTRA` = deploy script; `verify` rc=0; ABSENT lines = 0 (2026-09-07).
 - [x] HA reachable (2026.9.0); `notify.mobile_app_martin_fold` exists; `weather.home_sm` exposes `dew_point`; `weather.openweathermap` exposes temperature+humidity only.
 - [x] Baseline suite green: `PASS=58 FAIL=0`.
-- [ ] At T4 time only: re-read `sensor.temp_sensor_bathroom*` entity ids (the Aqara reset may have re-created them) and the current instance config (the deploy script backs it up to `deploy/1774555916056.prev.json`).
+- [x] At T4 time only: re-read `sensor.temp_sensor_bathroom*` entity ids (the Aqara reset may have re-created them) and the current instance config (the deploy script backs it up to `deploy/1774555916056.prev.json`).
 
 **Observation criteria ([8] applies — deploying session; the session issue #11 carries `<!-- observe:open -->`):**
 1. `automation.bathroom_ventilator_v1_0_0` (entity id unchanged; alias becomes v2.0.0) is `on` immediately after deploy and still `on` 24 h later.
@@ -73,7 +75,7 @@ declared_tcb_changes:
 - Consumes: `bathroom_ventilator.yaml` (v1.0.0 now, v2.0.0 after Task 2).
 - Produces: helpers `get_var`, `render_chain`, `render_at`, `world`, `base_ctx` used by nothing else; the expected variable names Task 2 must emit, in this file order: `indoor_temp_raw, indoor_rh_raw, sensors_ok, indoor_temp, indoor_rh, sensors_lost_minutes, notify_list, weather_candidates, weather_used, outdoor_temp, outdoor_rh, outdoor_dp, indoor_dp, dp_delta, rh_floor, stop_target, start_threshold, fan_is_on, fan_on_minutes, is_night, minutes_since_motion, presence_recent, shower_signal, boost_list, boost_active, boost_expired_list, degraded_on, mold_on, active_rule, desired_on`.
 
-- [ ] **Step 0: Write the deploy-script test (verbatim) — `tests/test_deploy_blueprint_script.py`** (spec §6 last bullet; the script itself is already committed and pinned, not edited here)
+- [x] **Step 0: Write the deploy-script test (verbatim) — `tests/test_deploy_blueprint_script.py`** (spec §6 last bullet; the script itself is already committed and pinned, not edited here)
 
 ```python
 """Offline checks for scripts/deploy-blueprint.sh: syntax + the --dry-run input-key validation."""
@@ -140,7 +142,7 @@ def test_dry_run_rejects_bad_ha_path():
 
 This file is green against v1.0.0 and v2.0.0 alike (both require the same five device inputs); it exists to catch a regression in the pinned script's validation, not to gate the blueprint.
 
-- [ ] **Step 1: Write the test file (verbatim)**
+- [x] **Step 1: Write the test file (verbatim)**
 
 ```python
 """Structural + rendered-logic pins for bathroom_ventilator.yaml (Bathroom Ventilator v2.0.0).
@@ -788,12 +790,12 @@ def test_idle_when_dry(bp):
     assert _decide(bp, base_ctx(), world()) == ("idle", False)
 ```
 
-- [ ] **Step 2: Run the file RED against v1.0.0**
+- [x] **Step 2: Run the file RED against v1.0.0**
 
 Run: `cd ~/AI/projects/Blueprints_Home && ~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests/test_bathroom_ventilator_structure.py -q`
 Expected: 54 FAILs (`test_version_bumped`, schema, triggers, decision/shower/degraded render tests) and zero collection errors. Ten new tests pass incidentally against v1.0.0 — the four `test_indoor_dew_point_rows` rows and five `test_is_night_rows` rows (v1 already carries the same Magnus formula and the midnight-crossing window) plus `test_no_bare_condition_steps_anywhere` — that is expected, not a sign they are implemented. The existing suite must still be green: run `… -m pytest tests -q` and report `PASS=N FAIL=M` (expected `PASS=73 FAIL=54`).
 
-- [ ] **Step 3: Commit (tests pillar)**
+- [x] **Step 3: Commit (tests pillar)**
 
 ```bash
 git add tests/test_bathroom_ventilator_structure.py tests/test_deploy_blueprint_script.py
@@ -818,7 +820,7 @@ Step 4: Report `PASS=N FAIL=M` for the full suite.
 - Consumes: input keys and variable names pinned in Task 1.
 - Produces: blueprint path `leviemartin/bathroom_ventilator.yaml` (unchanged in HA); instance inputs consumed by Task 3's JSON.
 
-- [ ] **Step 1: Replace the file with this content (verbatim)**
+- [x] **Step 1: Replace the file with this content (verbatim)**
 
 ```yaml
 blueprint:
@@ -1397,20 +1399,20 @@ action:
               notification_id: "ventilator_debug"
 ```
 
-- [ ] **Step 2: Run the new suite to GREEN**
+- [x] **Step 2: Run the new suite to GREEN**
 
 Run: `cd ~/AI/projects/Blueprints_Home && ~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests/test_bathroom_ventilator_structure.py -q`
 Expected: all PASS. If a rendered-logic pin fails, the YAML template is wrong (fix the template); if a structure pin fails on whitespace only, normalise the YAML to the pinned form.
 
-- [ ] **Step 3: Run the whole suite and confirm nothing else moved**
+- [x] **Step 3: Run the whole suite and confirm nothing else moved**
 
 Run: `… -m pytest tests -q` → expected `PASS=58 + <new> FAIL=0`.
 
-- [ ] **Step 4: Offline deploy validation against the migrated instance shape**
+- [x] **Step 4: Offline deploy validation against the migrated instance shape**
 
 Run: `scripts/deploy-blueprint.sh --dry-run bathroom_ventilator.yaml leviemartin/bathroom_ventilator.yaml deploy/bathroom_ventilator_1774555916056.json` — Task 3 creates that JSON; if Task 3 is not yet done, run with no instance file and expect `dry-run: validation passed`.
 
-- [ ] **Step 5: Commit (code pillar)**
+- [x] **Step 5: Commit (code pillar)**
 
 ```bash
 git add bathroom_ventilator.yaml
@@ -1436,7 +1438,7 @@ Step 6: Report `PASS=N FAIL=M` for the full suite.
 - Consumes: input keys from Task 2.
 - Produces: the instance file Task 4 deploys.
 
-- [ ] **Step 1: Write `deploy/bathroom_ventilator_1774555916056.json` (verbatim)**
+- [x] **Step 1: Write `deploy/bathroom_ventilator_1774555916056.json` (verbatim)**
 
 ```json
 {
@@ -1467,12 +1469,12 @@ Also append one line to `.gitignore` so the deploy script's pre-deploy backups n
 deploy/*.prev.json
 ```
 
-- [ ] **Step 2: Dry-run the deploy validation**
+- [x] **Step 2: Dry-run the deploy validation**
 
 Run: `scripts/deploy-blueprint.sh --dry-run bathroom_ventilator.yaml leviemartin/bathroom_ventilator.yaml deploy/bathroom_ventilator_1774555916056.json`
 Expected: `instance …: ok (id 1774555916056, 8 inputs)` then `dry-run: validation passed`.
 
-- [ ] **Step 3: Rewrite `requirements_bathroom_ventilator.md` (verbatim)**
+- [x] **Step 3: Rewrite `requirements_bathroom_ventilator.md` (verbatim)**
 
 ```markdown
 # Requirements: Bathroom Ventilator Blueprint (v2.0.0)
@@ -1517,7 +1519,7 @@ Example: bathroom 22 °C, outdoor dew point 16 °C, margin 2 → floor 78.1 %; t
 Manual "Run" writes a persistent notification with every computed variable (weather entity used, outdoor dew point, floor, stop/start targets, fan minutes, presence, flags, decision). `tests/test_bathroom_ventilator_structure.py` pins the schema, triggers, decision order and renders the psychrometric and decision rows.
 ```
 
-- [ ] **Step 4: Update the README section (replace the feature bullets + requirements under "## Bathroom Ventilator Blueprint")**
+- [x] **Step 4: Update the README section (replace the feature bullets + requirements under "## Bathroom Ventilator Blueprint")**
 
 Replace the current bullets with:
 
@@ -1532,11 +1534,11 @@ Replace the current bullets with:
 
 and under requirements: `Fan entity (light, switch or fan) · indoor temperature + humidity sensor · motion sensor · weather entity (dew_point used when present) · optional fallback weather entity, boost input_boolean, notify targets`. Keep the import badge/URL lines unchanged.
 
-- [ ] **Step 5: Run the full suite (docs cannot break it, but the gate is the gate)**
+- [x] **Step 5: Run the full suite (docs cannot break it, but the gate is the gate)**
 
 Run: `… -m pytest tests -q` → `PASS=N FAIL=0`.
 
-- [ ] **Step 6: Commit (docs pillar, then deploy-data pillar)**
+- [x] **Step 6: Commit (docs pillar, then deploy-data pillar)**
 
 ```bash
 git add requirements_bathroom_ventilator.md README.md
@@ -1557,13 +1559,13 @@ Step 7: Report `PASS=N FAIL=M`.
 
 **Files:** none edited. Uses `scripts/deploy-blueprint.sh` (already pinned in the TCB roster; not modified by this plan).
 
-- [ ] **Step 1: TCB verify + branch freshness** — `TCB_EXTRA=/home/martin/AI/projects/Blueprints_Home/scripts/deploy-blueprint.sh ~/.claude/skills/convene-board/scripts/tcb-manifest.sh verify /home/martin/AI/reviews/tcb-baseline-16ef53e7f973185a.txt` → rc 0 or HALT. Then `git fetch origin && git checkout main && [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]` — deploy only from a `main` that equals `origin/main` (memory: fetch-origin-before-deploy; a concurrent session's merge must not be reverted by a stale checkout). If the harness classifier blocks the deploy command, render it through `op-templates.sh` (stack-b §4.6) and hand it to Martin — no workaround.
-- [ ] **Step 2: Sensor ids** — `curl …/api/states/sensor.temp_sensor_bathroom_humidity_sensor`; if 404 (Aqara reset re-created the device), find the new ids (`config/entity_registry/list` filtered on `original_name` "Humidity Sensor" + device name "Temp Sensor Bathroom") and edit the instance JSON (commit as a deploy-data fix) before continuing.
-- [ ] **Step 3: Create the boost helper (idempotent)** — there is NO REST config endpoint for input_boolean (live probe 2026-09-07: `GET /api/config/input_boolean/config/heating_rack_boost` → 404 even for an existing storage helper). Use the WebSocket storage-collection API: first `hass-cli -o json raw ws input_boolean/list | jq '.result[] | select(.id=="bathroom_fan_boost")'` — if it already exists, skip; else `hass-cli -o json raw ws input_boolean/create --json '{"name":"Bathroom fan boost","icon":"mdi:fan-plus"}'` (HA slugifies the name → id `bathroom_fan_boost` → entity `input_boolean.bathroom_fan_boost`; the probe confirmed the schema requires `name`). Then `GET /api/states/input_boolean.bathroom_fan_boost` is `off`.
-- [ ] **Step 4: Deploy** — `scripts/deploy-blueprint.sh bathroom_ventilator.yaml leviemartin/bathroom_ventilator.yaml deploy/bathroom_ventilator_1774555916056.json` → expect `blueprint/save: ok`, `instance 1774555916056: config written`, `automation.bathroom_ventilator_v1_0_0 state=on`, `deploy complete`. The backup lands in `deploy/1774555916056.prev.json` (gitignored since Task 3; never commit it).
-- [ ] **Step 5: Read-path proof** — `POST /api/services/automation/trigger` with `{"entity_id":"automation.bathroom_ventilator_v1_0_0"}`; read `persistent_notification/get` → `ventilator_debug` must show `weather_used=weather.home_sm`, a numeric `rh_floor`, `stop_target`, `start_threshold`, `active_rule`. Then fetch the latest trace (`trace/list` + `trace/get`) and confirm `changed_variables` contains `active_rule` and `desired_on` (v2-only variables; cannot exist in a v1 render).
+- [x] **Step 1: TCB verify + branch freshness** — `TCB_EXTRA=/home/martin/AI/projects/Blueprints_Home/scripts/deploy-blueprint.sh ~/.claude/skills/convene-board/scripts/tcb-manifest.sh verify /home/martin/AI/reviews/tcb-baseline-16ef53e7f973185a.txt` → rc 0 or HALT. Then `git fetch origin && git checkout main && [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]` — deploy only from a `main` that equals `origin/main` (memory: fetch-origin-before-deploy; a concurrent session's merge must not be reverted by a stale checkout). If the harness classifier blocks the deploy command, render it through `op-templates.sh` (stack-b §4.6) and hand it to Martin — no workaround.
+- [x] **Step 2: Sensor ids** — `curl …/api/states/sensor.temp_sensor_bathroom_humidity_sensor`; if 404 (Aqara reset re-created the device), find the new ids (`config/entity_registry/list` filtered on `original_name` "Humidity Sensor" + device name "Temp Sensor Bathroom") and edit the instance JSON (commit as a deploy-data fix) before continuing.
+- [x] **Step 3: Create the boost helper (idempotent)** — there is NO REST config endpoint for input_boolean (live probe 2026-09-07: `GET /api/config/input_boolean/config/heating_rack_boost` → 404 even for an existing storage helper). Use the WebSocket storage-collection API: first `hass-cli -o json raw ws input_boolean/list | jq '.result[] | select(.id=="bathroom_fan_boost")'` — if it already exists, skip; else `hass-cli -o json raw ws input_boolean/create --json '{"name":"Bathroom fan boost","icon":"mdi:fan-plus"}'` (HA slugifies the name → id `bathroom_fan_boost` → entity `input_boolean.bathroom_fan_boost`; the probe confirmed the schema requires `name`). Then `GET /api/states/input_boolean.bathroom_fan_boost` is `off`.
+- [x] **Step 4: Deploy** — `scripts/deploy-blueprint.sh bathroom_ventilator.yaml leviemartin/bathroom_ventilator.yaml deploy/bathroom_ventilator_1774555916056.json` → expect `blueprint/save: ok`, `instance 1774555916056: config written`, `automation.bathroom_ventilator_v1_0_0 state=on`, `deploy complete`. The backup lands in `deploy/1774555916056.prev.json` (gitignored since Task 3; never commit it).
+- [x] **Step 5: Read-path proof** — `POST /api/services/automation/trigger` with `{"entity_id":"automation.bathroom_ventilator_v1_0_0"}`; read `persistent_notification/get` → `ventilator_debug` must show `weather_used=weather.home_sm`, a numeric `rh_floor`, `stop_target`, `start_threshold`, `active_rule`. Then fetch the latest trace (`trace/list` + `trace/get`) and confirm `changed_variables` contains `active_rule` and `desired_on` (v2-only variables; cannot exist in a v1 render).
 - [ ] **Step 6: Degraded-mode check (sensor still offline)** — with the Aqara sensor still `unavailable`, `active_rule` must read `degraded`; walk into the bathroom (or wait for the next real motion) and confirm the fan turns on and off ≈20 min after motion ends. If the sensor is back: skip, and instead confirm `sensors_ok=True` and `active_rule` in {idle, start, continue}.
-- [ ] **Step 7: Log gate** — `system_log/list` filtered on `bathroom_ventilator` shows zero errors after the deploy timestamp.
+- [x] **Step 7: Log gate** — `system_log/list` filtered on `bathroom_ventilator` shows zero errors after the deploy timestamp.
 - [ ] **Step 8: Record** — post the deploy evidence (entity state, debug dump excerpt, trace step) on session #11; observation loop per the Phase 0 criteria; `<!-- observe:open -->` stays until criteria 1–5 pass or Martin waives.
 
 Step 9: Report `deploy: PASS=N FAIL=M` over the eight steps above.
