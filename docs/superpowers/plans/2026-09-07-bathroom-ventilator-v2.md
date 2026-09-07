@@ -417,6 +417,11 @@ def test_mold_edge_branches(bp):
     ch = bp["action"][2]["choose"]
     assert branch_cond(ch[0]) == "{{ mold_on and not fan_is_on }}"
     assert ch[0]["sequence"][0]["data"]["notification_id"] == "ventilator_mold_warning"
+    # create → hour-gate → push: a persisting mold condition must not push every max-run cycle
+    assert [step_kind(s) for s in ch[0]["sequence"]] == [
+        "service:persistent_notification.create", "condition", "repeat",
+    ]
+    assert norm(ch[0]["sequence"][1]["value_template"]) == "{{ minutes_since_fan_change | float >= 60 }}"
     assert branch_cond(ch[1]) == "{{ not mold_on }}"
     d = ch[1]["sequence"][0]
     assert step_kind(d) == "service:persistent_notification.dismiss"
@@ -1037,6 +1042,8 @@ action:
       fan_is_on: "{{ is_state(entity_fan, 'on') }}"
       fan_on_minutes: >-
         {{ (((now() - states[entity_fan].last_changed).total_seconds() / 60) | int) if (fan_is_on and states[entity_fan] is not none) else 0 }}
+      minutes_since_fan_change: >-
+        {{ (((now() - states[entity_fan].last_changed).total_seconds() / 60) | round(1)) if states[entity_fan] is not none else 9999 }}
       is_night: >-
         {% set t = now().strftime('%H:%M') %}
         {% set s = t_night_start[:5] %}
@@ -1154,6 +1161,11 @@ action:
                 Fan forced ON: humidity {{ indoor_rh }}% is at or above {{ thresh_mold }}%.
                 Indoor dew point {{ indoor_dp }}°C, outdoor {{ outdoor_dp }}°C ({{ weather_used }}).
               notification_id: "ventilator_mold_warning"
+          # Push only when the fan has been untouched for an hour: a persisting mold condition
+          # re-enters this branch after every max-run cycle (45 on / 5 off) and would otherwise
+          # push every ~50 min. The persistent notification above is refreshed on every edge.
+          - condition: template
+            value_template: "{{ minutes_since_fan_change | float >= 60 }}"
           - repeat:
               for_each: "{{ notify_targets }}"
               sequence:
@@ -1293,6 +1305,12 @@ Step 6: Report `PASS=N FAIL=M` for the full suite.
 
 Met.no (`weather.home_sm`) becomes primary because it exposes `dew_point` natively; OpenWeatherMap stays as fallback (temperature + humidity → Magnus). All numeric inputs use blueprint defaults.
 
+Also append one line to `.gitignore` so the deploy script's pre-deploy backups never get committed:
+
+```
+deploy/*.prev.json
+```
+
 - [ ] **Step 2: Dry-run the deploy validation**
 
 Run: `scripts/deploy-blueprint.sh --dry-run bathroom_ventilator.yaml leviemartin/bathroom_ventilator.yaml deploy/bathroom_ventilator_1774555916056.json`
@@ -1367,8 +1385,8 @@ Run: `… -m pytest tests -q` → `PASS=N FAIL=0`.
 ```bash
 git add requirements_bathroom_ventilator.md README.md
 git commit -m "docs(ventilator): v2.0.0 requirements + README section"
-git add deploy/bathroom_ventilator_1774555916056.json
-git commit -m "deploy(ventilator): migrated instance config for v2.0.0 (Met.no primary, OWM fallback, boost + push)"
+git add deploy/bathroom_ventilator_1774555916056.json .gitignore
+git commit -m "deploy(ventilator): migrated instance config for v2.0.0 (Met.no primary, OWM fallback, boost + push); ignore deploy backups"
 ```
 
 Step 7: Report `PASS=N FAIL=M`.
@@ -1386,7 +1404,7 @@ Step 7: Report `PASS=N FAIL=M`.
 - [ ] **Step 1: TCB verify + branch freshness** — `TCB_EXTRA=/home/martin/AI/projects/Blueprints_Home/scripts/deploy-blueprint.sh ~/.claude/skills/convene-board/scripts/tcb-manifest.sh verify /home/martin/AI/reviews/tcb-baseline-16ef53e7f973185a.txt` → rc 0 or HALT. Then `git fetch origin && git checkout main && [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]` — deploy only from a `main` that equals `origin/main` (memory: fetch-origin-before-deploy; a concurrent session's merge must not be reverted by a stale checkout). If the harness classifier blocks the deploy command, render it through `op-templates.sh` (stack-b §4.6) and hand it to Martin — no workaround.
 - [ ] **Step 2: Sensor ids** — `curl …/api/states/sensor.temp_sensor_bathroom_humidity_sensor`; if 404 (Aqara reset re-created the device), find the new ids (`config/entity_registry/list` filtered on `original_name` "Humidity Sensor" + device name "Temp Sensor Bathroom") and edit the instance JSON (commit as a deploy-data fix) before continuing.
 - [ ] **Step 3: Create the boost helper (idempotent)** — there is NO REST config endpoint for input_boolean (live probe 2026-09-07: `GET /api/config/input_boolean/config/heating_rack_boost` → 404 even for an existing storage helper). Use the WebSocket storage-collection API: first `hass-cli -o json raw ws input_boolean/list | jq '.result[] | select(.id=="bathroom_fan_boost")'` — if it already exists, skip; else `hass-cli -o json raw ws input_boolean/create --json '{"name":"Bathroom fan boost","icon":"mdi:fan-plus"}'` (HA slugifies the name → id `bathroom_fan_boost` → entity `input_boolean.bathroom_fan_boost`; the probe confirmed the schema requires `name`). Then `GET /api/states/input_boolean.bathroom_fan_boost` is `off`.
-- [ ] **Step 4: Deploy** — `scripts/deploy-blueprint.sh bathroom_ventilator.yaml leviemartin/bathroom_ventilator.yaml deploy/bathroom_ventilator_1774555916056.json` → expect `blueprint/save: ok`, `instance 1774555916056: config written`, `automation.bathroom_ventilator_v1_0_0 state=on`, `deploy complete`. The backup lands in `deploy/1774555916056.prev.json` (do not commit it — add `deploy/*.prev.json` to `.gitignore` in this step and commit the ignore line).
+- [ ] **Step 4: Deploy** — `scripts/deploy-blueprint.sh bathroom_ventilator.yaml leviemartin/bathroom_ventilator.yaml deploy/bathroom_ventilator_1774555916056.json` → expect `blueprint/save: ok`, `instance 1774555916056: config written`, `automation.bathroom_ventilator_v1_0_0 state=on`, `deploy complete`. The backup lands in `deploy/1774555916056.prev.json` (gitignored since Task 3; never commit it).
 - [ ] **Step 5: Read-path proof** — `POST /api/services/automation/trigger` with `{"entity_id":"automation.bathroom_ventilator_v1_0_0"}`; read `persistent_notification/get` → `ventilator_debug` must show `weather_used=weather.home_sm`, a numeric `rh_floor`, `stop_target`, `start_threshold`, `active_rule`. Then fetch the latest trace (`trace/list` + `trace/get`) and confirm `changed_variables` contains `active_rule` and `desired_on` (v2-only variables; cannot exist in a v1 render).
 - [ ] **Step 6: Degraded-mode check (sensor still offline)** — with the Aqara sensor still `unavailable`, `active_rule` must read `degraded`; walk into the bathroom (or wait for the next real motion) and confirm the fan turns on and off ≈20 min after motion ends. If the sensor is back: skip, and instead confirm `sensors_ok=True` and `active_rule` in {idle, start, continue}.
 - [ ] **Step 7: Log gate** — `system_log/list` filtered on `bathroom_ventilator` shows zero errors after the deploy timestamp.
