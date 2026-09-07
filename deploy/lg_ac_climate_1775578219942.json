@@ -1,0 +1,41 @@
+{
+  "id": "1775578219942",
+  "alias": "LG AC Climate Control v1.2.0",
+  "description": "",
+  "use_blueprint": {
+    "path": "leviemartin/lg_ac_climate.yaml",
+    "input": {
+      "climate_entity": "climate.livingroom",
+      "temperature_sensors": [
+        "sensor.temperature_sensor_6",
+        "sensor.temperature_sensor_5"
+      ],
+      "temp_range_high": 23.5,
+      "temp_range_low": 21,
+      "schedule_end_mon": "22:30:00",
+      "schedule_start_mon": "06:00:00",
+      "schedule_start_tue": "06:00:00",
+      "schedule_end_tue": "22:30:00",
+      "schedule_start_wed": "06:00:00",
+      "schedule_end_wed": "22:30:00",
+      "schedule_start_thu": "06:00:00",
+      "schedule_end_thu": "22:30:00",
+      "schedule_start_fri": "06:00:00",
+      "schedule_end_fri": "22:30:00",
+      "schedule_start_sat": "06:00:00",
+      "schedule_end_sat": "22:30:00",
+      "schedule_start_sun": "06:00:00",
+      "schedule_end_sun": "22:30:00",
+      "vacation_toggle": "input_boolean.vacation_mode",
+      "sensor_strategy": "min",
+      "door_sensor": [
+        "binary_sensor.contact_sensor"
+      ],
+      "escalation_stage_2_minutes": 40,
+      "escalation_stage_1_minutes": 20,
+      "weather_entity": "weather.openweathermap",
+      "fan_speed_medium_threshold": 2,
+      "comfort_margin": 1
+    }
+  }
+}
