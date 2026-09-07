@@ -1,6 +1,8 @@
 # Bathroom Heating Rack v2.0.0 — Implementation Plan (epic #10, session #13)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Status: Done — deployed 2026-09-07 17:53:22Z.** T1–T3 shipped (commits e90f391, 2f1ebd6, c66a342 + final-review fix wave 743254c + code-board fix wave 8125c6d), merged via PR #21 (`c3aaa5d`, `Session: #13`), deployed with `scripts/deploy-blueprint.sh` + instance `1776551429917` migrated; read-path proof PASSED live inside the retuned evening window (one `set_temperature 24.0`, one Fold push, next tick idempotent; debug dump shows every v2 field; zero log errors after deploy). Design board 20260907-161235 PASS · code board 20260907-172334 PASS. **Open on #13 (`observe:open`):** criteria 1 (24 h on-state), 3 (Tuesday morning window, branch a/b), 4 (tonight's 20:30 return to 7), 5 (48 h log gate) — finish-session gated on them. The shipped files are authoritative over the inline blocks below (see the execution record at the end).
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Ship `bathroom_heating_rack.yaml` v2.0.0 — comfort floor (slot-keyed 0.5 °C deadband, latched opening edge, suspended without the room sensor), predictive motion removed, edge-triggered warmup and outage notifications, setpoint rounded to the device step and clamped to its range, filtered `notify.*` targets with every push after the climate calls, `to:` filters on the toggle/fan triggers, boost expiry as the last step, preset machinery removed, locale-safe weekday, next-day hold-until anchoring, Fold push target — with structure/render tests, the migrated + retuned instance config, docs, and a live deploy.
 
@@ -77,7 +79,7 @@ Engineering constraints:
 - [x] Scratch run of the inline artifacts in a throwaway repo copy (lesson from session #11): rack file `PASS=116 FAIL=0` on the v2 YAML; RED against v1.1.1 `PASS=20 FAIL=96`; full suite `PASS=249 FAIL=0`; `scripts/deploy-blueprint.sh --dry-run` on the instance JSON passes (`18 inputs`); HA `validate_config` on the input-substituted v2 config: `triggers valid, actions valid`; live `/api/template` renders of the `notify_list` filter, the idle rounding (7.5 → 8.0) and the floor arithmetic match the harness (all re-run after the board fix wave).
 - [x] Empirical check (board R1-04): a throwaway HA script with `continue_on_error: true` on `notify.does_not_exist_board_probe` stopped at that step (`script_execution: error`, "Action … not found", the next step never ran); script deleted afterwards.
 - [x] Error baseline recorded: `system_log/list` shows 3,336 occurrences of "Bathroom Heating Rack v1.0.0: Choose at step 9: choice 1: Repeat at step 3: Error executing script. Service not found" (first 2026-09-04) — the v1 warmup notification fires every active-window minute and targets a non-existent service.
-- [ ] At T4 time only: re-read the live instance config (the deploy script backs it up to `deploy/1776551429917.prev.json`, gitignored) and confirm `git rev-parse HEAD` = `origin/main`.
+- [x] At T4 time only: re-read the live instance config (the deploy script backs it up to `deploy/1776551429917.prev.json`, gitignored) and confirm `git rev-parse HEAD` = `origin/main`.
 
 **Observation criteria ([8] applies — deploying session; issue #13 carries `<!-- observe:open -->`):**
 1. `automation.bathroom_heating_rack_v1_0_0` (entity id unchanged; alias becomes v2.0.0) is `on` immediately after deploy and still `on` 24 h later.
@@ -105,7 +107,7 @@ Engineering constraints:
 - Consumes: `bathroom_heating_rack.yaml` (v1.1.1 now, v2.0.0 after Task 2); `scripts/deploy-blueprint.sh --dry-run` (unchanged).
 - Produces: the input key set `EXPECTED_INPUTS`, the trigger ids (`periodic, boost_change, vacation_change, fan_change, ha_start, climate_lost, temp_lost`), the action-step order and the variable names Task 2 must emit (in file order across the three `variables:` steps): `indoor_temp_primary, indoor_temp_fallback, indoor_temp_has_primary, indoor_temp_has_fallback, indoor_temp_both_unavailable, indoor_temp, current_setpoint, current_hvac_mode, current_hvac_mode_normalized, setpoint_step, setpoint_min, setpoint_max, idle_setpoint_dev, fan_is_on, notify_list, today_dow, now_dt, vacation_active, boost_runtime_min_int, boost_is_on, boost_age_min, boost_active, boost_expired` · per slot `<p>_in_days, <p>_target_warm_dt, <p>_hold_until_dt, <p>_target_dev, <p>_heating, <p>_delta_T, <p>_warmup_min, <p>_auto_start_dt, <p>_open_dt, <p>_in_window, <p>_floor, <p>_active` for `p ∈ {ma, mb, ea, eb}` · `morning_active, evening_active, morning_temp, evening_temp` · `desired_mode, desired_setpoint_raw, desired_setpoint, active_priority`. The instance JSON is the file Task 4 deploys.
 
-- [ ] **Step 1: Write `tests/test_bathroom_heating_rack_structure.py` (verbatim)**
+- [x] **Step 1: Write `tests/test_bathroom_heating_rack_structure.py` (verbatim)**
 
 ```python
 """Structural + rendered-logic pins for bathroom_heating_rack.yaml (Bathroom Heating Rack v2.0.0).
@@ -966,7 +968,7 @@ def test_instance_json_dry_run_validates():
     assert "dry-run: validation passed" in r.stdout
 ```
 
-- [ ] **Step 2: Write `deploy/bathroom_heating_rack_1776551429917.json` (verbatim)**
+- [x] **Step 2: Write `deploy/bathroom_heating_rack_1776551429917.json` (verbatim)**
 
 ```json
 {
@@ -1001,17 +1003,17 @@ def test_instance_json_dry_run_validates():
 
 Morning A stays on the blueprint defaults (Mon–Fri 06:45→08:00 @ 23) exactly as the live v1 instance does; Morning B keeps its live overrides; Evening A/B carry the §4.2 retune; `evening_b_target_temp` is the blueprint default 23; the dropped keys are simply absent. `deploy/*.prev.json` is already gitignored.
 
-- [ ] **Step 3: Run the new file RED against v1.1.1**
+- [x] **Step 3: Run the new file RED against v1.1.1**
 
 Run: `cd ~/AI/projects/Blueprints_Home && ~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests/test_bathroom_heating_rack_structure.py -q`
 Expected: `96 failed, 20 passed` (the 20 are v1-neutral pins: mode, some selectors/defaults, the instance-JSON retune test, boost-age/hvac rows). The dry-run test fails on v1 with `required inputs missing: hall_motion, stairs_motion` — that is the RED signal for the migration.
 
-- [ ] **Step 4: Confirm the rest of the suite is untouched**
+- [x] **Step 4: Confirm the rest of the suite is untouched**
 
 Run: `~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests -q --deselect tests/test_bathroom_heating_rack_structure.py`
 Expected: `133 passed`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/test_bathroom_heating_rack_structure.py deploy/bathroom_heating_rack_1776551429917.json
@@ -1038,7 +1040,7 @@ Step 6: Report `rack: PASS=20 FAIL=96` and `rest: PASS=133 FAIL=0`.
 - Consumes: input keys, trigger ids, step order and variable names pinned in Task 1.
 - Produces: blueprint path `leviemartin/bathroom_heating_rack.yaml` (unchanged in HA); the schema the instance JSON is validated against.
 
-- [ ] **Step 1: Replace the file with this content (verbatim)**
+- [x] **Step 1: Replace the file with this content (verbatim)**
 
 ```yaml
 blueprint:
@@ -1821,22 +1823,22 @@ action:
               entity_id: "{{ entity_boost }}"
 ```
 
-- [ ] **Step 2: Run the rack file to green**
+- [x] **Step 2: Run the rack file to green**
 
 Run: `~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests/test_bathroom_heating_rack_structure.py -q`
 Expected: `116 passed`. If a pin fails, the YAML deviates from this plan — diff against Step 1, fix the YAML.
 
-- [ ] **Step 3: Full suite**
+- [x] **Step 3: Full suite**
 
 Run: `~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests -q`
 Expected: `249 passed`.
 
-- [ ] **Step 4: Offline deploy validation**
+- [x] **Step 4: Offline deploy validation**
 
 Run: `scripts/deploy-blueprint.sh --dry-run bathroom_heating_rack.yaml leviemartin/bathroom_heating_rack.yaml deploy/bathroom_heating_rack_1776551429917.json`
 Expected: `blueprint: Bathroom Heating Rack v2.0.0`, `instance …: ok (id 1776551429917, 18 inputs)`, `dry-run: validation passed, nothing deployed`.
 
-- [ ] **Step 5: HA schema validation of the input-substituted config (read-only WS call)**
+- [x] **Step 5: HA schema validation of the input-substituted config (read-only WS call)**
 
 ```bash
 source ~/.config/hass-cli/env
@@ -1861,7 +1863,7 @@ rm -f /tmp/rack_substituted.json
 ```
 Expected: `{"triggers":{"valid":true,"error":null},"actions":{"valid":true,"error":null}}` (HA 2026.9 wants the plural keys; a `KeyError` from the substitution script means the JSON references an input the blueprint no longer has).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add bathroom_heating_rack.yaml
@@ -1888,7 +1890,7 @@ Step 7: Report `rack: PASS=116 FAIL=0` and `suite: PASS=249 FAIL=0`.
 - Consumes: the v2 input names and behaviour from Task 2.
 - Produces: nothing downstream; documentation only.
 
-- [ ] **Step 1: Rewrite `requirements_bathroom_heating_rack.md` (verbatim)**
+- [x] **Step 1: Rewrite `requirements_bathroom_heating_rack.md` (verbatim)**
 
 ````markdown
 # Requirements: Bathroom Heating Rack Blueprint (v2.0.0)
@@ -1952,7 +1954,7 @@ Push fan-out: `notify_targets` entries are filtered to well-formed `notify.<name
 `tests/test_bathroom_heating_rack_structure.py` pins the input schema, the trigger roster (`to:` filters, the two `for:` outage triggers), the action shape (pushes after the climate calls, edge-gated outage pushes, boost expiry last, no preset calls, no motion remnants), and renders the templates for weekday, setpoint rounding and clamping, the device idle value, the notify filter, warmup lead, comfort-floor gating with the slot-keyed deadband and latched opening edge, the suspended floor without the room sensor, window bounds, hold-until anchoring, priority rows and both notification edges; it also dry-runs the deploy script against the instance JSON.
 ````
 
-- [ ] **Step 2: Replace the README section (verbatim; the section runs from `## Bathroom Heating Rack Blueprint` to the line before `## Bedroom Sleep Pre-Cool Blueprint`)**
+- [x] **Step 2: Replace the README section (verbatim; the section runs from `## Bathroom Heating Rack Blueprint` to the line before `## Bedroom Sleep Pre-Cool Blueprint`)**
 
 ````markdown
 ## Bathroom Heating Rack Blueprint
@@ -1987,17 +1989,17 @@ Pre-heats a bathroom heating rack for scheduled routines (adult morning, kids ba
 `https://raw.githubusercontent.com/leviemartin/Blueprints_Home/main/bathroom_heating_rack.yaml`
 ````
 
-- [ ] **Step 3: Check the README edit is scoped**
+- [x] **Step 3: Check the README edit is scoped**
 
 Run: `git diff --stat README.md && grep -c "^## " README.md`
 Expected: only `README.md` changed, still 6 top-level `## ` sections (Nightlight, Circadian, LG AC, Ventilator, Heating Rack, Bedroom Pre-Cool); `grep -n -i "predictive motion override\|preset=eco\|generic_thermostat\|hall_motion\|stairs_motion" README.md requirements_bathroom_heating_rack.md` prints nothing.
 
-- [ ] **Step 4: Suite still green**
+- [x] **Step 4: Suite still green**
 
 Run: `~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests -q`
 Expected: `249 passed`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add requirements_bathroom_heating_rack.md README.md
@@ -2018,12 +2020,12 @@ Step 6: Report `suite: PASS=249 FAIL=0`.
 
 **Files:** none edited. Uses `scripts/deploy-blueprint.sh` (pinned in the TCB roster; not modified by this plan) and `deploy/bathroom_heating_rack_1776551429917.json`.
 
-- [ ] **Step 1: TCB verify + branch freshness** — `TCB_EXTRA=/home/martin/AI/projects/Blueprints_Home/scripts/deploy-blueprint.sh ~/.claude/skills/convene-board/scripts/tcb-manifest.sh verify /home/martin/AI/reviews/tcb-baseline-16ef53e7f973185a.txt` → rc 0 or HALT. Then `git fetch origin && git checkout main && [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]`. If the harness classifier blocks the deploy command, render it through `op-templates.sh` (stack-b §4.6) and hand it to Martin — no workaround.
-- [ ] **Step 2: Pre-deploy live read** — `GET /api/config/automation/config/1776551429917` (expect the v1 keys listed in Phase 0) and `GET /api/states/climate.heatingrack_bathroom` (note `temperature` and state); record both in the session log. **Notify-target existence (board R1-04):** every entry of `notify_targets` in the instance JSON must appear in `GET /api/services` under domain `notify` — `jq -r '.[] | select(.domain=="notify") | .services | keys[]'` must list `mobile_app_martin_fold`; a missing target HALTs the deploy (HA aborts the run at a missing action even with `continue_on_error`).
-- [ ] **Step 3: Deploy** — `scripts/deploy-blueprint.sh bathroom_heating_rack.yaml leviemartin/bathroom_heating_rack.yaml deploy/bathroom_heating_rack_1776551429917.json` → expect `backup: deploy/1776551429917.prev.json`, `blueprint/save: ok`, `instance 1776551429917: config written`, `automation.bathroom_heating_rack_v1_0_0 state=on`, `deploy complete`. The backup is gitignored; never commit it.
-- [ ] **Step 4: Read-path proof** — `POST /api/services/automation/trigger` with `{"entity_id":"automation.bathroom_heating_rack_v1_0_0"}`; read `persistent_notification/get` → `heating_rack_debug` must show `(step 1.0, range 7.0–30.0, idle 7.0)`, `Push: ['notify.mobile_app_martin_fold']`, `Comfort floor: 1.0°C`, and for all four slots `open=`, `hold_until=`, `heating=`, `floor=`, `in_window=`, `active=`, plus `setpoint=… (raw …)`. Then `trace/list` + `trace/get` for the automation: `changed_variables` contains `idle_setpoint_dev`, `notify_list`, `ea_open_dt`, `desired_setpoint_raw` (v2-only). Confirm the setpoint decision matches the clock: outside every window `active_priority=P6_idle`, `desired_setpoint=7.0`, no `climate.set_temperature` call in the trace; `heating_rack_sensor_warning` and `heating_rack_climate_unavailable` absent (both entities live).
-- [ ] **Step 5: Log gate** — `system_log/list` filtered on `Heating Rack` / `heating_rack`: zero new entries after the deploy timestamp (the pre-deploy count is 3,336 — it must not grow).
-- [ ] **Step 6: Record** — post the deploy evidence (entity state, debug dump excerpt, trace step, log gate) on session #13 via `github-sync` (`gh_scan_body` on the body file); the observation loop then runs against the Phase 0 criteria; `<!-- observe:open -->` stays until criteria 1–5 pass or Martin waives.
+- [x] **Step 1: TCB verify + branch freshness** — `TCB_EXTRA=/home/martin/AI/projects/Blueprints_Home/scripts/deploy-blueprint.sh ~/.claude/skills/convene-board/scripts/tcb-manifest.sh verify /home/martin/AI/reviews/tcb-baseline-16ef53e7f973185a.txt` → rc 0 or HALT. Then `git fetch origin && git checkout main && [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]`. If the harness classifier blocks the deploy command, render it through `op-templates.sh` (stack-b §4.6) and hand it to Martin — no workaround.
+- [x] **Step 2: Pre-deploy live read** — `GET /api/config/automation/config/1776551429917` (expect the v1 keys listed in Phase 0) and `GET /api/states/climate.heatingrack_bathroom` (note `temperature` and state); record both in the session log. **Notify-target existence (board R1-04):** every entry of `notify_targets` in the instance JSON must appear in `GET /api/services` under domain `notify` — `jq -r '.[] | select(.domain=="notify") | .services | keys[]'` must list `mobile_app_martin_fold`; a missing target HALTs the deploy (HA aborts the run at a missing action even with `continue_on_error`).
+- [x] **Step 3: Deploy** — `scripts/deploy-blueprint.sh bathroom_heating_rack.yaml leviemartin/bathroom_heating_rack.yaml deploy/bathroom_heating_rack_1776551429917.json` → expect `backup: deploy/1776551429917.prev.json`, `blueprint/save: ok`, `instance 1776551429917: config written`, `automation.bathroom_heating_rack_v1_0_0 state=on`, `deploy complete`. The backup is gitignored; never commit it.
+- [x] **Step 4: Read-path proof** — `POST /api/services/automation/trigger` with `{"entity_id":"automation.bathroom_heating_rack_v1_0_0"}`; read `persistent_notification/get` → `heating_rack_debug` must show `(step 1.0, range 7.0–30.0, idle 7.0)`, `Push: ['notify.mobile_app_martin_fold']`, `Comfort floor: 1.0°C`, and for all four slots `open=`, `hold_until=`, `heating=`, `floor=`, `in_window=`, `active=`, plus `setpoint=… (raw …)`. Then `trace/list` + `trace/get` for the automation: `changed_variables` contains `idle_setpoint_dev`, `notify_list`, `ea_open_dt`, `desired_setpoint_raw` (v2-only). Confirm the setpoint decision matches the clock: outside every window `active_priority=P6_idle`, `desired_setpoint=7.0`, no `climate.set_temperature` call in the trace; `heating_rack_sensor_warning` and `heating_rack_climate_unavailable` absent (both entities live).
+- [x] **Step 5: Log gate** — `system_log/list` filtered on `Heating Rack` / `heating_rack`: zero new entries after the deploy timestamp (the pre-deploy count is 3,336 — it must not grow).
+- [x] **Step 6: Record** — post the deploy evidence (entity state, debug dump excerpt, trace step, log gate) on session #13 via `github-sync` (`gh_scan_body` on the body file); the observation loop then runs against the Phase 0 criteria; `<!-- observe:open -->` stays until criteria 1–5 pass or Martin waives.
 
 Step 7: Report `deploy: PASS=N FAIL=M` over the six steps above.
 
