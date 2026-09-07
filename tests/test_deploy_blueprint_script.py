@@ -1,5 +1,6 @@
 """Offline checks for scripts/deploy-blueprint.sh: syntax + the --dry-run input-key validation."""
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -68,7 +69,13 @@ def test_dry_run_rejects_unsafe_instance_id(tmp_path):
 def test_token_never_in_curl_argv():
     # code board 20260907-143611 R2-001: the Authorization header comes from a 0600 temp file
     src = SCRIPT.read_text()
-    assert 'Bearer $HASS_TOKEN"' not in src
+    # no curl header argument may carry the token in any spelling ($HASS_TOKEN, ${HASS_TOKEN}, …)
+    assert not re.search(r"-H\s+[\"']?Authorization:[^\n]*HASS_TOKEN", src)
+    # the token is referenced exactly twice: the presence guard and the 0600 header file write
+    token_lines = [l for l in src.splitlines() if "HASS_TOKEN" in l and not l.lstrip().startswith("#")]
+    assert len(token_lines) == 2, token_lines
+    assert any("${HASS_TOKEN:-}" in l for l in token_lines)
+    assert any('"$HASS_TOKEN" > "$HDR"' in l for l in token_lines)
     assert "-H @\"$HDR\"" in src and "chmod 600" in src and "trap 'rm -f \"$HDR\"' EXIT" in src
 
 
