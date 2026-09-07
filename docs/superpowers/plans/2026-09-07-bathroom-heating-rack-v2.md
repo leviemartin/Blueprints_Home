@@ -2034,3 +2034,16 @@ Step 7: Report `deploy: PASS=N FAIL=M` over the six steps above.
 - **[4] design-time board** runs on spec §4 + this plan before Task 1 (`triple-check` → `convene-board`, standard dial, R1 Opus + R2 Codex unpinned — record the model each leg reports, `/effort xhigh`).
 - **[6] code-time board** runs on the branch diff after Task 3 (`review-shipped` → `convene-board`), then `code-review-gate`, PR with `Session: #13`, merge, Task 4, observation, `closing-session` (finish gated on [8]).
 - Session #11 (ventilator) is still `in-review` with `observe:open` — untouched by this session.
+
+---
+
+## Execution record — SDD Tasks 1–3 + final whole-branch review (2026-09-07)
+
+Tasks 1–3 shipped on `bathroom-heating-rack-v2` as verbatim transcriptions of the blocks above (Sonnet implementers, per-task Sonnet reviews, each byte-identical to the plan): T1 `e90f391` (RED 96/20 on v1.1.1), T2 `2f1ebd6` (116/116, suite 249, dry-run ok, HA `validate_config` valid), T3 `c66a342`. The Opus whole-branch review returned 0 Critical / 0 Important / 8 Minor; seven were fixed in one wave, `743254c`, and re-reviewed (all addressed, no new breakage). **After that commit the shipped files are authoritative over the inline blocks above**, which differ in exactly these points:
+- `<p>_heating` gains `not boost_active and` (a boost equal to a slot target — the blueprint defaults are both 23 — must not latch that slot's deadband/opening edge).
+- `<p>_target_dev` is clamped to `setpoint_min`/`setpoint_max` like `desired_setpoint` (a slot target above the device max would otherwise never latch).
+- STEP 3 hard-stops on a MISSING climate entity too: `states[entity_climate] is none or states(entity_climate) == 'unavailable'` (HA reads `unknown` for a deleted/renamed entity, which the normaliser would have treated as ON; live-verified with `/api/template`); the available branch is the complement.
+- `notify_list` carries the ventilator's scalar guard.
+- Test harness: `states()` of a missing entity returns `'unknown'` (HA semantics); +7 tests (`test_climate_hard_stop_rows` ×4, `test_boost_does_not_alias_slot_heating`, `test_target_dev_clamped_to_device_range`, a scalar `notify_list` row) → rack **123**, suite **256** on this branch (origin/main gained 5 tests from the #15 hotfix meanwhile → expect **261** after the [7] merge).
+- Requirements doc: the stale duplicate `in_window` line removed; `temp_lost` wording is "unavailable/unknown for 10 min".
+Accepted-documented minor: a `/1` tick landing in the same sub-second as a `for:`-guarded outage trigger can cancel that outage run (`mode: restart`) and lose one push; self-healing on the next outage. Deferred cosmetic: the debug dump's `strftime('%a %H:%M')` day label.
