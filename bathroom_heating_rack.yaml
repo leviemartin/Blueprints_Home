@@ -106,7 +106,9 @@ blueprint:
         the slot is treated as satisfied (no pre-heat, no hold). While the device holds that slot's
         setpoint the slot stays active until the room is 0.5 °C above the line (release deadband
         against sensor noise) and its opening edge is latched at target-warm − warmup cap. 0 keeps
-        only the deadband. The window is evaluated per calendar day: a slot whose hold-until is at
+        only the deadband. Two slots of one phase with the same target on the same day share the
+        latch: after the earlier slot ends, the later one may open up to the warmup cap early. The
+        window is evaluated per calendar day: a slot whose hold-until is at
         or before its target-warm time runs until midnight.
       default: 1.0
       selector:
@@ -135,7 +137,7 @@ blueprint:
       selector: {time: {}}
     morning_a_hold_until:
       name: Morning A Hold-Until Time
-      description: End of the slot. If at or before target-warm it is taken as the next day.
+      description: End of the slot. If at or before target-warm it is taken as the next day (the slot is evaluated per calendar day, so it still ends at midnight).
       default: "08:00:00"
       selector: {time: {}}
     morning_a_target_temp:
@@ -168,7 +170,7 @@ blueprint:
       selector: {time: {}}
     morning_b_hold_until:
       name: Morning B Hold-Until Time
-      description: End of the slot. If at or before target-warm it is taken as the next day.
+      description: End of the slot. If at or before target-warm it is taken as the next day (the slot is evaluated per calendar day, so it still ends at midnight).
       default: "10:00:00"
       selector: {time: {}}
     morning_b_target_temp:
@@ -201,7 +203,7 @@ blueprint:
       selector: {time: {}}
     evening_a_hold_until:
       name: Evening A Hold-Until Time
-      description: End of the slot. If at or before target-warm it is taken as the next day.
+      description: End of the slot. If at or before target-warm it is taken as the next day (the slot is evaluated per calendar day, so it still ends at midnight).
       default: "19:30:00"
       selector: {time: {}}
     evening_a_target_temp:
@@ -234,7 +236,7 @@ blueprint:
       selector: {time: {}}
     evening_b_hold_until:
       name: Evening B Hold-Until Time
-      description: End of the slot. If at or before target-warm it is taken as the next day.
+      description: End of the slot. If at or before target-warm it is taken as the next day (the slot is evaluated per calendar day, so it still ends at midnight).
       default: "22:00:00"
       selector: {time: {}}
     evening_b_target_temp:
@@ -408,7 +410,7 @@ action:
       # Push targets: only well-formed notify service names are dispatched (a typo would otherwise
       # be called as an arbitrary service). A well-formed name that does not exist still aborts the
       # run at the push step — HA does not suppress a missing action — so every push runs after
-      # the climate calls and the deploy step checks each target exists.
+      # the climate calls and the deploy procedure (plan Task 4 step 2) checks each target exists.
       notify_list: "{{ (notify_targets if (notify_targets is iterable and notify_targets is not string) else ([notify_targets] if notify_targets else [])) | select('match', '^notify[.][a-z0-9_]+$') | list }}"
 
       # Locale-safe weekday token (the %a abbreviation follows the system locale)
@@ -441,8 +443,9 @@ action:
       # This slot's setpoint as the device holds it; while the device is at that value the slot is
       # the one heating: its floor gets the 0.5 °C release deadband and its opening edge is
       # latched at target_warm − warmup cap (the ΔT-derived auto_start moves with sensor noise).
+      # Only while the device is ON: a setpoint retained through a vacation must not latch.
       ma_target_dev: "{{ [setpoint_max | float, [setpoint_min | float, ((((morning_a_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}"
-      ma_heating: "{{ not boost_active and (current_setpoint | float - ma_target_dev | float) | abs < 0.1 }}"
+      ma_heating: "{{ not boost_active and current_hvac_mode_normalized == 'heat_cool' and (current_setpoint | float - ma_target_dev | float) | abs < 0.1 }}"
       ma_delta_T: "{{ [0, morning_a_target_temp | float - indoor_temp | float] | max }}"
       ma_warmup_min: >-
         {{ [warmup_max_minutes | int,
@@ -466,8 +469,9 @@ action:
       # This slot's setpoint as the device holds it; while the device is at that value the slot is
       # the one heating: its floor gets the 0.5 °C release deadband and its opening edge is
       # latched at target_warm − warmup cap (the ΔT-derived auto_start moves with sensor noise).
+      # Only while the device is ON: a setpoint retained through a vacation must not latch.
       mb_target_dev: "{{ [setpoint_max | float, [setpoint_min | float, ((((morning_b_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}"
-      mb_heating: "{{ not boost_active and (current_setpoint | float - mb_target_dev | float) | abs < 0.1 }}"
+      mb_heating: "{{ not boost_active and current_hvac_mode_normalized == 'heat_cool' and (current_setpoint | float - mb_target_dev | float) | abs < 0.1 }}"
       mb_delta_T: "{{ [0, morning_b_target_temp | float - indoor_temp | float] | max }}"
       mb_warmup_min: >-
         {{ [warmup_max_minutes | int,
@@ -491,8 +495,9 @@ action:
       # This slot's setpoint as the device holds it; while the device is at that value the slot is
       # the one heating: its floor gets the 0.5 °C release deadband and its opening edge is
       # latched at target_warm − warmup cap (the ΔT-derived auto_start moves with sensor noise).
+      # Only while the device is ON: a setpoint retained through a vacation must not latch.
       ea_target_dev: "{{ [setpoint_max | float, [setpoint_min | float, ((((evening_a_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}"
-      ea_heating: "{{ not boost_active and (current_setpoint | float - ea_target_dev | float) | abs < 0.1 }}"
+      ea_heating: "{{ not boost_active and current_hvac_mode_normalized == 'heat_cool' and (current_setpoint | float - ea_target_dev | float) | abs < 0.1 }}"
       ea_delta_T: "{{ [0, evening_a_target_temp | float - indoor_temp | float] | max }}"
       ea_warmup_min: >-
         {{ [warmup_max_minutes | int,
@@ -516,8 +521,9 @@ action:
       # This slot's setpoint as the device holds it; while the device is at that value the slot is
       # the one heating: its floor gets the 0.5 °C release deadband and its opening edge is
       # latched at target_warm − warmup cap (the ΔT-derived auto_start moves with sensor noise).
+      # Only while the device is ON: a setpoint retained through a vacation must not latch.
       eb_target_dev: "{{ [setpoint_max | float, [setpoint_min | float, ((((evening_b_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}"
-      eb_heating: "{{ not boost_active and (current_setpoint | float - eb_target_dev | float) | abs < 0.1 }}"
+      eb_heating: "{{ not boost_active and current_hvac_mode_normalized == 'heat_cool' and (current_setpoint | float - eb_target_dev | float) | abs < 0.1 }}"
       eb_delta_T: "{{ [0, evening_b_target_temp | float - indoor_temp | float] | max }}"
       eb_warmup_min: >-
         {{ [warmup_max_minutes | int,
@@ -547,6 +553,8 @@ action:
   # idempotent by id; dismissed when the entity is back); the push fires once, on the
   # climate_lost trigger. Nothing below can run without the entity, so the push before `stop` is
   # safe here; every other push sits after the climate calls.
+  # The temp_lost edge fires once, so its push is also delivered from this branch (it would
+  # otherwise be swallowed by the stop when both entities are down at the same moment).
   # =============================================
   - choose:
       - conditions:
@@ -576,6 +584,21 @@ action:
                             message: >-
                               {{ entity_climate }} has been unavailable for 5 min.
                               Holding current state.
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.id | default('') == 'temp_lost' }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ notify_list }}"
+                      sequence:
+                        - service: "{{ repeat.item }}"
+                          continue_on_error: true
+                          data:
+                            title: "Heating Rack — Room Sensor Offline"
+                            message: >-
+                              {{ sensor_bathroom_temp }} non-numeric for 10 min while the climate entity
+                              is unavailable. Comfort floor suspended; slots heat on schedule once both return.
           - stop: "Climate entity unavailable"
       - conditions:
           - condition: template
@@ -603,7 +626,8 @@ action:
       active_priority: "{% if vacation_active %}P1_vacation{% elif boost_active %}P3_boost{% elif fan_is_on and (morning_active or evening_active) %}P2_fan_coord{% elif evening_active %}P4_evening{% elif morning_active %}P5_morning{% else %}P6_idle{% endif %}"
 
   # =============================================
-  # STEP 5: IDEMPOTENT SERVICE CALLS
+  # STEP 5: IDEMPOTENT SERVICE CALLS — continue_on_error so a cloud error never skips the
+  # notification edges or the boost expiry below; the next tick retries the call.
   # =============================================
   - choose:
       - conditions:
@@ -611,6 +635,7 @@ action:
             value_template: "{{ current_hvac_mode_normalized != desired_mode }}"
         sequence:
           - service: climate.set_hvac_mode
+            continue_on_error: true
             target:
               entity_id: "{{ entity_climate }}"
             data:
@@ -624,6 +649,7 @@ action:
                  and (current_setpoint | float - desired_setpoint | float) | abs > 0.1 }}
         sequence:
           - service: climate.set_temperature
+            continue_on_error: true
             target:
               entity_id: "{{ entity_climate }}"
             data:

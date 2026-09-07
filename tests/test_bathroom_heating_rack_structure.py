@@ -369,14 +369,17 @@ def test_boost_expiry_is_the_last_step(bp):
 
 def test_outage_pushes_are_edge_gated(bp):
     chooses = choose_steps(bp)
-    for idx, trigger_id in ((0, "climate_lost"), (3, "temp_lost")):
+    # climate-unavailable branch: climate_lost push + the temp_lost push it would otherwise swallow; sensor branch: temp_lost only
+    for idx, trigger_ids in ((0, ["climate_lost", "temp_lost"]), (3, ["temp_lost"])):
         seq = chooses[idx]["choose"][0]["sequence"]
         nested = [d for d in seq if "choose" in d]
-        assert len(nested) == 1
-        (branch,) = nested[0]["choose"]
-        assert branch_cond(branch) == f"{{{{ trigger.id | default('') == '{trigger_id}' }}}}"
-        assert any("repeat" in d for d in walk(branch["sequence"]))
-        assert "default" not in nested[0]
+        assert len(nested) == len(trigger_ids)
+        for block, trigger_id in zip(nested, trigger_ids):
+            (branch,) = block["choose"]
+            assert branch_cond(branch) == f"{{{{ trigger.id | default('') == '{trigger_id}' }}}}"
+            assert any("repeat" in d for d in walk(branch["sequence"]))
+            assert "default" not in block
+    assert chooses[0]["choose"][0]["sequence"][-1] == {"stop": "Climate entity unavailable"}
 
 
 def test_no_preset_machinery(bp):
@@ -406,7 +409,7 @@ def test_slot_templates(bp, slot, prefix):
     assert norm(get_var(bp, f"{prefix}_target_dev")) == norm(
         f"{{{{ [setpoint_max | float, [setpoint_min | float, (((({slot}_target_temp | float) / (setpoint_step | float) + 0.501) | int) * (setpoint_step | float))] | max] | min | round(2) }}}}")
     assert norm(get_var(bp, f"{prefix}_heating")) == norm(
-        f"{{{{ not boost_active and (current_setpoint | float - {prefix}_target_dev | float) | abs < 0.1 }}}}")
+        f"{{{{ not boost_active and current_hvac_mode_normalized == 'heat_cool' and (current_setpoint | float - {prefix}_target_dev | float) | abs < 0.1 }}}}")
     assert norm(get_var(bp, f"{prefix}_open_dt")) == norm(
         f"{{{{ as_datetime({prefix}_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if {prefix}_heating else {prefix}_warmup_min | int)) }}}}")
     assert norm(get_var(bp, f"{prefix}_in_window")) == norm(
@@ -445,9 +448,16 @@ def test_service_calls_idempotent(bp):
     assert call["target"] == {"entity_id": "{{ entity_climate }}"}
 
 
+def test_climate_calls_continue_on_error(bp):
+    chooses = choose_steps(bp)
+    for idx in (1, 2):
+        call = chooses[idx]["choose"][0]["sequence"][0]
+        assert call["continue_on_error"] is True, call["service"]
+
+
 def test_notify_fanout_continue_on_error(bp):
     repeats = [d["repeat"] for d in walk(bp["action"]) if "repeat" in d]
-    assert len(repeats) == 3
+    assert len(repeats) == 4
     assert "{{ notify_targets }}" not in BP_PATH.read_text().split("action:", 1)[1]
     for r in repeats:
         assert r["for_each"] == "{{ notify_list }}"
@@ -701,6 +711,7 @@ def test_window_day_filter(bp):
     ("23:00:00", "22:00:00", "23:30", 9, True),    # hold before warm → next day
     ("23:00:00", "23:00:00", "23:30", 9, True),    # hold == warm → next day
     ("23:00:00", "01:00:00", "22:30", 9, False),   # before auto_start (22:40 for ΔT 1)
+    ("23:00:00", "01:00:00", "00:30", 9, False),   # after midnight the slot is evaluated on the new day: not in window
 ])
 def test_hold_until_anchor_rows(bp, warm, hold, hhmm, expected_hold_day, in_window):
     ctx = base_ctx(morning_a_days=["tue"], morning_a_target_warm=warm, morning_a_hold_until=hold)
@@ -859,6 +870,25 @@ def test_target_dev_clamped_to_device_range(bp):
     ctx = base_ctx(morning_a_days=["tue"], morning_a_target_temp=28)
     out = render_vars(bp, ctx, world(**{"climate.rack": _State("unknown", attrs=attrs)}), "ma_active", at("07:00"))
     assert (out["ma_target_dev"], out["ma_heating"]) == (25.0, True)
+
+
+def test_vacation_retained_setpoint_does_not_latch(bp):
+    # vacation leaves the device OFF with the morning target still set; the slot must not treat that as "heating"
+    ctx = base_ctx(morning_a_days=["tue"])
+    off = {"climate.rack": _State("off", attrs={"temperature": 23.0, "current_temperature": 23.4, "target_temp_step": 1.0})}
+    out = render_vars(bp, ctx, world(**off, **{"sensor.t": _State("22.3")}), "ma_active", at("06:00"))
+    assert (out["ma_heating"], out["ma_in_window"]) == (False, False)          # strict edge: auto_start 06:35 for ΔT 0.7
+    out = render_vars(bp, ctx, world(**_rack(23.0), **{"sensor.t": _State("22.3")}), "ma_active", at("06:00"))
+    assert (out["ma_heating"], out["ma_in_window"]) == (True, True)            # device ON at the slot target: latched at 05:45
+
+
+def test_sibling_slot_with_same_target_shares_latch(bp):
+    # documented residual (code board 20260907-172334 R1-01): morning A 06:45→08:00 @23 and morning B 08:30→10:00 @23
+    # on the same day — after A ends, the device still holds 23, so B latches its opening edge at 07:30
+    ctx = base_ctx(morning_a_days=["tue"], morning_b_days=["tue"])
+    out = render_vars(bp, ctx, world(**_rack(23.0), **{"sensor.t": _State("22.3")}), "morning_active", at("08:05"))
+    assert out["ma_in_window"] is False
+    assert (out["mb_heating"], as_datetime(out["mb_open_dt"]).strftime("%H:%M"), out["mb_in_window"]) == (True, "07:30", True)
 
 
 # ---------------------------------------------------------------- instance + deploy dry-run
