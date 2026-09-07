@@ -1,0 +1,18 @@
+{
+  "id": "1774555916056",
+  "alias": "Bathroom Ventilator v2.0.0",
+  "description": "",
+  "use_blueprint": {
+    "path": "leviemartin/bathroom_ventilator.yaml",
+    "input": {
+      "fan_switch": "light.on_off_plug_1",
+      "humidity_sensor": "sensor.temp_sensor_bathroom_humidity_sensor",
+      "temperature_sensor": "sensor.temp_sensor_bathroom",
+      "motion_sensor": "binary_sensor.bathroom_motion",
+      "weather_entity": "weather.home_sm",
+      "weather_fallback": ["weather.openweathermap"],
+      "boost_toggle": ["input_boolean.bathroom_fan_boost"],
+      "notify_targets": ["notify.mobile_app_martin_fold"]
+    }
+  }
+}

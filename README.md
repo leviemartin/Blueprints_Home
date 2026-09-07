@@ -78,18 +78,15 @@ Automates the Display (Light) and Sound (Beep) settings of LG Air Conditioners. 
 An intelligent bathroom exhaust fan automation using dew point comparison for optimal humidity management. Designed for humid climates like the Netherlands, it makes ventilation decisions based on the actual moisture content of indoor vs. outdoor air — smarter than simple relative humidity thresholds.
 
 ### Features
-*   **💧 Dew Point Intelligence:** Uses the Magnus formula to compare indoor vs. outdoor dew points, ensuring ventilation only runs when it will actually reduce humidity.
-*   **🚿 Automatic Shower Detection:** Detects showers via sustained motion + humidity spike and ventilates for 15-45 minutes (configurable).
-*   **🌙 Night Mode:** No fan activity between 22:00-05:30 (configurable) except for shower detection.
-*   **🔄 Air Refresh Cycles:** Periodic 10-minute fan runs every 3 hours for air quality (toggleable, skipped at night or when humidity is already low).
-*   **🛡️ Mold Safety Override:** Forces fan ON if humidity exceeds 85% for 60+ minutes, regardless of all other conditions.
-*   **⚡ Energy Efficient:** Fan only runs when there's a reason — no wasteful continuous operation.
+*   **🌡️ Outdoor-Conditioned Targets (v2.0.0):** The stop target follows the outdoor dew point (Magnus, or the weather entity's native `dew_point`). On a muggy day the fan stops where ventilation stops helping instead of chasing an unreachable RH%.
+*   **🚿 Shower Detection, Any Hour:** A humidity jump between two sensor reports plus recent motion — works with sensors that report on change (Aqara T1: 6 %). Quiet hours only block new non-shower starts.
+*   **⏱️ Bounded, Stateless Runs:** Minimum 15 / maximum 45 min per shower or high-humidity run (boost, the mold override, degraded mode and the sensor-grace hold outrank these bounds), re-decided on every trigger from live state; boost and sensor loss interrupt instantly.
+*   **🛟 Degraded Mode:** Humidity sensor offline → one push, then motion-timed runs until it returns.
+*   **🔘 Boost Toggle + 📱 Push:** `input_boolean` boost with auto-expiry; mobile push for sensor offline/back and mold override.
+*   **🦠 Mold Safety Override:** RH ≥ 85 % with drier outdoor air forces the fan on.
 
 ### Requirements
-*   Smart plug (switch entity) controlling the exhaust fan
-*   Indoor temperature + humidity sensor (e.g., Aqara)
-*   Motion sensor (e.g., Philips Hue)
-*   Weather entity with outdoor temp + humidity (e.g., OpenWeatherMap)
+*   Fan entity (light, switch or fan) · indoor temperature + humidity sensor · motion sensor · weather entity (dew_point used when present) · optional fallback weather entity, boost input_boolean, notify targets
 
 ### Installation
 1. Click the button below to import this blueprint into your Home Assistant instance:

@@ -1,33 +1,27 @@
 blueprint:
-  name: "Bathroom Ventilator v1.0.0"
+  name: "Bathroom Ventilator v2.0.0"
   description: >
-    **Version: 1.0.0**
+    **Version: 2.0.0** — the stop/start targets follow the outdoor dew point (the fan stops
+    where ventilation stops helping instead of chasing an unreachable RH%); showers are detected
+    by a humidity jump between two sensor reports plus recent presence, at any hour including
+    quiet hours; every run is re-decided from live facts on each trigger (no long delays);
+    sensor loss degrades to a motion-timed mode with one mobile push; a boost toggle forces the
+    fan on; the timer-driven refresh cycle is gone — the fan is demand-controlled
+    (ASHRAE 62.2 / Bbl), trickle vents supply the background air.
 
-    Intelligently controls a bathroom exhaust fan using dew point comparison
-    for optimal humidity management in humid climates (e.g., Netherlands).
-
-    **Features:**
-    - Dew point-based ventilation decisions (smarter than RH% comparison)
-    - Automatic shower detection (motion + humidity spike)
-    - Night mode (22:00-05:30) — fan only runs after shower
-    - Scheduled air refresh cycles (toggleable)
-    - Mold safety override at 85% RH sustained
-
-    **Requirements:**
-    - Smart plug (switch) controlling the exhaust fan
-    - Indoor temperature + humidity sensor (e.g., Aqara)
-    - Motion sensor (e.g., Philips Hue)
-    - Weather entity with outdoor temp + humidity (e.g., OpenWeatherMap)
+    **Requirements:** on/off fan entity (light, switch or fan), indoor temperature + humidity
+    sensor, motion sensor, weather entity with temperature + humidity (its dew_point attribute
+    is used when present).
 
   domain: automation
   input:
     # --- DEVICES ---
     fan_switch:
-      name: Fan Switch
-      description: Smart plug controlling the bathroom ventilator.
+      name: Fan
+      description: The exhaust fan entity (a smart plug exposed as light, switch or fan).
       selector:
         entity:
-          domain: light
+          domain: [light, switch, fan]
     humidity_sensor:
       name: Humidity Sensor
       description: Indoor bathroom humidity sensor.
@@ -37,29 +31,37 @@ blueprint:
           device_class: humidity
     temperature_sensor:
       name: Temperature Sensor
-      description: Indoor bathroom temperature sensor (for dew point calculation).
+      description: Indoor bathroom temperature sensor (dew point calculation).
       selector:
         entity:
           domain: sensor
           device_class: temperature
     motion_sensor:
       name: Motion Sensor
-      description: Bathroom motion sensor for shower detection.
+      description: Bathroom motion sensor (presence for shower detection and degraded mode).
       selector:
         entity:
           domain: binary_sensor
           device_class: motion
     weather_entity:
       name: Weather Entity
-      description: "Weather entity for outdoor conditions (e.g., weather.openweathermap)."
+      description: "Outdoor conditions. A dew_point attribute is used directly; otherwise dew point is computed from temperature + humidity."
       selector:
         entity:
           domain: weather
+    weather_fallback:
+      name: Weather Fallback (optional)
+      description: "Second weather entity, used when the primary is unavailable or lacks temperature/humidity."
+      default: []
+      selector:
+        entity:
+          domain: weather
+          multiple: true
 
-    # --- HUMIDITY THRESHOLDS ---
+    # --- HUMIDITY TARGETS ---
     target_humidity:
       name: Target Humidity (%)
-      description: Fan stops when indoor humidity drops below this.
+      description: "Configured stop target. The effective stop target is this or the outdoor-conditioned floor, whichever is higher."
       default: 60
       selector:
         number:
@@ -68,8 +70,8 @@ blueprint:
           step: 5
           unit_of_measurement: "%"
     high_humidity:
-      name: High Humidity Trigger (%)
-      description: Non-shower ventilation activates above this.
+      name: High Humidity Start (%)
+      description: "Daytime non-shower ventilation starts above this, or above the effective stop target plus hysteresis, whichever is higher."
       default: 75
       selector:
         number:
@@ -77,9 +79,19 @@ blueprint:
           max: 90
           step: 5
           unit_of_measurement: "%"
+    hysteresis:
+      name: Hysteresis (%)
+      description: The start threshold sits at least this far above the effective stop target.
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 15
+          step: 1
+          unit_of_measurement: "%"
     mold_humidity:
       name: Mold Safety Threshold (%)
-      description: Force fan ON if humidity exceeds this for 60+ minutes.
+      description: Fan forced on above this at any hour, as long as the outdoor air is drier.
       default: 85
       selector:
         number:
@@ -88,8 +100,8 @@ blueprint:
           step: 5
           unit_of_measurement: "%"
     dew_point_delta_min:
-      name: Minimum Dew Point Delta (°C)
-      description: "Ventilation is only effective when indoor dew point exceeds outdoor by at least this much."
+      name: Dew Point Margin (°C)
+      description: "Margin above the outdoor dew point that defines the effective stop target (ventilation is only worth running while the indoor dew point exceeds outdoor + margin)."
       default: 2.0
       selector:
         number:
@@ -99,31 +111,31 @@ blueprint:
           unit_of_measurement: "°C"
 
     # --- SHOWER DETECTION ---
-    shower_humidity_rise:
-      name: Shower Humidity Rise (%)
-      description: "RH% increase (from motion start) that indicates a shower."
-      default: 10
+    shower_rh_jump:
+      name: Shower Humidity Jump (%)
+      description: "RH rise between two consecutive sensor reports that counts as a shower (Aqara T1 reports instantly on a 6% change)."
+      default: 6
+      selector:
+        number:
+          min: 3
+          max: 15
+          step: 1
+          unit_of_measurement: "%"
+    presence_window_min:
+      name: Presence Window (min)
+      description: Motion within this window qualifies a humidity jump as a shower.
+      default: 15
       selector:
         number:
           min: 5
-          max: 25
-          step: 1
-          unit_of_measurement: "%"
-    shower_motion_minutes:
-      name: Shower Motion Duration (min)
-      description: Minimum sustained motion to qualify as a shower.
-      default: 5
-      selector:
-        number:
-          min: 2
-          max: 15
+          max: 60
           step: 1
           unit_of_measurement: min
 
-    # --- TIMER SETTINGS ---
-    post_shower_min_runtime:
-      name: Post-Shower Minimum Run (min)
-      description: Minimum fan run time after shower detection.
+    # --- RUN TIMES ---
+    min_runtime:
+      name: Minimum Run (min)
+      description: Every fan run lasts at least this long.
       default: 15
       selector:
         number:
@@ -131,9 +143,9 @@ blueprint:
           max: 30
           step: 5
           unit_of_measurement: min
-    post_shower_max_runtime:
-      name: Post-Shower Maximum Run (min)
-      description: Hard maximum fan run time after shower.
+    max_runtime:
+      name: Maximum Run (min)
+      description: Hard cap per run; in daytime the next evaluation may start a new run.
       default: 45
       selector:
         number:
@@ -141,143 +153,187 @@ blueprint:
           max: 90
           step: 5
           unit_of_measurement: min
-    high_humidity_max_runtime:
-      name: High Humidity Maximum Run (min)
-      description: Maximum fan run for non-shower high humidity events.
-      default: 30
+
+    # --- BOOST ---
+    boost_toggle:
+      name: Boost Toggle (optional)
+      description: "input_boolean helper(s). Any one ON forces the fan on; it is switched off automatically after the boost runtime."
+      default: []
+      selector:
+        entity:
+          domain: input_boolean
+          multiple: true
+    boost_runtime_min:
+      name: Boost Runtime (min)
+      description: How long a boost holds the fan on before the toggle clears itself.
+      default: 20
       selector:
         number:
-          min: 10
+          min: 5
           max: 60
           step: 5
           unit_of_measurement: min
 
-    # --- AIR REFRESH ---
-    enable_refresh_cycles:
-      name: Enable Air Refresh Cycles
-      description: "Periodic fan runs for air quality. Disable once trickle vents are installed."
-      default: true
-      selector:
-        boolean:
-    refresh_interval_hours:
-      name: Refresh Interval (hours)
-      description: Hours between air refresh cycles.
-      default: 3
-      selector:
-        number:
-          min: 1
-          max: 6
-          step: 1
-          unit_of_measurement: h
-    refresh_duration_minutes:
-      name: Refresh Duration (min)
-      description: How long each refresh cycle runs.
+    # --- DEGRADED MODE ---
+    sensor_grace_min:
+      name: Sensor Grace (min)
+      description: The humidity sensor must be unavailable this long before degraded mode is announced.
       default: 10
       selector:
         number:
-          min: 5
-          max: 20
-          step: 5
+          min: 1
+          max: 60
+          step: 1
           unit_of_measurement: min
-    refresh_skip_below:
-      name: Refresh Skip Below (%)
-      description: Skip refresh cycle if humidity is already below this.
-      default: 55
+    degraded_run_min:
+      name: Degraded Run After Motion (min)
+      description: With the sensors unavailable, the fan runs this long after the last bathroom motion.
+      default: 20
       selector:
         number:
-          min: 40
-          max: 70
+          min: 5
+          max: 60
           step: 5
-          unit_of_measurement: "%"
+          unit_of_measurement: min
 
-    # --- SCHEDULE ---
+    # --- NOTIFICATIONS ---
+    notify_targets:
+      name: Mobile Push Targets
+      description: "notify services (full name, e.g. notify.mobile_app_martin_fold) for sensor offline/back and mold override. Empty disables push."
+      default: []
+      selector:
+        text:
+          multiple: true
+
+    # --- QUIET HOURS ---
     night_start:
       name: Night Start (Quiet Hours)
-      description: Fan will not run for non-shower events after this time.
+      description: Non-shower ventilation does not START between night start and night end; showers, mold override and boost still run.
       default: "22:00:00"
       selector:
         time:
     night_end:
       name: Night End (Quiet Hours)
-      description: Normal fan operation resumes at this time.
+      description: Normal (non-shower) fan starts resume at this time.
       default: "05:30:00"
       selector:
         time:
 
-mode: single
+mode: queued
+max: 3
 max_exceeded: silent
 
 trigger:
-  # T1: Humidity changes
   - platform: state
     entity_id: !input humidity_sensor
-    id: "humidity_change"
-
-  # T2: Motion starts
+    not_from: [unavailable, unknown]
+    not_to: [unavailable, unknown]
+    id: humidity_change
   - platform: state
     entity_id: !input motion_sensor
     to: "on"
-    id: "motion_on"
-
-  # T3: Motion stops
-  - platform: state
-    entity_id: !input motion_sensor
-    to: "off"
-    id: "motion_off"
-
-  # T4: Periodic evaluation (every 5 min)
+    id: motion_on
   - platform: time_pattern
     minutes: "/5"
-    id: "periodic_eval"
-
-  # T5: HA restart
+    id: periodic
   - platform: homeassistant
     event: start
-    id: "ha_start"
+    id: ha_start
+  - platform: state
+    entity_id: !input humidity_sensor
+    to: [unavailable, unknown]
+    for:
+      minutes: !input sensor_grace_min
+    id: sensors_lost
+  - platform: state
+    entity_id: !input humidity_sensor
+    from: [unavailable, unknown]
+    not_to: [unavailable, unknown]
+    id: sensors_back
+  - platform: state
+    entity_id: !input boost_toggle
+    to: ["on", "off"]
+    id: boost_change
 
 variables:
-  # --- Entity Mappings ---
   entity_fan: !input fan_switch
   sensor_humidity: !input humidity_sensor
   sensor_temperature: !input temperature_sensor
   sensor_motion: !input motion_sensor
   entity_weather: !input weather_entity
-
-  # --- Thresholds ---
+  weather_fallback: !input weather_fallback
   thresh_target: !input target_humidity
   thresh_high: !input high_humidity
+  hysteresis: !input hysteresis
   thresh_mold: !input mold_humidity
   dp_delta_min: !input dew_point_delta_min
-  shower_rh_rise: !input shower_humidity_rise
-  shower_motion_min: !input shower_motion_minutes
-
-  # --- Timers ---
-  shower_min_run: !input post_shower_min_runtime
-  shower_max_run: !input post_shower_max_runtime
-  high_hum_max_run: !input high_humidity_max_runtime
-
-  # --- Refresh ---
-  refresh_enabled: !input enable_refresh_cycles
-  refresh_interval: !input refresh_interval_hours
-  refresh_duration: !input refresh_duration_minutes
-  refresh_skip: !input refresh_skip_below
-
-  # --- Schedule ---
+  shower_rh_jump: !input shower_rh_jump
+  presence_window_min: !input presence_window_min
+  min_runtime: !input min_runtime
+  max_runtime: !input max_runtime
+  boost_toggle: !input boost_toggle
+  boost_runtime_min: !input boost_runtime_min
+  sensor_grace_min: !input sensor_grace_min
+  degraded_run_min: !input degraded_run_min
+  notify_targets: !input notify_targets
   t_night_start: !input night_start
   t_night_end: !input night_end
 
 action:
   # =============================================
-  # STEP 1: COMPUTE VARIABLES
+  # STEP 1: COMPUTE EVERY FACT (inside action for trace visibility)
+  # Every boolean is a {{ }} expression — bare true/false text is a truthy string in HA.
   # =============================================
   - variables:
-      # --- Sensor Readings ---
-      indoor_temp: "{{ states(sensor_temperature) | float(20) }}"
-      indoor_rh: "{{ states(sensor_humidity) | float(50) }}"
-      outdoor_temp: "{{ state_attr(entity_weather, 'temperature') | float(15) }}"
-      outdoor_rh: "{{ state_attr(entity_weather, 'humidity') | float(50) }}"
+      indoor_temp_raw: "{{ states(sensor_temperature) }}"
+      indoor_rh_raw: "{{ states(sensor_humidity) }}"
+      sensors_ok: "{{ is_number(indoor_temp_raw) and is_number(indoor_rh_raw) }}"
+      indoor_temp: "{{ indoor_temp_raw | float(20) }}"
+      indoor_rh: "{{ indoor_rh_raw | float(50) }}"
+      # How long the failing sensor has been non-numeric (its last_changed is the moment it went
+      # unavailable/unknown). Drives the grace window for degraded mode and the warning.
+      sensors_lost_minutes: >-
+        {% if sensors_ok %}{{ 0 }}
+        {% elif not is_number(indoor_rh_raw) and states[sensor_humidity] is not none %}{{ ((now() - states[sensor_humidity].last_changed).total_seconds() / 60) | round(1) }}
+        {% elif not is_number(indoor_rh_raw) %}{{ 9999 }}
+        {% elif states[sensor_temperature] is not none %}{{ ((now() - states[sensor_temperature].last_changed).total_seconds() / 60) | round(1) }}
+        {% else %}{{ 9999 }}
+        {% endif %}
+      # Only real notify services may be called by the push fan-out (an operator typo such as a
+      # bare service name or any non-notify service is dropped, never dispatched).
+      notify_list: >-
+        {{ (notify_targets if (notify_targets is iterable and notify_targets is not string) else ([notify_targets] if notify_targets else [])) | select('match', '^notify[.][a-z0-9_]+$') | list }}
 
-      # --- Dew Point (Magnus Formula) ---
+      # --- Weather: first candidate with usable data ---
+      weather_candidates: >-
+        {{ [entity_weather] + (weather_fallback if (weather_fallback is iterable and weather_fallback is not string) else ([weather_fallback] if weather_fallback else [])) }}
+      weather_used: >-
+        {% set ns = namespace(w='') %}
+        {% for w in weather_candidates %}
+          {% if ns.w == '' and states(w) not in ['unavailable', 'unknown', ''] and
+                (is_number(state_attr(w, 'dew_point')) or
+                 (is_number(state_attr(w, 'temperature')) and is_number(state_attr(w, 'humidity')))) %}
+            {% set ns.w = w %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.w }}
+      outdoor_temp: "{{ (state_attr(weather_used, 'temperature') | float(15)) if weather_used else 15 }}"
+      outdoor_rh: "{{ (state_attr(weather_used, 'humidity') | float(50)) if weather_used else 50 }}"
+      outdoor_dp: >-
+        {% if weather_used and is_number(state_attr(weather_used, 'dew_point')) %}
+          {{ state_attr(weather_used, 'dew_point') | float | round(1) }}
+        {% elif weather_used %}
+          {% set T = outdoor_temp | float %}
+          {% set RH = [outdoor_rh | float, 1] | max %}
+          {% set a = 17.625 %}
+          {% set b = 243.04 %}
+          {% set alpha = (a * T) / (b + T) + log(RH / 100.0) %}
+          {{ (b * alpha / (a - alpha)) | round(1) }}
+        {% else %}
+          {{ 13.0 }}
+        {% endif %}
+
+      # --- Psychrometrics (Magnus) ---
       indoor_dp: >-
         {% set T = indoor_temp | float %}
         {% set RH = [indoor_rh | float, 1] | max %}
@@ -285,219 +341,222 @@ action:
         {% set b = 243.04 %}
         {% set alpha = (a * T) / (b + T) + log(RH / 100.0) %}
         {{ (b * alpha / (a - alpha)) | round(1) }}
-      outdoor_dp: >-
-        {% set T = outdoor_temp | float %}
-        {% set RH = [outdoor_rh | float, 1] | max %}
-        {% set a = 17.625 %}
-        {% set b = 243.04 %}
-        {% set alpha = (a * T) / (b + T) + log(RH / 100.0) %}
-        {{ (b * alpha / (a - alpha)) | round(1) }}
-
-      # --- Decision Variables ---
       dp_delta: "{{ (indoor_dp | float - outdoor_dp | float) | round(1) }}"
-      ventilation_effective: "{{ dp_delta | float > dp_delta_min | float }}"
+      # Indoor RH at which the indoor dew point equals outdoor dew point + margin: below this,
+      # ventilation cannot dry the room any further.
+      rh_floor: >-
+        {% set T = indoor_temp | float %}
+        {% set Td = outdoor_dp | float + dp_delta_min | float %}
+        {% if Td >= T %}
+          {{ 100.0 }}
+        {% else %}
+          {% set a = 17.625 %}
+          {% set b = 243.04 %}
+          {{ ([0.0, [100.0, 100.0 * e ** (a * Td / (b + Td) - a * T / (b + T))] | min] | max) | round(1) }}
+        {% endif %}
+      stop_target: "{{ [thresh_target | float, rh_floor | float] | max | round(1) }}"
+      start_threshold: "{{ [[thresh_high | float, stop_target | float + hysteresis | float] | max, 100.0] | min | round(1) }}"
+
+      # --- Fan and time facts ---
       fan_is_on: "{{ is_state(entity_fan, 'on') }}"
+      fan_on_minutes: >-
+        {{ (((now() - states[entity_fan].last_changed).total_seconds() / 60) | int) if (fan_is_on and states[entity_fan] is not none) else 0 }}
       is_night: >-
         {% set t = now().strftime('%H:%M') %}
-        {{ t >= t_night_start[:5] or t < t_night_end[:5] }}
+        {% set s = t_night_start[:5] %}
+        {% set e_ = t_night_end[:5] %}
+        {{ (t >= s or t < e_) if s > e_ else (s <= t and t < e_) }}
+      minutes_since_motion: >-
+        {{ (((now() - states[sensor_motion].last_changed).total_seconds() / 60) | round(1)) if states[sensor_motion] is not none else 9999 }}
+      presence_recent: "{{ is_state(sensor_motion, 'on') or minutes_since_motion | float < presence_window_min | float }}"
 
-      # --- Shower Detection ---
-      # Shower detection uses a different approach than a persisted baseline.
-      # Since blueprint variables don't persist across runs, we detect showers
-      # by checking: (1) motion has been sustained for shower_motion_min, AND
-      # (2) current humidity is significantly above the typical comfortable
-      # range (thresh_high). This avoids the need for a persisted baseline.
-      # The humidity_change trigger (T1) combined with motion_on (T2) timing
-      # gives us the detection window.
-      motion_is_on: "{{ is_state(sensor_motion, 'on') }}"
-      motion_sustained: >-
-        {{ is_state(sensor_motion, 'on') and
-           (now() - states[sensor_motion].last_changed).total_seconds()
-           > (shower_motion_min | int * 60) }}
-      shower_detected: >-
-        {{ motion_sustained and
-           indoor_rh | float > thresh_high | float }}
+      # --- Shower signature: jump between two consecutive reports + recent presence ---
+      shower_signal: >-
+        {{ trigger is defined and trigger.id | default('') == 'humidity_change' and
+           trigger.from_state is not none and trigger.to_state is not none and
+           is_number(trigger.from_state.state) and is_number(trigger.to_state.state) and
+           (trigger.to_state.state | float - trigger.from_state.state | float) >= shower_rh_jump | float and
+           presence_recent }}
 
-      # --- Hysteresis (5% buffer above target for P4 re-trigger) ---
-      high_hum_trigger_point: >-
-        {% if fan_is_on %}
-          {{ thresh_high | float }}
-        {% else %}
-          {{ thresh_high | float + 5 }}
+      # --- Boost ---
+      boost_list: >-
+        {{ boost_toggle if (boost_toggle is iterable and boost_toggle is not string) else ([boost_toggle] if boost_toggle else []) }}
+      boost_active: >-
+        {% set ns = namespace(a=false) %}
+        {% for b in boost_list %}
+          {% if is_state(b, 'on') and states[b] is not none and
+                ((now() - states[b].last_changed).total_seconds() / 60) < boost_runtime_min | float %}
+            {% set ns.a = true %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.a }}
+      boost_expired_list: >-
+        {% set ns = namespace(x=[]) %}
+        {% for b in boost_list %}
+          {% if is_state(b, 'on') and states[b] is not none and
+                ((now() - states[b].last_changed).total_seconds() / 60) >= boost_runtime_min | float %}
+            {% set ns.x = ns.x + [b] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.x }}
+
+      # --- Degraded mode and mold ---
+      degraded_on: "{{ is_state(sensor_motion, 'on') or minutes_since_motion | float < degraded_run_min | float }}"
+      mold_on: "{{ sensors_ok and indoor_rh | float >= thresh_mold | float and dp_delta | float > 0 }}"
+
+      # --- Decision: first match wins (spec §3.4) ---
+      # 'hold' = sensor non-numeric for less than the grace window: keep the fan as it is.
+      active_rule: >-
+        {% if boost_active %}boost
+        {% elif not sensors_ok and sensors_lost_minutes | float >= sensor_grace_min | float %}degraded
+        {% elif not sensors_ok %}hold
+        {% elif mold_on %}mold
+        {% elif fan_is_on and fan_on_minutes | int < min_runtime | int %}min_run
+        {% elif fan_is_on and fan_on_minutes | int >= max_runtime | int %}max_run
+        {% elif shower_signal %}shower
+        {% elif fan_is_on and indoor_rh | float > stop_target | float %}continue
+        {% elif not fan_is_on and indoor_rh | float > start_threshold | float and not is_night %}start
+        {% else %}idle
         {% endif %}
-
-      # --- Mold Check (fan state proxy for duration) ---
-      # If humidity > mold threshold and fan has been off for 60+ min,
-      # this indicates sustained high humidity without ventilation
-      mold_risk: >-
-        {% set rh = indoor_rh | float %}
-        {% set threshold = thresh_mold | float %}
-        {% if rh < threshold %}
-          false
-        {% elif fan_is_on %}
-          false
-        {% else %}
-          {% set fan_off_seconds = (now() - states[entity_fan].last_changed).total_seconds() %}
-          {{ fan_off_seconds > 3600 }}
-        {% endif %}
-
-      # --- Fan Runtime Tracking ---
-      fan_on_minutes: >-
-        {% if not fan_is_on %}
-          0
-        {% else %}
-          {{ ((now() - states[entity_fan].last_changed).total_seconds() / 60) | round(0) | int }}
-        {% endif %}
-      high_hum_max_exceeded: >-
-        {{ fan_is_on and
-           fan_on_minutes | int >= high_hum_max_run | int and
-           not shower_detected }}
-
-      # --- Refresh Timing ---
-      # Check if enough time has passed since fan was last on
-      minutes_since_fan_off: >-
-        {% if fan_is_on %}
-          0
-        {% else %}
-          {{ ((now() - states[entity_fan].last_changed).total_seconds() / 60) | round(0) | int }}
-        {% endif %}
-      refresh_due: >-
-        {{ refresh_enabled and
-           not is_night and
-           indoor_rh | float > refresh_skip | float and
-           minutes_since_fan_off | int >= (refresh_interval | int * 60) }}
+      desired_on: >-
+        {% if active_rule == 'degraded' %}{{ degraded_on }}{% elif active_rule == 'hold' %}{{ fan_is_on }}{% else %}{{ active_rule in ['boost', 'mold', 'min_run', 'shower', 'continue', 'start'] }}{% endif %}
 
   # =============================================
-  # STEP 2: SENSOR VALIDATION
+  # STEP 2a: SENSOR WARNING — state-driven, so an outage that is already live when the
+  # blueprint is (re)loaded is still announced in HA; idempotent per notification_id.
   # =============================================
   - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ (not sensors_ok) and sensors_lost_minutes | float >= sensor_grace_min | float }}"
+        sequence:
+          - service: persistent_notification.create
+            continue_on_error: true
+            data:
+              title: "Ventilator — Sensor Offline"
+              message: >
+                {{ sensor_humidity }} / {{ sensor_temperature }} non-numeric for
+                {{ sensors_lost_minutes }} min. Degraded mode: the fan runs
+                {{ degraded_run_min }} min after any bathroom motion until the sensor returns.
+              notification_id: "ventilator_sensor_warning"
+      - conditions:
+          - condition: template
+            value_template: "{{ sensors_ok }}"
+        sequence:
+          - service: persistent_notification.dismiss
+            continue_on_error: true
+            data:
+              notification_id: "ventilator_sensor_warning"
+
+  # =============================================
+  # STEP 2b: MOBILE PUSH — edge-triggered, once per transition (an outage already live at
+  # (re)load produces no 'lost' push; the 'back' push fires when it ends)
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id | default('') == 'sensors_lost' }}"
+        sequence:
+          - repeat:
+              for_each: "{{ notify_list }}"
+              sequence:
+                - service: "{{ repeat.item }}"
+                  continue_on_error: true
+                  data:
+                    title: "Bathroom fan — sensor offline"
+                    message: "Humidity sensor offline for {{ sensor_grace_min }} min. Fan now runs {{ degraded_run_min }} min after motion."
       - conditions:
           - condition: template
             value_template: >-
-              {{ states(sensor_humidity) in ['unavailable', 'unknown'] or
-                 states(sensor_temperature) in ['unavailable', 'unknown'] }}
+              {{ trigger.id | default('') == 'sensors_back' and sensors_ok and
+                 trigger.from_state is not none and
+                 (now() - trigger.from_state.last_changed).total_seconds() >= sensor_grace_min | float * 60 }}
         sequence:
-          - service: persistent_notification.create
-            data:
-              title: "Ventilator Blueprint — Sensor Warning"
-              message: >
-                Bathroom sensors unavailable. Fan holding current state.
-                Humidity: {{ states(sensor_humidity) }},
-                Temperature: {{ states(sensor_temperature) }}
-              notification_id: "ventilator_sensor_warning"
-          - stop: "Sensors unavailable"
+          - repeat:
+              for_each: "{{ notify_list }}"
+              sequence:
+                - service: "{{ repeat.item }}"
+                  continue_on_error: true
+                  data:
+                    title: "Bathroom fan — sensor back"
+                    message: "Humidity sensor reporting again ({{ indoor_rh }}% RH). Normal control resumed."
 
   # =============================================
-  # STEP 3: MAIN PRIORITY CHOOSE
+  # STEP 3: MOLD OVERRIDE NOTIFICATION — edge: fires when the override takes over from an
+  # idle fan. Rule 3 (mold) outranks rule 5 (max_run), so the fan stays ON for the whole
+  # mold episode and this edge occurs once per episode; no extra de-dup needed.
   # =============================================
   - choose:
-      # --- P1: MOLD SAFETY OVERRIDE ---
       - conditions:
           - condition: template
-            value_template: "{{ mold_risk }}"
+            value_template: "{{ mold_on and not fan_is_on }}"
         sequence:
-          - service: light.turn_on
-            target:
-              entity_id: "{{ entity_fan }}"
           - service: persistent_notification.create
+            continue_on_error: true
             data:
               title: "Ventilator — Mold Safety Override"
               message: >
-                Fan forced ON: humidity {{ indoor_rh }}% has exceeded
-                {{ thresh_mold }}% for 60+ minutes. Indoor DP: {{ indoor_dp }}°C,
-                Outdoor DP: {{ outdoor_dp }}°C.
+                Fan forced ON: humidity {{ indoor_rh }}% is at or above {{ thresh_mold }}%.
+                Indoor dew point {{ indoor_dp }}°C, outdoor {{ outdoor_dp }}°C ({{ weather_used }}).
+              notification_id: "ventilator_mold_warning"
+          # Push only when the fan can actually be commanded: with the plug unavailable the
+          # turn_on below fails, fan_is_on stays false and this edge would re-enter every tick.
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ states[entity_fan] is not none and not is_state(entity_fan, 'unavailable') }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ notify_list }}"
+                      sequence:
+                        - service: "{{ repeat.item }}"
+                          continue_on_error: true
+                          data:
+                            title: "Bathroom fan — mold override"
+                            message: "Bathroom at {{ indoor_rh }}% RH (≥ {{ thresh_mold }}%). Fan forced on."
+      - conditions:
+          - condition: template
+            value_template: "{{ not mold_on }}"
+        sequence:
+          - service: persistent_notification.dismiss
+            continue_on_error: true
+            data:
               notification_id: "ventilator_mold_warning"
 
-      # --- P2: TARGET ACHIEVED — STOP ---
+  # =============================================
+  # STEP 4: FAN COMMAND (only when the state actually differs)
+  # =============================================
+  - choose:
       - conditions:
           - condition: template
-            value_template: "{{ fan_is_on and indoor_rh | float < thresh_target | float }}"
+            value_template: "{{ desired_on and not fan_is_on }}"
         sequence:
-          - service: light.turn_off
+          - service: homeassistant.turn_on
+            continue_on_error: true
             target:
               entity_id: "{{ entity_fan }}"
-
-      # --- P3: POST-SHOWER VENTILATION ---
       - conditions:
           - condition: template
-            value_template: "{{ shower_detected }}"
+            value_template: "{{ (not desired_on) and fan_is_on }}"
         sequence:
-          - service: light.turn_on
-            target:
-              entity_id: "{{ entity_fan }}"
-          # Minimum run: wait the guaranteed minimum time
-          - delay:
-              minutes: !input post_shower_min_runtime
-          # Recheck loop: every 5 min, stop if conditions met or max reached
-          - repeat:
-              until:
-                - condition: template
-                  value_template: >-
-                    {% set rh_now = states(sensor_humidity) | float(50) %}
-                    {% set T_in = states(sensor_temperature) | float(20) %}
-                    {% set RH_in = [rh_now, 1] | max %}
-                    {% set a = 17.625 %}
-                    {% set b = 243.04 %}
-                    {% set alpha_in = (a * T_in) / (b + T_in) + log(RH_in / 100.0) %}
-                    {% set dp_in = (b * alpha_in / (a - alpha_in)) | round(1) %}
-                    {% set T_out = state_attr(entity_weather, 'temperature') | float(15) %}
-                    {% set RH_out = [state_attr(entity_weather, 'humidity') | float(50), 1] | max %}
-                    {% set alpha_out = (a * T_out) / (b + T_out) + log(RH_out / 100.0) %}
-                    {% set dp_out = (b * alpha_out / (a - alpha_out)) | round(1) %}
-                    {% set delta = dp_in - dp_out %}
-                    {% set elapsed = (shower_min_run | int) + (repeat.index * 5) %}
-                    {{ rh_now < thresh_target | float or
-                       delta < dp_delta_min | float or
-                       elapsed >= shower_max_run | int }}
-              sequence:
-                - delay:
-                    minutes: 5
-          - service: light.turn_off
-            target:
-              entity_id: "{{ entity_fan }}"
-
-      # --- P4: HIGH HUMIDITY (NON-SHOWER) ---
-      - conditions:
-          - condition: template
-            value_template: >-
-              {{ indoor_rh | float > high_hum_trigger_point | float and
-                 ventilation_effective and
-                 not is_night and
-                 not high_hum_max_exceeded }}
-        sequence:
-          - service: light.turn_on
-            target:
-              entity_id: "{{ entity_fan }}"
-          # Fan stays on; T4 periodic trigger will re-evaluate.
-          # P2 (target achieved) or P6 (default off) will stop it.
-
-      # --- P5: AIR REFRESH CYCLE ---
-      - conditions:
-          - condition: template
-            value_template: "{{ refresh_due }}"
-        sequence:
-          - service: light.turn_on
-            target:
-              entity_id: "{{ entity_fan }}"
-          - delay:
-              minutes: !input refresh_duration_minutes
-          - service: light.turn_off
-            target:
-              entity_id: "{{ entity_fan }}"
-
-      # --- P6: DEFAULT — FAN OFF ---
-      # Catches: fan left on with no active reason, max runtime exceeded,
-      # ventilation no longer effective, or any other unmatched state.
-      - conditions:
-          - condition: template
-            value_template: "{{ fan_is_on }}"
-        sequence:
-          - service: light.turn_off
+          - service: homeassistant.turn_off
+            continue_on_error: true
             target:
               entity_id: "{{ entity_fan }}"
 
   # =============================================
-  # STEP 4: DEBUG NOTIFICATION (Manual Run Only)
+  # STEP 5: BOOST EXPIRY (after the fan call, so the resulting boost_change run sees a settled state)
+  # =============================================
+  - repeat:
+      for_each: "{{ boost_expired_list }}"
+      sequence:
+        - service: input_boolean.turn_off
+          continue_on_error: true
+          target:
+            entity_id: "{{ repeat.item }}"
+
+  # =============================================
+  # STEP 6: DEBUG NOTIFICATION (manual run only)
   # =============================================
   - choose:
       - conditions:
@@ -505,22 +564,21 @@ action:
             value_template: "{{ trigger.id | default('manual') == 'manual' }}"
         sequence:
           - service: persistent_notification.create
+            continue_on_error: true
             data:
               title: "Ventilator Debug — {{ now().strftime('%H:%M:%S') }}"
               message: >
-                **Indoor:** {{ indoor_temp }}°C / {{ indoor_rh }}% RH / DP {{ indoor_dp }}°C
+                **Indoor:** {{ indoor_temp }}°C / {{ indoor_rh }}% RH / DP {{ indoor_dp }}°C (sensors_ok={{ sensors_ok }}, sensors_lost_minutes {{ sensors_lost_minutes }})
 
-                **Outdoor:** {{ outdoor_temp }}°C / {{ outdoor_rh }}% RH / DP {{ outdoor_dp }}°C
+                **Outdoor:** weather_used={{ weather_used if weather_used else 'none' }} · {{ outdoor_temp }}°C / {{ outdoor_rh }}% RH / outdoor_dp {{ outdoor_dp }}°C · dp_delta {{ dp_delta }}°C
 
-                **DP Delta:** {{ dp_delta }}°C (effective: {{ ventilation_effective }})
+                **Targets:** rh_floor {{ rh_floor }}% · stop_target {{ stop_target }}% · start_threshold {{ start_threshold }}%
 
-                **Fan:** {{ 'ON' if fan_is_on else 'OFF' }} (on for {{ fan_on_minutes }}min)
+                **Fan:** {{ 'ON' if fan_is_on else 'OFF' }} · fan_on_minutes {{ fan_on_minutes }} · min/max {{ min_runtime }}/{{ max_runtime }}
 
-                **Night:** {{ is_night }} | **Motion:** {{ motion_is_on }} (sustained: {{ motion_sustained }})
+                **Presence:** motion {{ states(sensor_motion) }} · minutes_since_motion {{ minutes_since_motion }} · presence_recent {{ presence_recent }}
 
-                **Shower:** {{ shower_detected }} | **Mold Risk:** {{ mold_risk }}
+                **Flags:** is_night {{ is_night }} · boost_active {{ boost_active }} · mold_on {{ mold_on }} · degraded_on {{ degraded_on }}
 
-                **Refresh:** enabled={{ refresh_enabled }}, due={{ refresh_due }}, last off={{ minutes_since_fan_off }}min ago
-
-                **Trigger:** manual
+                **Decision:** active_rule {{ active_rule }} → desired_on {{ desired_on }}
               notification_id: "ventilator_debug"
