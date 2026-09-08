@@ -1,6 +1,6 @@
 {
   "id": "1779553673971",
-  "alias": "Bedroom Sleep Pre-Cool v1.0.1",
+  "alias": "Bedroom Sleep Pre-Cool v1.0.2",
   "description": "",
   "use_blueprint": {
     "path": "leviemartin/bedroom_precool.yaml",
