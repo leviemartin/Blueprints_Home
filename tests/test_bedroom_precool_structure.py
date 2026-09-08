@@ -263,11 +263,20 @@ def _config_validation_template(bp):
 
 def test_rendered_config_validation_rejects_a_lead_cap_reaching_back_past_wake(bp):
     now = datetime(2026, 9, 8, 9, 0, tzinfo=TZ)
-    base = dict(drive_setpoint=16, ideal_temp=23, hall_offset=2, bedtime="19:30:00",
-                wake_time="07:15:00", deep_night_check="01:00:00")
+    base = dict(drive_setpoint=16, ideal_temp=23, hall_offset=2, deep_night_check="01:00:00")
     tmpl = _env(now).from_string(_config_validation_template(bp))
     render = lambda **kw: _reparse(tmpl.render(**{**base, **kw}).strip())
-    assert render(earliest_turn_on_tod="15:30:00") is False
+    assert render(bedtime="19:30:00", wake_time="07:15:00", lead_cap_minutes=240) is False  # live
     # an adoption window that starts at/before wake would swallow the wake-off again
-    assert render(earliest_turn_on_tod="07:15:00") is True
-    assert render(earliest_turn_on_tod="06:00:00") is True
+    assert render(bedtime="11:15:00", wake_time="07:15:00", lead_cap_minutes=240) is True   # exactly at wake
+    assert render(bedtime="10:00:00", wake_time="07:15:00", lead_cap_minutes=240) is True   # before wake
+    # board 20260908-071936 R2-01/R1-02: bedtime − cap wrapping past midnight renders
+    # '23:00:00', which a HH:MM:SS string compare would let through
+    assert _render(bp, "earliest_turn_on_tod", now, bedtime="05:00:00", lead_cap_minutes=360) == "23:00:00"
+    assert render(bedtime="05:00:00", wake_time="04:00:00", lead_cap_minutes=360) is True
+
+
+def test_earliest_turn_on_tod_is_defined_before_precool_started_consumes_it(text):
+    """HA renders a `variables:` step top to bottom; a reordering would leave
+    earliest_turn_on_tod Undefined inside precool_started on every tick (R1-03)."""
+    assert text.index("earliest_turn_on_tod:") < text.index("precool_started:")

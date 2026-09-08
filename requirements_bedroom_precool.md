@@ -50,7 +50,7 @@ acts. Phase boundaries span midnight (bedtime -> wake is an overnight window).
 
 | Phase | Window | AC behaviour | Beeps |
 |---|---|---|---|
-| DAY-OFF | wake -> turn_on | Ensure AC off; recompute turn-on each tick | 0 (1 at wake) |
+| DAY-OFF | wake -> min(turn_on, bedtime − lead_cap) | Ensure AC off — any running unit is switched off on the next tick; recompute turn-on each tick | 1 at wake (+1 per manual daytime turn-on) |
 | PRECOOL | turn_on -> bedtime − 1 min | Cooling; closed-loop DRIVE / HOLD | many (allowed) |
 | BEDTIME-LOCK | bedtime − 1 min -> bedtime | One locking command + auto-learn write | 0–1 |
 | NIGHT-HOLD | bedtime -> deep-night check | Holds; blueprint issues nothing | 0 |
@@ -61,9 +61,13 @@ Beep budget after bedtime: 0–2. Turn-on is a one-way latch — once PRECOOL
 begins it never reverts to DAY-OFF that day. The latch is bounded: a running
 AC counts as "PRECOOL has started" only from `bedtime − lead_cap_minutes`
 onward; earlier on the day side (from wake) a running unit is a leftover
-night hold and DAY-OFF turns it off. Configuration validation rejects a lead
-cap that reaches back past wake time. Cool-day nights (the AC was never
-started) are fully no-op.
+night hold and DAY-OFF turns it off. Consequence: a unit switched on by hand
+between wake and `bedtime − lead_cap_minutes` is switched off again within a
+minute (one beep) — to use it manually during the day, disable the
+automation (manual-override handling is a v1.1.0 item). Configuration
+validation rejects a lead cap whose earliest turn-on is at or before wake
+time, comparing instants so a cap that wraps past midnight is caught too.
+Cool-day nights (the AC was never started) are fully no-op.
 
 ## Prediction Model
 

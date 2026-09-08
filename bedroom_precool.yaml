@@ -1,7 +1,11 @@
 blueprint:
   name: "Bedroom Sleep Pre-Cool v1.0.2"
   description: >
-    **Version: 1.0.2**
+    **Version: 1.0.2** — the wake-time turn-off works again: a running unit
+    counts as "PRECOOL has started" only from bedtime − lead cap; earlier on
+    the day side DAY-OFF switches it off (this also ends a manual daytime
+    turn-on within a minute). History: v1.0.1 instants carried as timestamps
+    across the variables boundary · v1.0.0 initial.
 
     Predictive pre-cooling of bedrooms via a single hall LG air conditioner.
     Reaches an ideal sleep temperature by a fixed bedtime, then holds the room
@@ -702,11 +706,15 @@ action:
       turn_on_tod: "{{ turn_on_ts | float | timestamp_custom('%H:%M:%S') }}"
       # Earliest possible turn-on = bedtime - lead cap. A running AC is
       # evidence that PRECOOL has started ONLY inside [earliest_turn_on,
-      # bedtime); earlier on the day side (from wake) a running unit is a
-      # leftover night hold that DAY_OFF turns off. Without this bound the
+      # bedtime); earlier on the day side (from wake) ANY running unit — a
+      # leftover night hold or a manual daytime turn-on — is switched off by
+      # DAY_OFF on the next tick (one beep). Without this bound the
       # ac_is_running latch made DAY_OFF unreachable on every cooling night
       # (2026-09-08: the unit was re-driven at 07:15 and ran all day).
-      # Wall-clock .strftime like lock_tod; STEP 3 keeps it after wake_time.
+      # Wall-clock .strftime like lock_tod. STEP 3 rejects a lead cap whose
+      # earliest turn-on is at/before wake — compared as instants inside one
+      # template, because a wrapped HH:MM:SS (e.g. '23:00:00') would sort
+      # ABOVE wake_time and slip past a string compare.
       earliest_turn_on_tod: >-
         {{ (today_at(bedtime) - timedelta(minutes=lead_cap_minutes | int)).strftime('%H:%M:%S') }}
       # --- Phase derivation (all time-of-day string comparisons) ---
@@ -772,7 +780,8 @@ action:
                  or bedtime == wake_time
                  or wake_time >= bedtime
                  or deep_night_check >= wake_time
-                 or earliest_turn_on_tod <= wake_time }}
+                 or (today_at(bedtime) - timedelta(minutes=lead_cap_minutes | int))
+                    <= today_at(wake_time) }}
         sequence:
           - choose:
               - conditions:
