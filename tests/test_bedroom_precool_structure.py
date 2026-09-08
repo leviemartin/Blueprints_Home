@@ -1,4 +1,4 @@
-"""Structural pins for bedroom_precool.yaml (Bedroom Sleep Pre-Cool v1.0.2) and its
+"""Structural pins for bedroom_precool.yaml (Bedroom Sleep Pre-Cool v1.0.3) and its
 deployed instance configs.
 
 Run: cd ~/AI/projects/Blueprints_Home && \
@@ -72,8 +72,8 @@ def test_instants_are_carried_as_timestamps_not_datetimes(text):
 
 
 def test_version_bumped(bp):
-    assert bp["blueprint"]["name"].endswith("v1.0.2")
-    assert "**Version: 1.0.2**" in bp["blueprint"]["description"]
+    assert bp["blueprint"]["name"].endswith("v1.0.3")
+    assert "**Version: 1.0.3**" in bp["blueprint"]["description"]
 
 
 # --- deployed instance configs ---------------------------------------------------------
@@ -87,7 +87,7 @@ def test_precool_instance_keys_exist_and_weather_supports_hourly_forecasts():
     # weather.openweathermap reports supported_features None in this HA (no forecast
     # service); weather.home_sm (Met.no) supports hourly forecasts (features 3).
     assert inst["use_blueprint"]["input"]["weather_entity"] == "weather.home_sm"
-    assert inst["alias"].endswith("v1.0.2")
+    assert inst["alias"].endswith("v1.0.3")
 
 
 def test_lg_ac_instance_escalation_stages_are_ordered_and_in_range():
@@ -280,3 +280,103 @@ def test_earliest_turn_on_tod_is_defined_before_precool_started_consumes_it(text
     """HA renders a `variables:` step top to bottom; a reordering would leave
     earliest_turn_on_tod Undefined inside precool_started on every tick (R1-03)."""
     assert text.index("earliest_turn_on_tod:") < text.index("precool_started:")
+
+
+# --- v1.0.3 night_fan input (design board 20260908-090730) ---------------------------
+
+def _def_index(text, name):
+    """Offset of the `<name>:` variable DEFINITION line (not a mention in a comment)."""
+    m = re.search(rf"^\s+{re.escape(name)}:", text, re.M)
+    assert m, f"no definition line for {name}"
+    return m.start()
+
+
+def test_every_input_is_passed_through_top_level_variables(bp):
+    """Board R1-01/R2-01: an input that is not bound in the top-level `variables:` block is
+    Undefined in Jinja, so the feature that reads it silently no-ops."""
+    inputs = bp["blueprint"]["input"]
+    top = bp.get("variables") or {}
+    missing = [k for k in inputs if not (isinstance(top.get(k), _Input) and top[k].name == k)]
+    assert missing == [], f"inputs not passed through top-level variables: {missing}"
+
+
+def test_night_fan_input_defaults_to_low_and_names_its_gate(bp):
+    inp = bp["blueprint"]["input"]["night_fan"]
+    assert inp["default"] == "low"
+    assert "Enable Fan Control" in inp["description"]
+    assert "low" in [o["value"] for o in inp["selector"]["select"]["options"]]
+    assert "Night Fan" in bp["blueprint"]["input"]["enable_fan_control"]["description"]
+
+
+def _night_fan_chain(bp, ac_fan_modes, night_fan="low", fan_normal="medium"):
+    now = datetime(2026, 9, 8, 19, 29, tzinfo=TZ)
+    ctx = dict(ac_fan_modes=ac_fan_modes, night_fan=night_fan, fan_normal=fan_normal)
+    return _render_chain(bp, ["night_fan_resolved", "night_fan_mode"], now, ctx)
+
+
+def test_rendered_night_fan_mode_resolves_case_insensitively_and_falls_back(bp):
+    assert _night_fan_chain(bp, ["auto", "low", "medium", "high"])["night_fan_mode"] == "low"
+    # a unit that reports capitalised modes gets ITS spelling back (board R1-03)
+    assert _night_fan_chain(bp, ["Auto", "Low", "Mid", "High"])["night_fan_mode"] == "Low"
+    assert _night_fan_chain(bp, ["auto", "low", "medium", "high"], night_fan="HIGH")["night_fan_mode"] == "high"
+    ctx = _night_fan_chain(bp, ["auto", "medium", "high"])
+    assert ctx["night_fan_resolved"] == "" and ctx["night_fan_mode"] == "medium"
+    # a string-form list on the far side of the boundary must not substring-match
+    assert _night_fan_chain(bp, "['auto', 'low', 'medium', 'high']")["night_fan_mode"] == "medium"
+
+
+def test_night_fan_variables_are_defined_after_fan_normal(text):
+    """HA renders a `variables:` block top to bottom (board R1-06)."""
+    assert _def_index(text, "fan_normal") < _def_index(text, "night_fan_resolved") < _def_index(text, "night_fan_mode")
+
+
+def _service_steps(node, found, conds=()):
+    """Recursive walk of the action tree: (condition templates on the path, service step)."""
+    if isinstance(node, list):
+        for s in node:
+            _service_steps(s, found, conds)
+    elif isinstance(node, dict):
+        if "choose" in node:
+            for br in node["choose"]:
+                own = tuple(c.get("value_template", "") for c in br.get("conditions", []) if isinstance(c, dict))
+                _service_steps(br.get("sequence", []), found, conds + own)
+            _service_steps(node.get("default", []), found, conds)
+        elif "service" in node or "action" in node:
+            found.append((conds, node))
+    return found
+
+
+def _fan_calls_in_phase(bp, phase):
+    steps = _service_steps(bp.get("action") or bp.get("actions"), [])
+    return [(c, s) for c, s in steps
+            if (s.get("service") or s.get("action")) == "climate.set_fan_mode"
+            and any(f"phase == '{phase}'" in t for t in c)]
+
+
+def test_bedtime_lock_fan_call_targets_night_fan_mode_and_precool_keeps_precool_fan(bp):
+    """Board R1-07: resolve the STEP 6 branches by their phase condition, not by raw text."""
+    lock = _fan_calls_in_phase(bp, "BEDTIME_LOCK")
+    assert len(lock) == 1
+    conds, step = lock[0]
+    assert step["data"]["fan_mode"] == "{{ night_fan_mode }}"
+    assert any("current_fan != night_fan_mode" in t for t in conds)
+    precool = _fan_calls_in_phase(bp, "PRECOOL")
+    assert len(precool) == 1
+    assert precool[0][1]["data"]["fan_mode"] == "{{ precool_fan }}"
+    assert not any("night_fan_mode" in t for t in precool[0][0])
+
+
+def test_night_fan_unsupported_notice_is_gated_on_fan_control_and_resolution(bp):
+    steps = _service_steps(bp.get("action") or bp.get("actions"), [])
+    notices = [(c, s) for c, s in steps
+               if (s.get("service") or s.get("action")) == "persistent_notification.create"
+               and (s.get("data") or {}).get("notification_id") == "bedroom_precool_night_fan_unsupported"]
+    assert len(notices) == 1
+    conds = notices[0][0]
+    assert any("night_fan_resolved == ''" in t and "enable_fan_control" in t and "enable_notifications" in t
+               for t in conds)
+
+
+def test_precool_instance_sets_night_fan_low():
+    inst = json.loads(PRECOOL_INSTANCE.read_text())
+    assert inst["use_blueprint"]["input"]["night_fan"] == "low"

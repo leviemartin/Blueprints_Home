@@ -1,10 +1,11 @@
 blueprint:
-  name: "Bedroom Sleep Pre-Cool v1.0.2"
+  name: "Bedroom Sleep Pre-Cool v1.0.3"
   description: >
-    **Version: 1.0.2** — the wake-time turn-off works again: a running unit
-    counts as "PRECOOL has started" only from bedtime − lead cap; earlier on
-    the day side DAY-OFF switches it off (this also ends a manual daytime
-    turn-on within a minute). History: v1.0.1 instants carried as timestamps
+    **Version: 1.0.3** — `night_fan` input (default low): the fan mode locked
+    in at bedtime, matched case-insensitively against the unit's modes, with a
+    notice when the unit lacks it. History: v1.0.2 wake-time turn-off works
+    again (running-unit latch bounded to bedtime − lead cap; a manual daytime
+    turn-on ends within a minute) · v1.0.1 instants carried as timestamps
     across the variables boundary · v1.0.0 initial.
 
     Predictive pre-cooling of bedrooms via a single hall LG air conditioner.
@@ -348,10 +349,31 @@ blueprint:
               value: "average"
     enable_fan_control:
       name: Enable Fan Control
-      description: When on, the blueprint sets a high fan while driving and a normal fan while holding.
+      description: >
+        When on, the blueprint sets a high fan while driving, a normal fan
+        while holding, and the Night Fan Mode at bedtime.
       default: true
       selector:
         boolean: {}
+    night_fan:
+      name: Night Fan Mode
+      description: >
+        The fan mode locked in at bedtime and left alone overnight. Only used
+        when Enable Fan Control is on. Matched case-insensitively against the
+        unit's fan modes; if the unit does not offer it, the normal (hold) fan
+        mode is used instead and a notification says so.
+      default: "low"
+      selector:
+        select:
+          options:
+            - label: "Low"
+              value: "low"
+            - label: "Medium"
+              value: "medium"
+            - label: "High"
+              value: "high"
+            - label: "Auto"
+              value: "auto"
     enable_dry_mode:
       name: Enable Dry Mode
       description: >
@@ -432,6 +454,7 @@ variables:
   # --- Group 5: behaviour ---
   sensor_strategy: !input sensor_strategy
   enable_fan_control: !input enable_fan_control
+  night_fan: !input night_fan
   enable_dry_mode: !input enable_dry_mode
   enable_auto_learn: !input enable_auto_learn
   # --- Group 6: global controls ---
@@ -767,6 +790,13 @@ action:
           {% if ns.found == '' %}{% set ns.found = c %}{% endif %}
         {% endfor %}
         {{ ns.found if ns.found != '' else (m[0] if m | length > 0 else 'auto') }}
+      # Night fan: the configured level resolved against the unit's own modes,
+      # case-insensitively (repo convention — non-lowercase units exist), so the
+      # unit's spelling is what gets sent. '' when the unit lacks it, in which
+      # case night_fan_mode falls back to fan_normal and STEP 7c says so.
+      # Single-lined: both feed != comparisons and fan_mode:.
+      night_fan_resolved: "{% set ns = namespace(found='') %}{% for c in ac_fan_modes if (c | string | lower) == (night_fan | string | lower) %}{% if ns.found == '' %}{% set ns.found = c %}{% endif %}{% endfor %}{{ ns.found }}"
+      night_fan_mode: "{{ night_fan_resolved if night_fan_resolved != '' else fan_normal }}"
 
   # =============================================
   # STEP 3: RUNTIME (CONFIG) VALIDATION
@@ -1036,13 +1066,13 @@ action:
                                     value_template: >-
                                       {{ enable_fan_control
                                          and ac_fan_modes | length > 0
-                                         and current_fan != fan_normal }}
+                                         and current_fan != night_fan_mode }}
                                 sequence:
                                   - service: climate.set_fan_mode
                                     target:
                                       entity_id: "{{ ac_climate }}"
                                     data:
-                                      fan_mode: "{{ fan_normal }}"
+                                      fan_mode: "{{ night_fan_mode }}"
                           # Auto-learn helper write — beep-free (an input_number,
                           # not the AC). Only on a cooling night (AC running).
                           - choose:
@@ -1157,6 +1187,26 @@ action:
               notification_id: "bedroom_precool_forecast_warning"
 
   # =============================================
+  # STEP 7c: NIGHT FAN MODE NOT SUPPORTED — informational notice
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ enable_notifications and enable_fan_control
+                 and ac_fan_modes | length > 0
+                 and night_fan_resolved == '' }}
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Bedroom Pre-Cool — Night Fan Mode Not Supported"
+              message: >
+                The unit does not offer the configured Night Fan Mode
+                ({{ night_fan }}); its modes are {{ ac_fan_modes | join(', ') }}.
+                The bedtime lock uses {{ fan_normal }} instead.
+              notification_id: "bedroom_precool_night_fan_unsupported"
+
+  # =============================================
   # STEP 8: DEBUG NOTIFICATION (manual run only)
   # =============================================
   - choose:
@@ -1206,5 +1256,6 @@ action:
                 | **effective_drive:** {{ effective_drive }}°C
 
                 **desired_mode:** {{ desired_mode }}
+                | **night fan:** {{ night_fan_mode }}
                 | **vacation:** {{ vacation_active }}
               notification_id: "bedroom_precool_debug"

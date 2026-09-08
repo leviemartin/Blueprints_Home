@@ -138,7 +138,8 @@ Predictive pre-cooling of bedrooms via a single LG air conditioner in the upstai
 *   **🧊 6-Phase State Machine:** A stateless daily cycle — DAY-OFF, PRECOOL, BEDTIME-LOCK, NIGHT-HOLD, DEEP-NIGHT-CHECK, DEEP-HOLD — derived from the clock every minute, overnight-wrap-aware.
 *   **🔮 Predictive Turn-On:** A transparent linear lead-time formula (indoor gap + forecast outdoor + solar load) recomputed each minute decides when to start cooling so the room hits target by bedtime.
 *   **🧠 Self-Learning Bias:** One scalar — the lead-time bias — is persisted in an `input_number` helper and auto-corrected from each cooling night's outcome. Converges over ~3–6 nights.
-*   **🔇 Strict Beep Budget:** Unlimited commands before bedtime; at most 0–2 after. NIGHT-HOLD and DEEP-HOLD issue zero commands; every climate call is idempotency-guarded.
+*   **🔇 Strict Beep Budget:** Unlimited commands before bedtime; after bedtime the lock issues at most 3 (mode, setpoint, night fan — typically 1–2) and the deep-night check at most 1. NIGHT-HOLD and DEEP-HOLD issue zero commands; every climate call is idempotency-guarded.
+*   **🌙 Night Fan (v1.0.3):** The fan mode locked in at bedtime is an input (default low), matched case-insensitively to the unit's modes, with a notice if the unit lacks it.
 *   **🌡️ Closed-Loop Pre-Cool:** DRIVE / HOLD sub-states cool the hall as hard as the AC allows until the warmest bedroom reaches ideal.
 *   **💧 Opt-In Dry Mode:** Humidity-aware `dry` mode, default off — `cool` is the proven path; enable `dry` only after verifying it on the unit.
 *   **🛡️ Child-Safe:** `ideal_temp` is bounded ≥ 16 °C; a sub-16 °C bedroom reading raises an overcooling fault. Every setpoint is clamped to the AC's discovered limits.
