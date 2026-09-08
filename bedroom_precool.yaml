@@ -16,7 +16,7 @@ blueprint:
     LG ACs beep on every command sent over ThinQ — a firmware tone that cannot
     be silenced in software. This blueprint therefore treats AC commands as a
     scarce resource after bedtime: it adjusts freely *before* bedtime, locks a
-    maintaining setpoint *at* bedtime, permits at most one corrective command at
+    maintaining setpoint and the night fan *at* bedtime, permits at most one corrective command at
     a deep-night checkpoint, and turns the AC off at wake.
 
     The AC is in the hall, not the bedrooms — cold air migrates through open
@@ -31,7 +31,11 @@ blueprint:
       (indoor gap + forecast outdoor + solar) recomputed every minute
     - Self-learning lead-time bias persisted in an input_number helper
     - Closed-loop pre-cool on the warmest bedroom (DRIVE / HOLD sub-states)
-    - Strict beep budget: 0-2 commands after bedtime
+    - Strict beep budget after bedtime: the lock issues at most 3 commands
+      (mode, setpoint, night fan — typically 1-2), the deep-night check at most 1
+    - Night fan input (default low): the fan mode locked in at bedtime, matched
+      by exact name (case-insensitive) to the unit's modes, with a notice if the
+      unit lacks it
     - Opt-in humidity-aware dry mode (default off — cool is the proven path)
     - Idempotent service calls — a stray command is a stray beep
     - Vacation toggle, manual-run debug notification
@@ -359,9 +363,10 @@ blueprint:
       name: Night Fan Mode
       description: >
         The fan mode locked in at bedtime and left alone overnight. Only used
-        when Enable Fan Control is on. Matched case-insensitively against the
-        unit's fan modes; if the unit does not offer it, the normal (hold) fan
-        mode is used instead and a notification says so.
+        when Enable Fan Control is on. Matched by exact name (case-insensitive)
+        against the unit's fan modes — synonyms such as 'Mid' or 'Power' are not
+        mapped; if the unit does not offer the name, the normal (hold) fan mode
+        is used instead and a notification says so.
       default: "low"
       selector:
         select:

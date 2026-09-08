@@ -323,6 +323,10 @@ def test_rendered_night_fan_mode_resolves_case_insensitively_and_falls_back(bp):
     assert ctx["night_fan_resolved"] == "" and ctx["night_fan_mode"] == "medium"
     # a string-form list on the far side of the boundary must not substring-match
     assert _night_fan_chain(bp, "['auto', 'low', 'medium', 'high']")["night_fan_mode"] == "medium"
+    # accepted limitation (code board 20260908-091857 R1-02): synonyms are not mapped —
+    # a 'Power'/'Mid' unit asked for 'high' gets the fallback (and the STEP 7c notice)
+    ctx = _night_fan_chain(bp, ["Low", "Mid", "Power"], night_fan="high", fan_normal="Mid")
+    assert ctx["night_fan_resolved"] == "" and ctx["night_fan_mode"] == "Mid"
 
 
 def test_night_fan_variables_are_defined_after_fan_normal(text):
