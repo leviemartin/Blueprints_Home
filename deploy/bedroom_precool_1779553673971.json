@@ -1,6 +1,6 @@
 {
   "id": "1779553673971",
-  "alias": "Bedroom Sleep Pre-Cool v1.0.2",
+  "alias": "Bedroom Sleep Pre-Cool v1.0.3",
   "description": "",
   "use_blueprint": {
     "path": "leviemartin/bedroom_precool.yaml",
@@ -15,6 +15,7 @@
       "ideal_temp": 23,
       "hall_offset": 2,
       "skip_threshold": 21,
+      "night_fan": "low",
       "lead_bias_helper": [
         "input_number.autolearner"
       ]

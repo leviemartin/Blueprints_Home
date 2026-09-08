@@ -52,12 +52,12 @@ acts. Phase boundaries span midnight (bedtime -> wake is an overnight window).
 |---|---|---|---|
 | DAY-OFF | wake -> min(turn_on, bedtime − lead_cap) | Ensure AC off — any running unit is switched off on the next tick; recompute turn-on each tick | 1 at wake (+1 per manual daytime turn-on) |
 | PRECOOL | turn_on -> bedtime − 1 min | Cooling; closed-loop DRIVE / HOLD | many (allowed) |
-| BEDTIME-LOCK | bedtime − 1 min -> bedtime | One locking command + auto-learn write | 0–1 |
+| BEDTIME-LOCK | bedtime − 1 min -> bedtime | Lock mode, maintaining setpoint and the night fan (`night_fan`, default low) + auto-learn write | ≤ 3 (typically 1–2) |
 | NIGHT-HOLD | bedtime -> deep-night check | Holds; blueprint issues nothing | 0 |
 | DEEP-NIGHT-CHECK | deep-night check -> +10 min | At most one corrective command | 0 or 1 |
 | DEEP-HOLD | deep-night check + 10 min -> wake | Holds; blueprint issues nothing | 0 |
 
-Beep budget after bedtime: 0–2. Turn-on is a one-way latch — once PRECOOL
+Beep budget after bedtime: lock ≤ 3 (typically 1–2) + deep-night check ≤ 1. Turn-on is a one-way latch — once PRECOOL
 begins it never reverts to DAY-OFF that day. The latch is bounded: a running
 AC counts as "PRECOOL has started" only from `bedtime − lead_cap_minutes`
 onward; earlier on the day side (from wake) a running unit is a leftover
@@ -119,12 +119,12 @@ the bias and subsequent nights wash the outlier out.
 1. 6-phase stateless daily state machine, phase derived from `now`.
 2. Predictive turn-on from a transparent linear lead-time formula.
 3. Closed-loop pre-cool on the warmest bedroom (DRIVE / HOLD sub-states).
-4. Bedtime lock — one deliberate command sets a maintaining setpoint.
+4. Bedtime lock — locks the maintaining setpoint and the night fan mode (`night_fan`, default low, matched case-insensitively to the unit's modes; falls back to the normal fan with a notice if the unit lacks it).
 5. One optional corrective command at the deep-night checkpoint.
 6. AC off at wake.
 
 ### Beep Budget
-1. Unlimited commands before bedtime; 0–2 after bedtime.
+1. Unlimited commands before bedtime; after bedtime the lock issues ≤ 3 (mode, setpoint, night fan — typically 1–2) and the deep-night check ≤ 1.
 2. Every climate service call guarded by a current-vs-desired comparison.
 3. NIGHT-HOLD and DEEP-HOLD issue zero service calls.
 
