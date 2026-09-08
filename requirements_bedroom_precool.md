@@ -58,7 +58,11 @@ acts. Phase boundaries span midnight (bedtime -> wake is an overnight window).
 | DEEP-HOLD | deep-night check + 10 min -> wake | Holds; blueprint issues nothing | 0 |
 
 Beep budget after bedtime: 0–2. Turn-on is a one-way latch — once PRECOOL
-begins it never reverts to DAY-OFF that day. Cool-day nights (the AC was never
+begins it never reverts to DAY-OFF that day. The latch is bounded: a running
+AC counts as "PRECOOL has started" only from `bedtime − lead_cap_minutes`
+onward; earlier on the day side (from wake) a running unit is a leftover
+night hold and DAY-OFF turns it off. Configuration validation rejects a lead
+cap that reaches back past wake time. Cool-day nights (the AC was never
 started) are fully no-op.
 
 ## Prediction Model

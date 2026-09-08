@@ -1,4 +1,4 @@
-"""Structural pins for bedroom_precool.yaml (Bedroom Sleep Pre-Cool v1.0.1) and its
+"""Structural pins for bedroom_precool.yaml (Bedroom Sleep Pre-Cool v1.0.2) and its
 deployed instance configs.
 
 Run: cd ~/AI/projects/Blueprints_Home && \
@@ -72,8 +72,8 @@ def test_instants_are_carried_as_timestamps_not_datetimes(text):
 
 
 def test_version_bumped(bp):
-    assert bp["blueprint"]["name"].endswith("v1.0.1")
-    assert "**Version: 1.0.1**" in bp["blueprint"]["description"]
+    assert bp["blueprint"]["name"].endswith("v1.0.2")
+    assert "**Version: 1.0.2**" in bp["blueprint"]["description"]
 
 
 # --- deployed instance configs ---------------------------------------------------------
@@ -87,7 +87,7 @@ def test_precool_instance_keys_exist_and_weather_supports_hourly_forecasts():
     # weather.openweathermap reports supported_features None in this HA (no forecast
     # service); weather.home_sm (Met.no) supports hourly forecasts (features 3).
     assert inst["use_blueprint"]["input"]["weather_entity"] == "weather.home_sm"
-    assert inst["alias"].endswith("v1.0.1")
+    assert inst["alias"].endswith("v1.0.2")
 
 
 def test_lg_ac_instance_escalation_stages_are_ordered_and_in_range():
@@ -186,3 +186,88 @@ def test_rendered_forecast_window_filters_by_reparsed_bedtime_ts(bp):
     # the string form of the boundary value must behave identically
     out2 = _render(bp, "forecast_window_temps", now, forecast_list_safe=forecast, bedtime_ts=str(bedtime_ts))
     assert _reparse(out2) == [24.0, 22.5]
+
+
+# --- phase derivation at wake (hotfix 2026-09-08: DAY_OFF unreachable while the AC ran) ---
+
+PHASE_CHAIN = [
+    "earliest_turn_on_tod", "on_day_side", "in_lock_window", "in_deep_check",
+    "in_deep_hold", "precool_started", "in_precool_window", "in_day_off", "phase",
+]
+
+
+def _render_chain(bp, names, now, ctx):
+    """Render `names` in order, handing each re-parsed result to the next template — the
+    variables-boundary model from the 2026-09-07 hotfix, applied to the phase machine."""
+    for name in names:
+        ctx[name] = _reparse(_render(bp, name, now, **ctx))
+    return ctx
+
+
+def _phase_at(bp, hh, mm, ac_is_running, cooling_needed=False, turn_on_tod="17:43:00", **overrides):
+    now = datetime(2026, 9, 8, hh, mm, tzinfo=TZ)
+    ctx = dict(
+        now_tod=now.strftime("%H:%M:%S"), wake_tod="07:15:00", bedtime_tod="19:30:00",
+        lock_tod="19:29:00", deep_tod="01:00:00", deep_end_tod="01:10:00",
+        bedtime="19:30:00", wake_time="07:15:00", lead_cap_minutes=240,
+        turn_on_tod=turn_on_tod, cooling_needed=cooling_needed, ac_is_running=ac_is_running,
+    )
+    ctx.update(overrides)
+    return _render_chain(bp, PHASE_CHAIN, now, ctx)
+
+
+def test_rendered_phase_is_day_off_after_wake_while_the_ac_is_still_running(bp):
+    """Live trace 2026-09-08 09:08 local (run 907eaf5c…): cooling_needed False, turn_on 17:43,
+    AC still running from the night hold -> v1.0.1 derived PRECOOL and re-drove the unit."""
+    ctx = _phase_at(bp, 7, 15, ac_is_running=True)
+    assert ctx["precool_started"] is False
+    assert ctx["phase"] == "DAY_OFF"
+    assert _phase_at(bp, 9, 8, ac_is_running=True)["phase"] == "DAY_OFF"
+
+
+def test_rendered_running_ac_is_adopted_as_precool_only_inside_the_lead_cap_window(bp):
+    # bedtime 19:30 - lead cap 240 min = 15:30: before it a running AC is DAY_OFF (turned off);
+    # from it on the running AC IS the PRECOOL latch, even when turn_on has moved later.
+    assert _phase_at(bp, 15, 29, ac_is_running=True)["phase"] == "DAY_OFF"
+    assert _phase_at(bp, 15, 30, ac_is_running=True)["phase"] == "PRECOOL"
+    assert _phase_at(bp, 18, 0, ac_is_running=True, turn_on_tod="18:30:00")["phase"] == "PRECOOL"
+
+
+def test_rendered_precool_still_starts_at_turn_on_when_cooling_is_needed(bp):
+    assert _phase_at(bp, 17, 42, ac_is_running=False, cooling_needed=True)["phase"] == "DAY_OFF"
+    assert _phase_at(bp, 17, 43, ac_is_running=False, cooling_needed=True)["phase"] == "PRECOOL"
+    assert _phase_at(bp, 17, 43, ac_is_running=False, cooling_needed=False)["phase"] == "DAY_OFF"
+
+
+def test_rendered_night_phases_unchanged(bp):
+    assert _phase_at(bp, 19, 29, ac_is_running=True)["phase"] == "BEDTIME_LOCK"
+    assert _phase_at(bp, 22, 47, ac_is_running=True)["phase"] == "NIGHT_HOLD"
+    assert _phase_at(bp, 1, 5, ac_is_running=True)["phase"] == "DEEP_NIGHT_CHECK"
+    assert _phase_at(bp, 3, 0, ac_is_running=True)["phase"] == "DEEP_HOLD"
+
+
+def test_rendered_earliest_turn_on_tod_is_bedtime_minus_lead_cap(bp):
+    now = datetime(2026, 9, 8, 9, 0, tzinfo=TZ)
+    assert _render(bp, "earliest_turn_on_tod", now, bedtime="19:30:00", lead_cap_minutes=240) == "15:30:00"
+    assert _render(bp, "earliest_turn_on_tod", now, bedtime="21:30:00", lead_cap_minutes=360) == "15:30:00"
+
+
+def _config_validation_template(bp):
+    for step in bp.get("actions") or bp.get("action") or []:
+        for branch in (step.get("choose") or []) if isinstance(step, dict) else []:
+            seq = branch.get("sequence") or []
+            if any(isinstance(s, dict) and s.get("stop") == "Configuration error" for s in seq):
+                return branch["conditions"][0]["value_template"]
+    raise KeyError("configuration-error branch")
+
+
+def test_rendered_config_validation_rejects_a_lead_cap_reaching_back_past_wake(bp):
+    now = datetime(2026, 9, 8, 9, 0, tzinfo=TZ)
+    base = dict(drive_setpoint=16, ideal_temp=23, hall_offset=2, bedtime="19:30:00",
+                wake_time="07:15:00", deep_night_check="01:00:00")
+    tmpl = _env(now).from_string(_config_validation_template(bp))
+    render = lambda **kw: _reparse(tmpl.render(**{**base, **kw}).strip())
+    assert render(earliest_turn_on_tod="15:30:00") is False
+    # an adoption window that starts at/before wake would swallow the wake-off again
+    assert render(earliest_turn_on_tod="07:15:00") is True
+    assert render(earliest_turn_on_tod="06:00:00") is True

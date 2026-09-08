@@ -1,7 +1,7 @@
 blueprint:
-  name: "Bedroom Sleep Pre-Cool v1.0.1"
+  name: "Bedroom Sleep Pre-Cool v1.0.2"
   description: >
-    **Version: 1.0.1**
+    **Version: 1.0.2**
 
     Predictive pre-cooling of bedrooms via a single hall LG air conditioner.
     Reaches an ideal sleep temperature by a fixed bedtime, then holds the room
@@ -700,6 +700,15 @@ action:
         {{ (today_at(deep_night_check) + timedelta(minutes=10)).strftime('%H:%M:%S') }}
       turn_on_ts: "{{ as_timestamp(today_at(bedtime) - timedelta(minutes=lead | int)) }}"
       turn_on_tod: "{{ turn_on_ts | float | timestamp_custom('%H:%M:%S') }}"
+      # Earliest possible turn-on = bedtime - lead cap. A running AC is
+      # evidence that PRECOOL has started ONLY inside [earliest_turn_on,
+      # bedtime); earlier on the day side (from wake) a running unit is a
+      # leftover night hold that DAY_OFF turns off. Without this bound the
+      # ac_is_running latch made DAY_OFF unreachable on every cooling night
+      # (2026-09-08: the unit was re-driven at 07:15 and ran all day).
+      # Wall-clock .strftime like lock_tod; STEP 3 keeps it after wake_time.
+      earliest_turn_on_tod: >-
+        {{ (today_at(bedtime) - timedelta(minutes=lead_cap_minutes | int)).strftime('%H:%M:%S') }}
       # --- Phase derivation (all time-of-day string comparisons) ---
       # The "day side" of the schedule runs wake -> bedtime_lock.
       on_day_side: "{{ wake_tod <= now_tod and now_tod < lock_tod }}"
@@ -709,10 +718,11 @@ action:
       # NIGHT_HOLD is the phase-derivation else branch (after bedtime, before
       # the deep-night check) — no explicit variable is needed for it.
       # PRECOOL begins only when cooling is needed AND now >= turn_on;
-      # once the AC is running it STAYS PRECOOL (one-way latch) even if a
-      # recomputed lead pushes turn_on later. The running AC IS the
-      # persisted "PRECOOL has started" bit — stateless and restart-safe.
-      precool_started: "{{ (cooling_needed and now_tod >= turn_on_tod) or ac_is_running }}"
+      # once the AC is running inside the lead-cap window it STAYS PRECOOL
+      # (one-way latch) even if a recomputed lead pushes turn_on later. The
+      # running AC IS the persisted "PRECOOL has started" bit — stateless
+      # and restart-safe — but only from earliest_turn_on_tod onward.
+      precool_started: "{{ (cooling_needed and now_tod >= turn_on_tod) or (ac_is_running and now_tod >= earliest_turn_on_tod) }}"
       in_precool_window: "{{ on_day_side and precool_started }}"
       in_day_off: "{{ on_day_side and not precool_started }}"
       # Single-lined: a folded scalar leaves trailing whitespace between a
@@ -761,7 +771,8 @@ action:
                  or hall_offset | float < 0
                  or bedtime == wake_time
                  or wake_time >= bedtime
-                 or deep_night_check >= wake_time }}
+                 or deep_night_check >= wake_time
+                 or earliest_turn_on_tod <= wake_time }}
         sequence:
           - choose:
               - conditions:
@@ -779,7 +790,9 @@ action:
                         is ordered correctly: Wake Time ({{ wake_time }}) must
                         be before Bedtime ({{ bedtime }}), and the Deep-Night
                         Check ({{ deep_night_check }}) must fall in the small
-                        hours before Wake Time. Control is paused until
+                        hours before Wake Time, and Bedtime minus the Lead Cap
+                        ({{ lead_cap_minutes }} min = {{ earliest_turn_on_tod }})
+                        must be after Wake Time. Control is paused until
                         corrected.
                       notification_id: "bedroom_precool_config_error"
           - stop: "Configuration error"
@@ -1169,6 +1182,7 @@ action:
                 **lead:** {{ lead }} min
                 | **turn_on:** {{ turn_on_ts | float | timestamp_custom('%H:%M') }}
                 | **bedtime:** {{ bedtime_ts | float | timestamp_custom('%H:%M') }}
+                | **earliest turn_on:** {{ earliest_turn_on_tod }}
 
                 **cooling_needed:** {{ cooling_needed }}
 
