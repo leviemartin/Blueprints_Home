@@ -624,3 +624,36 @@ def test_bedtime_lock_switches_the_unit_off_only_in_fan_only_mode_after_parking_
     # ac_hold regression pin: none of the three park calls is gated on fan_only_mode
     for c, s in calls[:3]:
         assert not any("fan_only_mode" in t for t in c)
+
+
+# --- v1.1.0 T3: night guard + guard settle (board 20260909-130652) ------------------
+
+def _calls_with(bp, marker):
+    steps = _service_steps(bp.get("action") or bp.get("actions"), [])
+    return [(c, s) for c, s in steps if any(marker in t for t in c)]
+
+
+def test_night_guard_is_one_bare_turn_on_plus_notice_and_the_settle_step_corrects_from_live_reads(bp):
+    guard = _calls_with(bp, "guard_due")
+    names = [(s.get("service") or s.get("action")) for c, s in guard]
+    assert names == ["climate.turn_on", "persistent_notification.create"], names
+    conds, turn_on = guard[0]
+    assert any(t.strip() == "{{ is_real_trigger and guard_due }}" for t in conds)
+    assert turn_on["target"]["entity_id"] == "{{ ac_climate }}"
+    assert "data" not in turn_on                       # a bare turn_on: the unit restores its parked state
+    assert guard[1][1]["data"]["notification_id"] == "bedroom_precool_guard_fired"
+    assert any("enable_notifications" in t for t in guard[1][0])
+    assert "wait_template" not in BP_PATH.read_text()  # no same-tick read-back (board R1-01 / R2-03)
+    settle_calls = _calls_with(bp, "settle_mode_due") + _calls_with(bp, "settle_setpoint_due") + _calls_with(bp, "settle_fan_due")
+    settle = {(s.get("service") or s.get("action")): c for c, s in settle_calls}
+    assert set(settle) == {"climate.set_hvac_mode", "climate.set_temperature", "climate.set_fan_mode"}
+    assert any(t.strip() == "{{ is_real_trigger and settle_mode_due }}" for t in settle["climate.set_hvac_mode"])
+    assert any(t.strip() == "{{ is_real_trigger and settle_setpoint_due }}" for t in settle["climate.set_temperature"])
+    assert any(t.strip() == "{{ is_real_trigger and settle_fan_due }}" for t in settle["climate.set_fan_mode"])
+    data = {(s.get("service") or s.get("action")): s["data"] for c, s in settle_calls}
+    assert data["climate.set_hvac_mode"]["hvac_mode"] == "{{ desired_mode }}"
+    assert data["climate.set_temperature"]["temperature"] == "{{ maintaining_setpoint | float }}"
+    assert data["climate.set_fan_mode"]["fan_mode"] == "{{ night_fan_mode }}"
+    # the two night branches of STEP 6 stay free of climate calls (guard lives outside)
+    for ph in ("NIGHT_HOLD", "DEEP_HOLD"):
+        assert _services_in_phase(bp, ph) == []

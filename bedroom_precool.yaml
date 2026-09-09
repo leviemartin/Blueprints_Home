@@ -1407,6 +1407,77 @@ action:
                 sequence: []
 
   # =============================================
+  # STEP 6a: NIGHT GUARD (v1.1.0, fan-only nights) — one bare turn_on per trip.
+  # The unit was parked (maintaining setpoint + night fan) and switched off at the
+  # lock; if the warmest bedroom drifts over ideal + tolerance after bedtime, one
+  # climate.turn_on restores that parked state (one beep). From the next tick
+  # ac_is_running is true, so guard_due is false until DAY_OFF turns the unit off at
+  # wake — the running unit IS the latch. Nothing else happens on this tick: the
+  # read-back lives in STEP 6b on the following ticks. NIGHT_HOLD / DEEP_HOLD stay empty.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_real_trigger and guard_due }}"
+        sequence:
+          - service: climate.turn_on
+            target:
+              entity_id: "{{ ac_climate }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ enable_notifications }}"
+                sequence:
+                  - service: persistent_notification.create
+                    data:
+                      title: "Bedroom Pre-Cool — Night Guard"
+                      message: >
+                        {{ now().strftime('%H:%M') }}: the warmest bedroom read
+                        {{ warmest_bedroom }}°C, above {{ ideal_temp | float + tolerance | float }}°C
+                        (ideal + tolerance). The AC was switched back on and holds until
+                        wake time; the blueprint re-checks its mode, setpoint and fan for
+                        15 minutes. The restored state is on the climate entity's history.
+                      notification_id: "bedroom_precool_guard_fired"
+
+  # =============================================
+  # STEP 6b: GUARD SETTLE (v1.1.0) — for 15 min after ANY night start in fan-only
+  # mode, assert the parked state from LIVE reads, each call only if different: a
+  # restored heat/fan_only/auto mode would "latch" without cooling (board R1-03/R2-04);
+  # a stale DRIVE park restores 18 °C / high; a cloud restore reported late is
+  # corrected on a later tick instead of lost (board R1-01/R2-03). Normally 0 calls.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_real_trigger and settle_mode_due }}"
+        sequence:
+          - service: climate.set_hvac_mode
+            target:
+              entity_id: "{{ ac_climate }}"
+            data:
+              hvac_mode: "{{ desired_mode }}"
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_real_trigger and settle_setpoint_due }}"
+        sequence:
+          - service: climate.set_temperature
+            target:
+              entity_id: "{{ ac_climate }}"
+            data:
+              temperature: "{{ maintaining_setpoint | float }}"
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_real_trigger and settle_fan_due }}"
+        sequence:
+          - service: climate.set_fan_mode
+            target:
+              entity_id: "{{ ac_climate }}"
+            data:
+              fan_mode: "{{ night_fan_mode }}"
+
+  # =============================================
   # STEP 7a: LEAD-BIAS-HELPER NOT CONFIGURED — one-time notice
   # =============================================
   - choose:
