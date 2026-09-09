@@ -379,6 +379,39 @@ blueprint:
               value: "high"
             - label: "Auto"
               value: "auto"
+    night_mode:
+      name: Night Mode
+      description: >
+        What happens to the AC at bedtime. 'AC hold' (default) locks the maintaining
+        setpoint and the Night Fan Mode and lets the unit run until Wake Time (the
+        v1.0.x behaviour). 'Fan-only' parks the unit on that same state, switches it
+        OFF at the bedtime lock and hands the night to the Bedroom Fans; if the warmest
+        bedroom exceeds Ideal + Drift Tolerance after bedtime the unit is switched back
+        on (one beep — it restores the parked state, which the blueprint re-checks for
+        15 minutes) and stays on until Wake Time.
+      default: "ac_hold"
+      selector:
+        select:
+          options:
+            - label: "AC hold — unit runs all night (v1.0.x)"
+              value: "ac_hold"
+            - label: "Fan-only — unit off at bedtime, back on only if too warm"
+              value: "fan_only"
+    prechill_offset:
+      name: Pre-Chill Offset (°C)
+      description: >
+        Fan-only nights only: PRECOOL drives the warmest bedroom this far BELOW the
+        Ideal Sleep Temperature before the lock (the lead-time prediction, the
+        cool-day skip and the auto-learn all aim at that deeper target), so the rooms
+        start the coast with a margin. 0 = drive to ideal exactly. Ignored in AC-hold
+        mode.
+      default: 0.5
+      selector:
+        number:
+          min: 0.0
+          max: 2.0
+          step: 0.1
+          unit_of_measurement: "°C"
     enable_dry_mode:
       name: Enable Dry Mode
       description: >
@@ -415,6 +448,137 @@ blueprint:
       default: true
       selector:
         boolean: {}
+
+    # =======================================================
+    # GROUP 7 — BEDROOM FANS (optional)
+    # =======================================================
+    bedroom_fans:
+      name: Bedroom Fans (Optional)
+      description: >
+        Ceiling fans in the bedrooms, one per room. Leave empty to keep the v1.0.x
+        behaviour (no fan is ever commanded). The blueprint writes a fan at most once
+        per transition and only if nobody has touched it since — a fan a safety
+        automation switched off, or one you changed by hand, is left alone.
+      default: []
+      selector:
+        entity:
+          domain: fan
+          multiple: true
+    interlocked_fans:
+      name: Interlocked Fans (Optional)
+      description: >
+        The subset of Bedroom Fans that must never be commanded while a Fan Interlock
+        sensor is on or has just cleared (e.g. a fan at head height with a
+        height-gated presence sensor).
+      default: []
+      selector:
+        entity:
+          domain: fan
+          multiple: true
+    fan_interlocks:
+      name: Fan Interlock Sensors (Optional)
+      description: >
+        Binary sensors that block commands to the Interlocked Fans while 'on'. An
+        unavailable or missing sensor also blocks (fail-safe).
+      default: []
+      selector:
+        entity:
+          domain: binary_sensor
+          multiple: true
+    interlock_clear_minutes:
+      name: Interlock Clear Hold (min)
+      description: >
+        An interlock sensor that changed state within the last N minutes still blocks.
+        Set this LONGER than the safety automation's own resume hold on the same fan
+        (kids-room cutoff: 3 min → 5 here), so this blueprint never writes the fan in
+        the same minute the safety automation resumes it, and never inside its hold.
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 15
+          step: 1
+          unit_of_measurement: "min"
+    night_fans:
+      name: Night Fans — Which Nights
+      description: >
+        On which nights the Bedroom Fans are set to the Night Fan Percentage at the
+        bedtime lock (applied inside the Fan Settle Window to any fan nobody touched).
+        Odd/even = day of the year of the night's START date (the date at wake time),
+        for A/B comparisons.
+      default: "all"
+      selector:
+        select:
+          options:
+            - label: "Every night"
+              value: "all"
+            - label: "Odd days of the year"
+              value: "odd"
+            - label: "Even days of the year"
+              value: "even"
+            - label: "Never"
+              value: "off"
+    night_fan_percentage:
+      name: Night Fan Percentage
+      description: The fan speed for the night (1 = the lowest step on a Tuya ceiling fan).
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+    fan_assist:
+      name: Pre-Cool Fan Assist — Which Days
+      description: >
+        On which days the Bedroom Fans run at the Pre-Cool Fan Percentage from the
+        moment the AC starts (experiment: does a fan in the room speed the measured
+        drop?). Default off. Odd/even as for Night Fans.
+      default: "off"
+      selector:
+        select:
+          options:
+            - label: "Off"
+              value: "off"
+            - label: "Every day"
+              value: "all"
+            - label: "Odd days of the year"
+              value: "odd"
+            - label: "Even days of the year"
+              value: "even"
+    precool_fan_percentage:
+      name: Pre-Cool Fan Percentage
+      description: The fan speed during pre-cool fan assist (21 = step 2 on a Tuya ceiling fan).
+      default: 21
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+    fan_settle_minutes:
+      name: Fan Settle Window (min)
+      description: >
+        How long after the bedtime lock (and after the AC start) a pending fan setting
+        may still be applied to a fan nobody has touched. Must end before midnight.
+      default: 45
+      selector:
+        number:
+          min: 5
+          max: 120
+          step: 5
+          unit_of_measurement: "min"
+    fans_at_wake:
+      name: Fans At Wake
+      description: Leave the Bedroom Fans as they are at Wake Time (default) or switch them off.
+      default: "leave"
+      selector:
+        select:
+          options:
+            - label: "Leave as they are"
+              value: "leave"
+            - label: "Switch off"
+              value: "off"
 
 mode: restart
 max_exceeded: silent
@@ -460,11 +624,24 @@ variables:
   sensor_strategy: !input sensor_strategy
   enable_fan_control: !input enable_fan_control
   night_fan: !input night_fan
+  night_mode: !input night_mode
+  prechill_offset: !input prechill_offset
   enable_dry_mode: !input enable_dry_mode
   enable_auto_learn: !input enable_auto_learn
   # --- Group 6: global controls ---
   vacation_toggle: !input vacation_toggle
   enable_notifications: !input enable_notifications
+  # --- Group 7: bedroom fans ---
+  bedroom_fans: !input bedroom_fans
+  interlocked_fans: !input interlocked_fans
+  fan_interlocks: !input fan_interlocks
+  interlock_clear_minutes: !input interlock_clear_minutes
+  night_fans: !input night_fans
+  night_fan_percentage: !input night_fan_percentage
+  fan_assist: !input fan_assist
+  precool_fan_percentage: !input precool_fan_percentage
+  fan_settle_minutes: !input fan_settle_minutes
+  fans_at_wake: !input fans_at_wake
 
 trigger:
   # T1: Periodic 1-minute tick — phase derivation, prediction, transitions
@@ -579,6 +756,35 @@ action:
         {% else %}
           false
         {% endif %}
+      # --- v1.1.0 fan coordination: live facts ---
+      fan_only_mode: "{{ night_mode == 'fan_only' }}"
+      # The bedtime target: ideal in AC-hold mode, ideal − pre-chill in fan-only mode.
+      # Defined HERE, before STEP 2c, because delta_in, cooling_needed, the DRIVE/HOLD
+      # substate and the auto-learn error all key on it (board R1-08).
+      bedtime_target: "{{ (ideal_temp | float - prechill_offset | float) if fan_only_mode else (ideal_temp | float) }}"
+      # Any interlock sensor on / unavailable / unknown / absent from the state machine
+      # blocks the interlocked fans — the same fail-safe direction as the cutoff
+      # blueprint — and so does a sensor whose STATE changed within the last
+      # interlock_clear_minutes (last_changed, not last_updated): the cutoff resumes its
+      # fan at clear + its hold, and this blueprint must never write the fan in that
+      # minute or inside the hold (board R1-09).
+      interlock_blocked: >-
+        {% if fan_interlocks is iterable and fan_interlocks is not string
+              and fan_interlocks | length > 0 %}
+          {% set found = expand(fan_interlocks) | list %}
+          {% set recent = as_timestamp(now()) - (interlock_clear_minutes | float) * 60 %}
+          {{ found | length < fan_interlocks | length
+             or found | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0
+             or found | map(attribute='last_changed') | map('as_timestamp') | select('gt', recent) | list | length > 0 }}
+        {% else %}
+          {{ false }}
+        {% endif %}
+      # The unit's last off<->on transition as a timestamp (setpoint/fan edits touch
+      # last_updated, not last_changed). Reference instant for pre-cool fan assist and
+      # for the guard-settle window.
+      ac_started_ts: >-
+        {% set s = expand(ac_climate) | list %}
+        {{ as_timestamp(s[0].last_changed) if s | length > 0 else 0 }}
 
   # =============================================
   # STEP 2b: FORECAST FETCH (periodic, ~every 15 min during DAY-OFF)
@@ -679,7 +885,7 @@ action:
           {{ solar_elevation_factor | float | round(3) }}
         {% endif %}
       # --- Lead-time inputs ---
-      delta_in: "{{ [0, warmest_bedroom | float - ideal_temp | float] | max }}"
+      delta_in: "{{ [0, warmest_bedroom | float - bedtime_target | float] | max }}"
       outdoor_for_lead: "{{ [forecast_max | float, outdoor_now | float] | max }}"
       delta_out: "{{ [0, outdoor_for_lead | float - ideal_temp | float] | max }}"
       # --- Auto-learn bias: read the helper every tick when enabled ---
@@ -708,7 +914,7 @@ action:
       lead: "{{ [[lead_raw | float, 0] | max, lead_cap_minutes | float] | min | round(0) | int }}"
       # --- Cool-day skip gate (consulted in DAY-OFF only) ---
       cooling_needed: >-
-        {{ warmest_bedroom | float > ideal_temp | float
+        {{ warmest_bedroom | float > bedtime_target | float
            or forecast_max | float > skip_threshold | float }}
       # --- Schedule boundaries as time-of-day strings (HH:MM:SS).
       # Phase derivation compares time-of-day so the overnight window
@@ -766,7 +972,7 @@ action:
       phase: "{% if in_lock_window %}BEDTIME_LOCK{% elif in_precool_window %}PRECOOL{% elif in_deep_check %}DEEP_NIGHT_CHECK{% elif in_deep_hold %}DEEP_HOLD{% elif in_day_off %}DAY_OFF{% else %}NIGHT_HOLD{% endif %}"
       # --- PRECOOL sub-state ---
       precool_substate: >-
-        {% if warmest_bedroom | float > ideal_temp | float %}DRIVE{% else %}HOLD{% endif %}
+        {% if warmest_bedroom | float > bedtime_target | float %}DRIVE{% else %}HOLD{% endif %}
       # --- Setpoints, all clamped to the AC's discovered min/max ---
       effective_drive: >-
         {{ [[drive_setpoint | float, ac_min_temp | float] | max,
@@ -802,6 +1008,37 @@ action:
       # Single-lined: both feed != comparisons and fan_mode:.
       night_fan_resolved: "{% set ns = namespace(found='') %}{% for c in ac_fan_modes if (c | string | lower) == (night_fan | string | lower) %}{% if ns.found == '' %}{% set ns.found = c %}{% endif %}{% endfor %}{{ ns.found }}"
       night_fan_mode: "{{ night_fan_resolved if night_fan_resolved != '' else fan_normal }}"
+      # --- v1.1.0: parity, windows, guard ---
+      # Parity of the NIGHT = day of the year of the night's start date, pivoting at
+      # WAKE TIME: from wake through PRECOOL and the lock it is today, in the small
+      # hours before wake it is yesterday — one value from a pre-noon PRECOOL start to
+      # the last tick before wake (board R2-06).
+      night_parity: "{{ 'odd' if (((now() if now_tod >= wake_tod else now() - timedelta(days=1)).timetuple().tm_yday) % 2) == 1 else 'even' }}"
+      fan_assist_tonight: "{{ fan_assist == 'all' or fan_assist == night_parity }}"
+      night_fans_tonight: "{{ night_fans == 'all' or night_fans == night_parity }}"
+      # Reference instant for the night fan setting; consumed only inside the settle
+      # window (same evening), so today_at() always refers to the right lock.
+      lock_ts: "{{ as_timestamp(today_at(bedtime) - timedelta(minutes=1)) }}"
+      settle_end_tod: "{{ (today_at(bedtime) + timedelta(minutes=fan_settle_minutes | int)).strftime('%H:%M:%S') }}"
+      settle_last_tod: "{{ (today_at(bedtime) + timedelta(minutes=(fan_settle_minutes | int) - 1)).strftime('%H:%M:%S') }}"
+      since_ac_start_min: "{{ ((as_timestamp(now()) - (ac_started_ts | float)) / 60) | round(1) }}"
+      in_wake_window: "{{ wake_tod <= now_tod and now_tod < (today_at(wake_time) + timedelta(minutes=1)).strftime('%H:%M:%S') }}"
+      in_fan_settle: "{{ lock_tod <= now_tod and now_tod < settle_end_tod }}"
+      in_settle_last_tick: "{{ settle_last_tod <= now_tod and now_tod < settle_end_tod }}"
+      in_fan_assist_window: "{{ phase == 'PRECOOL' and ac_is_running and (since_ac_start_min | float) < (fan_settle_minutes | float) }}"
+      night_phase: "{{ phase in ['NIGHT_HOLD', 'DEEP_NIGHT_CHECK', 'DEEP_HOLD'] }}"
+      # Night guard: fan-only, a night phase, unit off, warmest room over the band, on a
+      # 5-minute tick (bounds a stuck cloud 'off' to ≤ 12 attempts/h, board R2-02). The
+      # running unit is the latch — once on, guard_due is false until DAY_OFF turns it
+      # off at wake.
+      guard_due: "{{ fan_only_mode and night_phase and not ac_is_running and (warmest_bedroom | float) > (ideal_temp | float + tolerance | float) and (now().minute | int) % 5 == 0 }}"
+      # Guard settle: for 15 min after ANY night start the parked state is asserted from
+      # live reads, each call only if different (board R1-01/R1-03/R2-03/R2-04). The
+      # setpoint check leaves a deep-night nudge (exactly correction_step away) alone.
+      guard_settle_due: "{{ fan_only_mode and night_phase and ac_is_running and (since_ac_start_min | float) < 15 }}"
+      settle_mode_due: "{{ guard_settle_due and current_hvac_mode not in ['cool', 'dry'] }}"
+      settle_setpoint_due: "{{ guard_settle_due and current_setpoint_known and ((current_setpoint | float - maintaining_setpoint | float) | abs) > (correction_step | float + 0.1) }}"
+      settle_fan_due: "{{ guard_settle_due and enable_fan_control and ac_fan_modes | length > 0 and current_fan != 'unknown' and current_fan != night_fan_mode }}"
 
   # =============================================
   # STEP 3: RUNTIME (CONFIG) VALIDATION
@@ -816,7 +1053,9 @@ action:
                  or wake_time >= bedtime
                  or deep_night_check >= wake_time
                  or (today_at(bedtime) - timedelta(minutes=lead_cap_minutes | int))
-                    <= today_at(wake_time) }}
+                    <= today_at(wake_time)
+                 or (today_at(bedtime) + timedelta(minutes=fan_settle_minutes | int)).date()
+                    != today_at(bedtime).date() }}
         sequence:
           - choose:
               - conditions:
@@ -836,8 +1075,9 @@ action:
                         Check ({{ deep_night_check }}) must fall in the small
                         hours before Wake Time, and Bedtime minus the Lead Cap
                         ({{ lead_cap_minutes }} min = {{ earliest_turn_on_tod }})
-                        must be after Wake Time. Control is paused until
-                        corrected.
+                        must be after Wake Time. Bedtime plus the Fan Settle
+                        Window ({{ fan_settle_minutes }} min) must not cross
+                        midnight. Control is paused until corrected.
                       notification_id: "bedroom_precool_config_error"
           - stop: "Configuration error"
 

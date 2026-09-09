@@ -263,7 +263,8 @@ def _config_validation_template(bp):
 
 def test_rendered_config_validation_rejects_a_lead_cap_reaching_back_past_wake(bp):
     now = datetime(2026, 9, 8, 9, 0, tzinfo=TZ)
-    base = dict(drive_setpoint=16, ideal_temp=23, hall_offset=2, deep_night_check="01:00:00")
+    base = dict(drive_setpoint=16, ideal_temp=23, hall_offset=2, deep_night_check="01:00:00",
+                fan_settle_minutes=45)
     tmpl = _env(now).from_string(_config_validation_template(bp))
     render = lambda **kw: _reparse(tmpl.render(**{**base, **kw}).strip())
     assert render(bedtime="19:30:00", wake_time="07:15:00", lead_cap_minutes=240) is False  # live
@@ -384,3 +385,209 @@ def test_night_fan_unsupported_notice_is_gated_on_fan_control_and_resolution(bp)
 def test_precool_instance_sets_night_fan_low():
     inst = json.loads(PRECOOL_INSTANCE.read_text())
     assert inst["use_blueprint"]["input"]["night_fan"] == "low"
+
+
+# --- v1.1.0 fan coordination (design 2026-09-09, board 20260909-130652) --------------
+
+class _S:
+    """A fake HA State object as `expand()` returns it. last_changed (state transitions)
+    and last_updated (state OR attribute changes) are independent, as in HA."""
+    def __init__(self, entity_id, state, percentage=None, last_updated=None, last_changed=None):
+        self.entity_id = entity_id
+        self.state = state
+        self.attributes = {} if percentage is None else {"percentage": percentage}
+        self.last_updated = last_updated or datetime(2026, 9, 9, 12, 0, tzinfo=TZ)
+        self.last_changed = last_changed or self.last_updated
+
+
+def _fan_env(now, states):
+    """`_env` plus HA state helpers resolving to the fakes: expand(), state_attr(), states(), is_state()."""
+    env = _env(now)
+    by_id = {s.entity_id: s for s in states}
+    def expand(*ids):
+        out = []
+        for group in ids:
+            for i in ([group] if isinstance(group, str) else group):
+                if i in by_id:
+                    out.append(by_id[i])
+        return out
+    env.globals["expand"] = expand
+    env.globals["state_attr"] = lambda e, a: by_id[e].attributes.get(a) if e in by_id else None
+    env.globals["states"] = lambda e: by_id[e].state if e in by_id else "unknown"
+    env.globals["is_state"] = lambda e, v: e in by_id and by_id[e].state == v
+    env.filters["as_timestamp"] = env.globals["as_timestamp"]     # HA offers it as a filter too
+    return env
+
+
+V110_INPUTS = {
+    "night_mode": "ac_hold", "prechill_offset": 0.5, "bedroom_fans": [], "interlocked_fans": [],
+    "fan_interlocks": [], "interlock_clear_minutes": 5, "night_fans": "all", "night_fan_percentage": 1,
+    "fan_assist": "off", "precool_fan_percentage": 21, "fan_settle_minutes": 45, "fans_at_wake": "leave",
+}
+
+
+def test_v110_inputs_exist_with_safe_defaults(bp):
+    inputs = bp["blueprint"]["input"]
+    for key, default in V110_INPUTS.items():
+        assert key in inputs, key
+        assert inputs[key]["default"] == default, key
+    opts = lambda k: [o["value"] for o in inputs[k]["selector"]["select"]["options"]]
+    assert opts("night_mode") == ["ac_hold", "fan_only"]
+    assert opts("night_fans") == ["all", "odd", "even", "off"]
+    assert opts("fan_assist") == ["off", "all", "odd", "even"]
+    assert opts("fans_at_wake") == ["leave", "off"]
+    for k in ("bedroom_fans", "interlocked_fans"):
+        assert inputs[k]["selector"]["entity"]["domain"] == "fan" and inputs[k]["selector"]["entity"]["multiple"] is True
+    assert inputs["fan_interlocks"]["selector"]["entity"]["domain"] == "binary_sensor"
+    # the pass-through pin (test_every_input_is_passed_through_top_level_variables) covers the variables block
+
+
+def _v110_ctx(**over):
+    ctx = dict(ideal_temp=23, tolerance=1.5, correction_step=1.5, prechill_offset=0.5, night_mode="ac_hold",
+               fan_assist="off", night_fans="all", fan_settle_minutes=45, bedtime="19:30:00",
+               wake_time="07:15:00", wake_tod="07:15:00", lock_tod="19:29:00", now_tod="23:00:00",
+               ac_is_running=False, warmest_bedroom=23.0, ac_started_ts=0.0, phase="NIGHT_HOLD",
+               forecast_max=18.0, skip_threshold=21, maintaining_setpoint=21.0, current_hvac_mode="cool",
+               current_setpoint_known=True, current_setpoint=21.0, current_fan="low", night_fan_mode="low",
+               enable_fan_control=True, ac_fan_modes=["auto", "low", "medium", "high"])
+    ctx.update(over)
+    return ctx
+
+
+TARGET_CHAIN = ["fan_only_mode", "bedtime_target", "delta_in", "cooling_needed", "precool_substate"]
+
+
+def test_rendered_bedtime_target_drives_lead_term_skip_gate_and_substate(bp):
+    now = datetime(2026, 9, 9, 18, 0, tzinfo=TZ)
+    hold = _render_chain(bp, TARGET_CHAIN, now, _v110_ctx(warmest_bedroom=22.8))
+    assert hold["bedtime_target"] == 23.0 and hold["delta_in"] == 0 and hold["cooling_needed"] is False
+    assert hold["precool_substate"] == "HOLD"
+    fan = _render_chain(bp, TARGET_CHAIN, now, _v110_ctx(night_mode="fan_only", warmest_bedroom=22.8))
+    assert fan["bedtime_target"] == 22.5
+    assert abs(fan["delta_in"] - 0.3) < 1e-9           # the lead term sees the deeper target (board R1-08)
+    assert fan["cooling_needed"] is True               # a room between the two targets still pre-chills
+    assert fan["precool_substate"] == "DRIVE"
+    assert _render_chain(bp, TARGET_CHAIN, now, _v110_ctx(night_mode="fan_only", warmest_bedroom=22.5))["precool_substate"] == "HOLD"
+    assert _render_chain(bp, TARGET_CHAIN, now, _v110_ctx(night_mode="fan_only", prechill_offset=0))["bedtime_target"] == 23.0
+    for name in ("delta_in", "cooling_needed", "precool_substate"):
+        assert "ideal_temp" not in _var_template(bp, name), name
+
+
+PARITY_CHAIN = ["night_parity", "fan_assist_tonight", "night_fans_tonight"]
+
+
+def _parity(bp, t, **over):
+    return _render_chain(bp, PARITY_CHAIN, t, _v110_ctx(now_tod=t.strftime("%H:%M:%S"), **over))
+
+
+def test_rendered_night_parity_is_shared_from_wake_to_wake(bp):
+    # 2026-09-09 is day 252 of the year (even); 2026-09-10 is 253 (odd). Pivot = wake time (board R2-06).
+    d9 = lambda hh, mm: datetime(2026, 9, 9, hh, mm, tzinfo=TZ)
+    d10 = lambda hh, mm: datetime(2026, 9, 10, hh, mm, tzinfo=TZ)
+    for t in (d9(11, 0), d9(15, 30), d9(19, 29), d10(1, 0), d10(7, 14)):    # pre-noon PRECOOL start included
+        assert _parity(bp, t)["night_parity"] == "even", t
+    assert _parity(bp, d10(7, 15))["night_parity"] == "odd"                 # the next night's date from wake on
+    ctx = _parity(bp, d9(19, 29), fan_assist="even", night_fans="odd")
+    assert ctx["fan_assist_tonight"] is True and ctx["night_fans_tonight"] is False
+    ctx = _parity(bp, d9(19, 29), fan_assist="off", night_fans="all")
+    assert ctx["fan_assist_tonight"] is False and ctx["night_fans_tonight"] is True
+
+
+WINDOW_CHAIN = ["lock_ts", "settle_end_tod", "settle_last_tod", "since_ac_start_min", "in_wake_window",
+                "in_fan_settle", "in_settle_last_tick", "in_fan_assist_window"]
+
+
+def _windows(bp, hh, mm, **over):
+    now = datetime(2026, 9, 9, hh, mm, tzinfo=TZ)
+    return _render_chain(bp, WINDOW_CHAIN, now, _v110_ctx(now_tod=now.strftime("%H:%M:%S"), **over))
+
+
+def test_rendered_fan_windows(bp):
+    lock = datetime(2026, 9, 9, 19, 29, tzinfo=TZ)
+    assert _windows(bp, 19, 29)["lock_ts"] == lock.timestamp()
+    assert _windows(bp, 19, 29)["settle_end_tod"] == "20:15:00"
+    assert _windows(bp, 19, 29)["settle_last_tod"] == "20:14:00"
+    assert _windows(bp, 19, 28)["in_fan_settle"] is False
+    assert _windows(bp, 19, 29)["in_fan_settle"] is True          # the lock tick itself
+    assert _windows(bp, 20, 14)["in_fan_settle"] is True
+    assert _windows(bp, 20, 14)["in_settle_last_tick"] is True
+    assert _windows(bp, 20, 15)["in_fan_settle"] is False
+    assert _windows(bp, 7, 15)["in_wake_window"] is True and _windows(bp, 7, 16)["in_wake_window"] is False
+    started = datetime(2026, 9, 9, 17, 0, tzinfo=TZ).timestamp()
+    on = dict(phase="PRECOOL", ac_is_running=True, ac_started_ts=started)
+    assert _windows(bp, 17, 30, **on)["since_ac_start_min"] == 30.0
+    assert _windows(bp, 17, 30, **on)["in_fan_assist_window"] is True
+    assert _windows(bp, 17, 46, **on)["in_fan_assist_window"] is False   # 46 > 45
+    assert _windows(bp, 17, 30, **dict(on, ac_is_running=False))["in_fan_assist_window"] is False
+    assert _windows(bp, 17, 30, **dict(on, phase="DAY_OFF"))["in_fan_assist_window"] is False
+
+
+GUARD_CHAIN = ["fan_only_mode", "night_phase", "since_ac_start_min", "guard_due", "guard_settle_due",
+               "settle_mode_due", "settle_setpoint_due", "settle_fan_due"]
+
+
+def _guard(bp, now, **over):
+    return _render_chain(bp, GUARD_CHAIN, now, _v110_ctx(now_tod=now.strftime("%H:%M:%S"), **over))
+
+
+def test_rendered_guard_due_only_in_night_phases_with_fan_only_ac_off_over_band_on_a_5_minute_tick(bp):
+    t = datetime(2026, 9, 9, 23, 0, tzinfo=TZ)
+    hot = dict(night_mode="fan_only", warmest_bedroom=24.6)
+    for ph in ("NIGHT_HOLD", "DEEP_NIGHT_CHECK", "DEEP_HOLD"):
+        assert _guard(bp, t, phase=ph, **hot)["guard_due"] is True, ph
+    assert _guard(bp, datetime(2026, 9, 9, 23, 1, tzinfo=TZ), phase="NIGHT_HOLD", **hot)["guard_due"] is False   # cadence (board R2-02)
+    assert _guard(bp, t, phase="NIGHT_HOLD", night_mode="fan_only", warmest_bedroom=24.5)["guard_due"] is False   # at the band
+    assert _guard(bp, t, phase="NIGHT_HOLD", night_mode="ac_hold", warmest_bedroom=26.0)["guard_due"] is False
+    assert _guard(bp, t, phase="NIGHT_HOLD", ac_is_running=True, **hot)["guard_due"] is False                      # the latch
+    for ph in ("PRECOOL", "BEDTIME_LOCK", "DAY_OFF"):
+        assert _guard(bp, t, phase=ph, **hot)["guard_due"] is False, ph
+
+
+def test_rendered_guard_settle_asserts_the_parked_state_only_after_a_night_start(bp):
+    t = datetime(2026, 9, 9, 23, 7, tzinfo=TZ)
+    started = (t - timedelta(minutes=2)).timestamp()
+    base = dict(night_mode="fan_only", phase="NIGHT_HOLD", ac_is_running=True, ac_started_ts=started)
+    ok = _guard(bp, t, **base)
+    assert ok["guard_settle_due"] is True
+    assert ok["settle_mode_due"] is False and ok["settle_setpoint_due"] is False and ok["settle_fan_due"] is False
+    assert _guard(bp, t, **base, current_hvac_mode="heat")["settle_mode_due"] is True         # board R1-03 / R2-04
+    assert _guard(bp, t, **base, current_hvac_mode="fan_only")["settle_mode_due"] is True
+    assert _guard(bp, t, **base, current_hvac_mode="dry")["settle_mode_due"] is False
+    assert _guard(bp, t, **base, current_setpoint=18.0)["settle_setpoint_due"] is True         # stale DRIVE park
+    assert _guard(bp, t, **base, current_setpoint=19.5)["settle_setpoint_due"] is False        # a deep-night nudge, left alone
+    assert _guard(bp, t, **base, current_setpoint_known=False)["settle_setpoint_due"] is False
+    assert _guard(bp, t, **base, current_fan="high")["settle_fan_due"] is True
+    assert _guard(bp, t, **base, current_fan="unknown")["settle_fan_due"] is False             # null read (board R1-02)
+    assert _guard(bp, t, **base, enable_fan_control=False, current_fan="high")["settle_fan_due"] is False
+    late = _guard(bp, t, **dict(base, ac_started_ts=(t - timedelta(minutes=16)).timestamp()), current_hvac_mode="heat")
+    assert late["guard_settle_due"] is False and late["settle_mode_due"] is False              # window closed
+    assert _guard(bp, t, **dict(base, night_mode="ac_hold"), current_hvac_mode="heat")["settle_mode_due"] is False
+    assert _guard(bp, t, **dict(base, phase="PRECOOL"), current_hvac_mode="heat")["settle_mode_due"] is False
+
+
+def test_rendered_interlock_blocked_fails_safe_and_honours_the_clear_hold(bp):
+    now = datetime(2026, 9, 9, 19, 29, tzinfo=TZ)
+    render = lambda states, sensors: _reparse(_fan_env(now, states).from_string(
+        _var_template(bp, "interlock_blocked")).render(fan_interlocks=sensors, interlock_clear_minutes=5).strip())
+    pir = "binary_sensor.samuel_samuel_matthew_fanprotection"
+    assert render([_S(pir, "off")], [pir]) is False      # cleared 7.5 h ago (the _S default)
+    assert render([_S(pir, "on")], [pir]) is True
+    assert render([_S(pir, "unavailable")], [pir]) is True
+    assert render([], [pir]) is True                     # sensor missing from the state machine
+    assert render([], []) is False                       # no interlock configured
+    # the cutoff resumes at clear + 3 min; we stay blocked until clear + 5 (spec §2.1, board R1-09)
+    assert render([_S(pir, "off", last_changed=now - timedelta(minutes=4))], [pir]) is True
+    assert render([_S(pir, "off", last_changed=now - timedelta(minutes=5, seconds=1))], [pir]) is False
+    # the hold keys on last_changed (state transitions), not on attribute updates (board R2-05)
+    assert render([_S(pir, "off", last_updated=now - timedelta(seconds=30), last_changed=now - timedelta(minutes=9))], [pir]) is False
+
+
+def test_config_validation_rejects_a_settle_window_across_midnight(bp):
+    now = datetime(2026, 9, 9, 9, 0, tzinfo=TZ)
+    base = dict(drive_setpoint=16, ideal_temp=23, hall_offset=2, deep_night_check="01:00:00",
+                bedtime="19:30:00", wake_time="07:15:00", lead_cap_minutes=240, fan_settle_minutes=45)
+    tmpl = _env(now).from_string(_config_validation_template(bp))
+    render = lambda **kw: _reparse(tmpl.render(**{**base, **kw}).strip())
+    assert render() is False                                             # live config
+    assert render(bedtime="23:30:00", fan_settle_minutes=45) is True     # 00:15 next day
+    assert render(bedtime="23:00:00", fan_settle_minutes=45) is False    # 23:45, same day
