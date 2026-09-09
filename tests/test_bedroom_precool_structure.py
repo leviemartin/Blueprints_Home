@@ -142,6 +142,18 @@ def _ha_float(v, d=_MISSING):
         return d
 
 
+def _as_timestamp_filter(d, default=_MISSING):
+    """HA's `as_timestamp` FILTER form (with a default). Jinja renders `None.last_changed` as
+    an Undefined object — float()/.timestamp() raise on it, caught below like any other
+    unparsable value."""
+    try:
+        return d.timestamp() if hasattr(d, "timestamp") else float(d)
+    except (TypeError, ValueError, AttributeError):
+        if default is _MISSING:
+            raise
+        return default
+
+
 def _env(now):
     env = Environment()
     env.filters["float"] = _ha_float
@@ -150,6 +162,7 @@ def _env(now):
     env.filters["timestamp_custom"] = (
         lambda ts, fmt="%Y-%m-%d %H:%M:%S", local=True: datetime.fromtimestamp(float(ts), tz=TZ).strftime(fmt)
     )
+    env.filters["as_timestamp"] = _as_timestamp_filter
     env.globals["now"] = lambda: now
     env.globals["timedelta"] = timedelta
     env.globals["as_timestamp"] = lambda d: d.timestamp() if hasattr(d, "timestamp") else float(d)
@@ -537,6 +550,13 @@ def test_auto_learn_write_and_notice_cover_a_missing_helper_entity(bp):
     n = _notices(bp, "bedroom_precool_no_bias_helper")
     assert len(n) == 1
     assert any("states[lead_bias_entity] is none" in t and "not lead_bias_configured" in t for t in n[0][0])
+    now = datetime(2026, 9, 9, 17, 0, tzinfo=TZ)
+    step = n[0][1]
+    tmpl = _env(now).from_string(step["data"]["message"])
+    msg = tmpl.render(lead_bias_configured=False, lead_bias_entity="").strip()
+    assert "()" not in msg and "no Lead-Time Bias Helper is configured" in msg
+    msg2 = tmpl.render(lead_bias_configured=True, lead_bias_entity="input_number.gone").strip()
+    assert "input_number.gone" in msg2 and "does not exist" in msg2
 
 
 # ---- R1-07: a real daily forecast backs the non-fetch ticks --------------------------
@@ -578,6 +598,12 @@ def test_rendered_forecast_daily_high_picks_todays_entry_by_local_date(bp):
     # the "first usable" fallback also needs a parsable datetime (board delta R2-C2-01)
     assert _reparse(_render(bp, "forecast_daily_high", now, forecast_daily_list=bad[:3])) is None
     assert _reparse(_render(bp, "forecast_daily_high", now, forecast_daily_list=bad[:1] + lst[2:])) == 18.6
+    # local date != UTC date (board R2-P3-02): 22:30Z on the 9th is 00:30 local on the 10th — with now on
+    # the 10th at 00:30 local that entry is "today"; an implementation without as_local would fall back
+    now10 = datetime(2026, 9, 10, 0, 30, tzinfo=TZ)
+    cross = [{"datetime": "2026-09-09T10:00:00+00:00", "temperature": 18.1},
+             {"datetime": "2026-09-09T22:30:00+00:00", "temperature": 20.5}]
+    assert _reparse(_render(bp, "forecast_daily_high", now10, forecast_daily_list=cross)) == 20.5
 
 
 def test_rendered_hourly_window_skips_malformed_entries(bp):
@@ -607,6 +633,22 @@ def test_rendered_forecast_max_prefers_hourly_then_daily_then_outdoor(bp):
     assert ctx["forecast_daily_ok"] is False and ctx["forecast_max"] == 22.0
     # the boundary may hand the daily value over as a string
     assert _forecast_max_chain(bp, now, [], "24.0", 22.0)["forecast_max"] == 24.0
+
+
+def test_rendered_forecast_lists_are_extracted_from_the_response_or_empty(bp):
+    """board 20260909-122828 R2-01 / R2-P3-01: the response -> list extraction, not a hand-fed list."""
+    now = datetime(2026, 9, 9, 14, 40, tzinfo=TZ)
+    entries = [{"datetime": "2026-09-09T10:00:00+00:00", "temperature": 18.1}]
+    for name, var in (("forecast_list_safe", "hourly_forecast_resp"), ("forecast_daily_list", "daily_forecast_resp")):
+        r = lambda **kw: _reparse(_render(bp, name, now, weather_entity="weather.x", **kw))
+        assert r() == []                                                       # call never ran / failed
+        assert r(**{var: {"weather.other": {"forecast": entries}}}) == []      # keyed by another entity
+        assert r(**{var: {"weather.x": {"forecast": None}}}) == []             # forecast: null
+        assert r(**{var: {"weather.x": {"forecast": 5}}}) == []                # scalar
+        assert r(**{var: {"weather.x": {"forecast": "oops"}}}) == []           # string
+        assert r(**{var: {"weather.x": {"forecast": {"a": 1}}}}) == []         # mapping
+        assert r(**{var: {"weather.x": "oops"}}) == []                         # entity value not a mapping
+        assert r(**{var: {"weather.x": {"forecast": entries}}}) == entries
 
 
 def test_rendered_forecast_daily_due_only_when_the_hourly_window_is_empty_on_the_day_side(bp):
@@ -683,15 +725,24 @@ def test_rendered_manual_setpoint_is_any_value_the_blueprint_could_not_have_comm
 
 
 def test_rendered_known_setpoints_are_the_values_the_device_holds(bp):
-    """A whole-degree unit receives int(value) from the lg_thinq integration: 21.5 is held as
-    21, 20.0 stays 20, 23.0 stays 23 — the set must match what the unit reports, or every
-    tick reads as manual (memory: compare against the value the device actually holds)."""
-    ctx = _override(bp, 21.0, ac_temp_step=1.0, maintaining_setpoint=21.5)
-    assert ctx["known_setpoints"] == [18, 21, 20, 23]
-    assert ctx["manual_setpoint"] is False
-    assert _override(bp, 22.0, ac_temp_step=1.0, maintaining_setpoint=21.5)["manual_setpoint"] is True
-    # a 0.5-step unit holds the blueprint's values as commanded
-    assert _override(bp, 21.5, ac_temp_step=0.5, maintaining_setpoint=21.5)["known_setpoints"] == [18.0, 21.5, 20.0, 23.0]
+    """A whole-degree unit receives int(value) from the lg_thinq integration; the blueprint quantises
+    effective_drive / maintaining_setpoint / the deep targets at their source, and the known set must be
+    exactly those device-held values (board R2-B1-005; code board R1-05: render them, never hand-feed)."""
+    now = datetime(2026, 9, 9, 17, 0, tzinfo=TZ)
+    inputs = dict(drive_setpoint=16.0, ideal_temp=23.5, hall_offset=2.0, correction_step=1.5, tolerance=1.5,
+                  ac_min_temp=18.0, ac_max_temp=30.0)
+    for step, want_known in ((1.0, [18, 21, 19, 22]), (0.5, [18.0, 21.5, 20.0, 23.0])):
+        ctx = dict(inputs, ac_temp_step=step)
+        ctx = _render_chain(bp, ["effective_drive", "maintaining_setpoint", "known_setpoints"], now, ctx)
+        assert ctx["known_setpoints"] == want_known, step
+        deep = _env(now).from_string(_var_template_deep(bp, "deep_target_setpoint"))
+        for drift in (2.0, -2.0, 0.0):
+            target = _reparse(deep.render(**ctx, deep_drift=drift).strip())
+            assert target in ctx["known_setpoints"], (step, drift, target)
+        # a value one device step away from every known value is manual; the known ones are not
+        for v in ctx["known_setpoints"]:
+            assert _reparse(_render(bp, "setpoint_is_known", now, known_setpoints=ctx["known_setpoints"], current_setpoint=v)) is True
+        assert _reparse(_render(bp, "setpoint_is_known", now, known_setpoints=ctx["known_setpoints"], current_setpoint=24.0)) is False
 
 
 def test_rendered_commanded_setpoints_are_quantised_at_the_source(bp):
@@ -725,7 +776,7 @@ MANUAL_OFF_CHAIN = ["earliest_turn_on_ts", "automation_up_since_ts", "ac_off_sin
 def _manual_off(bp, ac_state, ac_last_changed, automation_last_changed=None, vacation=(), unavailable=False):
     now = datetime(2026, 9, 9, 17, 0, tzinfo=TZ)
     vac = [_St("off", t) for t in vacation]
-    ctx = dict(bedtime="19:30:00", lead_cap_minutes=240, ac_climate="climate.bedrooms",
+    ctx = dict(bedtime="19:30:00", lead_cap_minutes=240, wake_time="07:15:00", ac_climate="climate.bedrooms",
                vacation_toggle=["input_boolean.vac"] if vacation else [],
                ac_is_running=ac_state not in ("off", "unavailable", "unknown"),
                ac_unavailable=unavailable,
@@ -764,15 +815,36 @@ def test_rendered_manual_off_only_for_an_off_transition_inside_the_adoption_wind
     # the coordinator confirmed that turn_off (board delta R2-C2-04)
     assert _manual_off(bp, "off", t(16, 0), vacation=[t(16, 30)])["manual_off"] is False
     assert _manual_off(bp, "off", t(12, 0), vacation=[t(16, 30)])["manual_off"] is False
+    # after local midnight the night still belongs to YESTERDAY's window (board R1-03 / final review #3)
+    late = datetime(2026, 9, 10, 0, 30, tzinfo=TZ)
+    ctx = dict(bedtime="19:30:00", lead_cap_minutes=240, wake_time="07:15:00", ac_climate="climate.bedrooms",
+               vacation_toggle=[], ac_is_running=False, ac_unavailable=False,
+               states=_States({"climate.bedrooms": _St("off", t(16, 30))}),
+               this=_St("on", datetime(2026, 9, 9, 6, 0, tzinfo=TZ)), expand=lambda ids: [])
+    ctx = _render_chain(bp, MANUAL_OFF_CHAIN, late, ctx)
+    assert ctx["earliest_turn_on_ts"] == t(15, 30).timestamp() and ctx["manual_off"] is True
+    ctx["states"] = _States({"climate.bedrooms": _St("off", t(7, 15))})
+    assert _render_chain(bp, MANUAL_OFF_CHAIN, late, ctx)["manual_off"] is False
+    morning = datetime(2026, 9, 10, 8, 0, tzinfo=TZ)
+    ctx = _render_chain(bp, MANUAL_OFF_CHAIN, morning, dict(ctx, states=_States({"climate.bedrooms": _St("off", t(16, 30))})))
+    assert ctx["earliest_turn_on_ts"] == datetime(2026, 9, 10, 15, 30, tzinfo=TZ).timestamp() and ctx["manual_off"] is False
 
 
 def test_rendered_manual_off_survives_a_missing_climate_state(bp):
     now = datetime(2026, 9, 9, 17, 0, tzinfo=TZ)
-    ctx = dict(bedtime="19:30:00", lead_cap_minutes=240, ac_climate="climate.gone", vacation_toggle=[],
-               ac_is_running=False, ac_unavailable=True, states=_States({}),
+    ctx = dict(bedtime="19:30:00", lead_cap_minutes=240, wake_time="07:15:00", ac_climate="climate.gone",
+               vacation_toggle=[], ac_is_running=False, ac_unavailable=True, states=_States({}),
                this=_St("on", datetime(2026, 9, 9, 6, 0, tzinfo=TZ)), expand=lambda ids: [])
     ctx = _render_chain(bp, MANUAL_OFF_CHAIN, now, ctx)
     assert ctx["ac_off_since_ts"] == 0 and ctx["manual_off"] is False
+
+
+def test_rendered_automation_up_since_ts_tolerates_this_being_none(bp):
+    now = datetime(2026, 9, 9, 17, 0, tzinfo=TZ)
+    assert _reparse(_render(bp, "automation_up_since_ts", now, this=None)) == 0
+    assert _reparse(_render(bp, "automation_up_since_ts", now)) == 0          # undefined
+    st = _St("on", datetime(2026, 9, 9, 6, 0, tzinfo=TZ))
+    assert _reparse(_render(bp, "automation_up_since_ts", now, this=st)) == st.last_changed.timestamp()
 
 
 def _climate_calls_in_phase(bp, phase):

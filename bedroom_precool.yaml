@@ -641,12 +641,18 @@ action:
       # branch never ran, so hourly_forecast_resp is simply undefined; the
       # `is defined` guard then yields the empty-list path. Filter forecast
       # entries to the window now -> bedtime, take the max temperature.
+      # A response whose forecast is null / a scalar / a string / a mapping
+      # yields [] — a template that iterates it would otherwise abort the run.
       forecast_list_safe: >-
         {{ hourly_forecast_resp[weather_entity].forecast
            if hourly_forecast_resp is defined
               and hourly_forecast_resp is mapping
               and weather_entity in hourly_forecast_resp
+              and hourly_forecast_resp[weather_entity] is mapping
               and hourly_forecast_resp[weather_entity].forecast is defined
+              and hourly_forecast_resp[weather_entity].forecast is iterable
+              and hourly_forecast_resp[weather_entity].forecast is not string
+              and hourly_forecast_resp[weather_entity].forecast is not mapping
            else [] }}
       # Variables are re-parsed between steps: a datetime becomes a plain
       # string and any later .strftime()/comparison on it raises. Carry
@@ -693,7 +699,11 @@ action:
            if daily_forecast_resp is defined
               and daily_forecast_resp is mapping
               and weather_entity in daily_forecast_resp
+              and daily_forecast_resp[weather_entity] is mapping
               and daily_forecast_resp[weather_entity].forecast is defined
+              and daily_forecast_resp[weather_entity].forecast is iterable
+              and daily_forecast_resp[weather_entity].forecast is not string
+              and daily_forecast_resp[weather_entity].forecast is not mapping
            else [] }}
       # A daily entry's `temperature` is the day's HIGH (Met.no: the max of
       # that day's hourly readings; `templow` is the low) stamped at local
@@ -830,7 +840,10 @@ action:
       # ABOVE wake_time and slip past a string compare.
       earliest_turn_on_tod: >-
         {{ (today_at(bedtime) - timedelta(minutes=lead_cap_minutes | int)).strftime('%H:%M:%S') }}
-      earliest_turn_on_ts: "{{ as_timestamp(today_at(bedtime) - timedelta(minutes=lead_cap_minutes | int)) }}"
+      # Before wake time the night still belongs to YESTERDAY's window (the
+      # bedtime_ts pattern, mirrored), so a manual off stays visible until the
+      # deep-night check instead of vanishing at local midnight.
+      earliest_turn_on_ts: "{{ as_timestamp(today_at(bedtime) - timedelta(days=(1 if now().strftime('%H:%M:%S') < wake_time else 0), minutes=lead_cap_minutes | int)) }}"
       # --- Manual OFF inside the adoption window (v1.1.0) ---
       # The blueprint never switches the unit off between earliest_turn_on and
       # the lock (DAY_OFF cannot see a running unit there; only the vacation
@@ -847,7 +860,7 @@ action:
       # 600 s); the vacation branch's turn_off is recognised by the toggle's
       # own last_changed within 120 s. A reload AFTER a manual off ends that
       # hold (the reload stamp is newer). Instants compared as timestamps.
-      automation_up_since_ts: "{{ as_timestamp(this.last_changed) | float(0) if this is defined else 0 }}"
+      automation_up_since_ts: "{{ (this.last_changed | as_timestamp(0)) if (this is defined and this is not none) else 0 }}"
       ac_off_since_ts: "{{ as_timestamp(states[ac_climate].last_changed) | float(0) if states[ac_climate] is not none else 0 }}"
       vacation_changed_ts: >-
         {% set ns = namespace(ts=0) %}
@@ -1326,11 +1339,12 @@ action:
             data:
               title: "Bedroom Pre-Cool — Auto-Learn Helper Missing"
               message: >
-                Auto-Learn is enabled but no Lead-Time Bias Helper is
-                configured, or the configured one ({{ lead_bias_entity }})
-                does not exist. The blueprint still runs with a zero bias.
-                Create an input_number helper and select it to enable
-                self-learning.
+                {% if lead_bias_configured %}Auto-Learn is enabled but the
+                configured Lead-Time Bias Helper ({{ lead_bias_entity }}) does
+                not exist.{% else %}Auto-Learn is enabled but no Lead-Time
+                Bias Helper is configured.{% endif %} The blueprint still
+                runs with a zero bias. Create an input_number helper and
+                select it to enable self-learning.
               notification_id: "bedroom_precool_no_bias_helper"
 
   # =============================================
