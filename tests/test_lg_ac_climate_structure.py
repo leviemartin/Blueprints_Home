@@ -1030,3 +1030,31 @@ def test_lg_instance_passes_the_deploy_dry_run_and_wires_presence():
     for key, val in (("escalation_stage_1_minutes", s1), ("escalation_stage_2_minutes", s2)):
         sel = inputs[key]["selector"]["number"]
         assert sel["min"] <= val <= sel["max"], key
+
+
+def test_rendered_presence_missing_lists_entities_that_do_not_exist(bp):
+    now = datetime(2026, 9, 9, 17, 0)
+    st = _States({"person.p0": _St("home", now), "input_boolean.i0": _St("off", now)})
+    r = lambda pe, hi: _reparse(render_var(bp, "presence_missing", {"presence_entities": pe, "home_indicators": hi, "states": st}, now=now))
+    assert r(["person.p0"], ["input_boolean.i0"]) == []
+    assert r(["person.p0", "person.gone"], ["input_boolean.i0", "input_boolean.climate_guest_mode"]) == ["person.gone", "input_boolean.climate_guest_mode"]
+    assert r([], []) == []
+    assert r("['person.p0']", ["input_boolean.i0"]) == []      # a string-form list is not iterated as characters
+
+
+def test_presence_missing_notice_block_is_state_driven_and_keeps_step_indexes(bp):
+    # board 20260909-122828 R1-01: the block sits AFTER the restart seed (action[5]) and BEFORE the ladder (last)
+    blk = bp["action"][6]
+    assert step_kind(blk) == "choose"
+    b = blk["choose"][0]
+    assert branch_cond(b) == "{{ presence_missing | length == 0 }}"
+    dis = b["sequence"][0]
+    assert step_kind(dis) == "service:persistent_notification.dismiss"
+    assert dis["data"]["notification_id"] == "ac_climate_presence_entity_missing" and dis["continue_on_error"] is True
+    cre = blk["default"][0]
+    assert step_kind(cre) == "service:persistent_notification.create"
+    assert cre["data"]["notification_id"] == "ac_climate_presence_entity_missing" and cre["continue_on_error"] is True
+    assert "presence_missing | join" in cre["data"]["message"]
+    assert step_kind(bp["action"][5]) == "choose" and bp["action"][5]["choose"][0]["conditions"][0]["id"] == "init"
+    keys = list(bp["action"][0]["variables"].keys())
+    assert keys.index("home_indicator_on") < keys.index("presence_missing") < keys.index("away_active")

@@ -521,6 +521,16 @@ action:
         {% else %}
           {{ false }}
         {% endif %}
+      # Entities in either presence list that do not exist (fail toward comfort
+      # already; STEP 2d makes it visible — board 20260909-122828 R1-01).
+      presence_missing: >-
+        {% set ns = namespace(m=[]) %}
+        {% for lst in [presence_entities, home_indicators] %}
+          {% if lst is iterable and lst is not string %}
+            {% for e in lst %}{% if states[e] is none %}{% set ns.m = ns.m + [e] %}{% endif %}{% endfor %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.m }}
       away_active: >-
         {{ presence_enabled and persons_all_away and not home_indicator_on
            and away_delta | float(0) > 0 }}
@@ -789,7 +799,7 @@ action:
             All temperature sensors are unavailable. AC is holding current
             state until sensors recover. Sensors: {{ sensors_temp }}
           notification_id: "ac_climate_sensor_warning"
-  # Deep-pull infeasibility signal (v1.2.0) — self-healing, config-static
+  # Deep-pull infeasibility signal (v1.2.0) — self-healing. Evaluated on the EFFECTIVE band (v1.3.0): the away setback can only relax the gates, so a marginal config may report infeasible only while someone is home.
   - choose:
       - conditions:
           - condition: template
@@ -830,6 +840,29 @@ action:
                 {{ {'mode': current_ac_mode, 'temp': current_setpoint | float(none),
                     'fan': current_fan, 'hold_until': 0} | to_json }}
             continue_on_error: true
+
+  # =============================================
+  # STEP 2d: PRESENCE ENTITY MISSING (v1.3.0) — self-healing notice
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ presence_missing | length == 0 }}"
+        sequence:
+          - service: persistent_notification.dismiss
+            data:
+              notification_id: "ac_climate_presence_entity_missing"
+            continue_on_error: true
+    default:
+      - service: persistent_notification.create
+        data:
+          title: "AC Climate Blueprint — Presence entity missing"
+          message: >
+            These presence / home-indicator entities do not exist:
+            {{ presence_missing | join(', ') }}. Comfort is held (no setback)
+            until they exist or are removed from the inputs.
+          notification_id: "ac_climate_presence_entity_missing"
+        continue_on_error: true
 
   # =============================================
   # STEP 3: MAIN PRIORITY CHOOSE
