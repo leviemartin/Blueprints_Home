@@ -1163,3 +1163,44 @@ R1 (Opus) 10 findings + R2 (Codex gpt-6-astra) 7 findings, cross-family converge
 - Spec coverage: §2.1 inputs → T1; §2.2 variables (target-keyed lead terms, parity, windows, guard + settle predicates) → T1 (+ T4 lists); §2.3 fan write rule → T4 + T5 (live re-check); §2.4 phases: PRECOOL target → T1, lock → T2, settle window → T4/T5, guard + guard settle → T3, wake-off → T4/T5, notices → T3/T5, debug → T5; §2.5 restart/cloud cases are properties of the T1/T4 templates (tests: latch, touched, unavailable, missing entity); §2.6 instance/docs/version → T5; §5 acceptance → tests listed per task + T6 live-verify. No gap found.
 - Placeholders: none. Every test and YAML block is written out.
 - Name consistency: `fans_due_precool` / `fans_due_night` / `fans_unset_night` / `fans_on_at_wake`, `in_settle_last_tick`, `guard_due`, `guard_settle_due`, `settle_mode_due` / `settle_setpoint_due` / `settle_fan_due`, `bedtime_target` (STEP 2a), `lock_ts`, `ac_started_ts` used identically in T1/T3/T4/T5; `_S` / `_fan_env` / `_v110_ctx` defined in T1 and consumed in T2/T4; `_services_in_phase` defined in T2 and used in T3; `_calls_with` defined in T3; the `repeat` walker extension is T5's first step and only T5's tests rely on it.
+
+## Integration addendum (2026-09-09, merged onto main v1.1.0)
+
+Task 6i (Session #26) merged `origin/main` (pre-cool v1.1.0 — manual override,
+helper-range clamp, daily-forecast backstop, quantised setpoints — shipped by
+the parallel session #19/#28 while this branch was in flight) onto
+`feat/bedroom-fan-ac-coordination` and re-versioned the fan coordination as
+**v1.2.0**. See the design spec's own "Integration addendum" section for the
+full ruling on each item; summary:
+
+1. Version → v1.2.0 everywhere the FAN feature is named (blueprint name/desc,
+   instance alias, requirements sections, README bullets, test headers);
+   main's own v1.1.0 references (override / helper-range / backstop)
+   untouched.
+2. `lock_ts` moved before `earliest_turn_on_ts`/`manual_off`; `manual_off`
+   gained a clause exempting an off inside `[lock_ts, lock_ts+180)` on a
+   fan-only night (the lock's own park-off, not a person's).
+3. `guard_due` gained `and not manual_off`.
+4. `guard_settle_due` gained `and not manual_setpoint`.
+5. `since_ac_start_min` kept re-deriving from `now()` rather than reusing
+   main's `ac_state_age_sec` — that value is captured before the STEP 2b
+   forecast fetch (stale by the fetch's latency) and reusing it would have
+   broken the render-chain test harness's per-call `now()`-relative fixtures
+   (`test_rendered_fan_windows`, the guard-settle window test) without a
+   broader rewrite. Documented in-line; `ac_started_ts` stays for the due
+   lists.
+6. `test_precool_commands_are_gated_on_the_override_flags_and_the_boundaries_are_not`'s
+   BEDTIME_LOCK service list updated to include `climate.turn_off`.
+7. New tests: the `manual_off` lock-window exemption (fan_only vs. ac_hold),
+   `guard_due`/`guard_settle_due` under a manual override; `_v110_ctx` gained
+   `manual_off=False, manual_setpoint=False`; `MANUAL_OFF_CHAIN` gained
+   `lock_ts`, `fan_only_mode`.
+8. Docs (Step 2 addendum, Task 5 review finding): NIGHT-HOLD/DEEP-HOLD rows,
+   Beep Budget requirements, and the README beep bullet no longer claim
+   unqualified "zero commands" in fan_only mode.
+
+Merge commit resolved the five conflicting files (`bedroom_precool.yaml`,
+`tests/test_bedroom_precool_structure.py`, the instance JSON, requirements,
+README) keeping both sides everywhere, per the task-6i brief's Step 1 rules
+(target-keyed variables ours, quantised setpoints main's, our notice renamed
+STEP 7d → STEP 7f after main's 7d/7e, main's test section kept first).

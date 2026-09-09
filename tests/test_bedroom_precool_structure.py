@@ -1,4 +1,4 @@
-"""Structural pins for bedroom_precool.yaml (Bedroom Sleep Pre-Cool v1.1.0) and its
+"""Structural pins for bedroom_precool.yaml (Bedroom Sleep Pre-Cool v1.2.0) and its
 deployed instance configs.
 
 Run: cd ~/AI/projects/Blueprints_Home && \
@@ -72,8 +72,8 @@ def test_instants_are_carried_as_timestamps_not_datetimes(text):
 
 
 def test_version_bumped(bp):
-    assert bp["blueprint"]["name"].endswith("v1.1.0")
-    assert "**Version: 1.1.0**" in bp["blueprint"]["description"]
+    assert bp["blueprint"]["name"].endswith("v1.2.0")
+    assert "**Version: 1.2.0**" in bp["blueprint"]["description"]
 
 
 # --- deployed instance config (board 20260907-163522 R1-04: the deploy dry-run owns the
@@ -96,7 +96,7 @@ def test_precool_instance_values():
     # weather.openweathermap supports no forecast type (a get_forecasts call raises);
     # weather.home_sm (Met.no) supports daily + hourly (supported_features 3).
     assert inst["use_blueprint"]["input"]["weather_entity"] == "weather.home_sm"
-    assert inst["alias"].endswith("v1.1.0")
+    assert inst["alias"].endswith("v1.2.0")
     # HA keeps 5 traces by default — ~5 minutes of a 1-minute automation, too few to read
     # the bedtime-lock evidence after the fact ([8] observation)
     assert inst["trace"]["stored_traces"] >= 30
@@ -773,14 +773,16 @@ def test_rendered_setpoint_is_known_treats_a_non_list_as_known(bp):
     assert r([18.0, 21.0]) is False
 
 
-MANUAL_OFF_CHAIN = ["earliest_turn_on_ts", "automation_up_since_ts", "ac_off_since_ts",
-                    "vacation_changed_ts", "manual_off"]
+MANUAL_OFF_CHAIN = ["lock_ts", "fan_only_mode", "earliest_turn_on_ts", "automation_up_since_ts",
+                    "ac_off_since_ts", "vacation_changed_ts", "manual_off"]
 
 
-def _manual_off(bp, ac_state, ac_last_changed, automation_last_changed=None, vacation=(), unavailable=False):
-    now = datetime(2026, 9, 9, 17, 0, tzinfo=TZ)
+def _manual_off(bp, ac_state, ac_last_changed, automation_last_changed=None, vacation=(), unavailable=False,
+                 night_mode="ac_hold", now=None):
+    now = now or datetime(2026, 9, 9, 17, 0, tzinfo=TZ)
     vac = [_St("off", t) for t in vacation]
     ctx = dict(bedtime="19:30:00", lead_cap_minutes=240, wake_time="07:15:00", ac_climate="climate.bedrooms",
+               night_mode=night_mode,
                vacation_toggle=["input_boolean.vac"] if vacation else [],
                ac_is_running=ac_state not in ("off", "unavailable", "unknown"),
                ac_unavailable=unavailable,
@@ -822,6 +824,7 @@ def test_rendered_manual_off_only_for_an_off_transition_inside_the_adoption_wind
     # after local midnight the night still belongs to YESTERDAY's window (board R1-03 / final review #3)
     late = datetime(2026, 9, 10, 0, 30, tzinfo=TZ)
     ctx = dict(bedtime="19:30:00", lead_cap_minutes=240, wake_time="07:15:00", ac_climate="climate.bedrooms",
+               night_mode="ac_hold",
                vacation_toggle=[], ac_is_running=False, ac_unavailable=False,
                states=_States({"climate.bedrooms": _St("off", t(16, 30))}),
                this=_St("on", datetime(2026, 9, 9, 6, 0, tzinfo=TZ)), expand=lambda ids: [])
@@ -834,9 +837,19 @@ def test_rendered_manual_off_only_for_an_off_transition_inside_the_adoption_wind
     assert ctx["earliest_turn_on_ts"] == datetime(2026, 9, 10, 15, 30, tzinfo=TZ).timestamp() and ctx["manual_off"] is False
 
 
+def test_rendered_manual_off_exempts_only_the_lock_s_own_off_in_fan_only(bp):
+    # lock_ts = today_at(bedtime) - 1 min = 19:29:00 on 2026-09-09 (the default `now` date).
+    t = lambda h, m, s=0: datetime(2026, 9, 9, h, m, s, tzinfo=TZ)
+    assert _manual_off(bp, "off", t(19, 30, 0), night_mode="fan_only")["manual_off"] is False   # lock_ts + 60s: ours
+    assert _manual_off(bp, "off", t(19, 33, 0), night_mode="fan_only")["manual_off"] is True     # lock_ts + 240s: a person's
+    # ac_hold: the same lock-window off is unexempted — v1.1.0 behaviour unchanged
+    assert _manual_off(bp, "off", t(19, 30, 0), night_mode="ac_hold")["manual_off"] is True
+
+
 def test_rendered_manual_off_survives_a_missing_climate_state(bp):
     now = datetime(2026, 9, 9, 17, 0, tzinfo=TZ)
     ctx = dict(bedtime="19:30:00", lead_cap_minutes=240, wake_time="07:15:00", ac_climate="climate.gone",
+               night_mode="ac_hold",
                vacation_toggle=[], ac_is_running=False, ac_unavailable=True, states=_States({}),
                this=_St("on", datetime(2026, 9, 9, 6, 0, tzinfo=TZ)), expand=lambda ids: [])
     ctx = _render_chain(bp, MANUAL_OFF_CHAIN, now, ctx)
@@ -864,10 +877,12 @@ def test_precool_commands_are_gated_on_the_override_flags_and_the_boundaries_are
         ["climate.set_fan_mode", "climate.set_hvac_mode", "climate.set_temperature", "climate.turn_on"]
     for c, s in precool:
         assert any("not manual_setpoint and not manual_off" in t for t in c), s["service"]
-    # the bedtime lock is the phase boundary that ends the override: its commands are ungated
+    # the bedtime lock is the phase boundary that ends the override: its commands are
+    # ungated; v1.2.0 adds the fan-only lock's own turn_off (gated on fan_only_mode /
+    # warmest_bedroom / tolerance, never on the override flags)
     lock = _climate_calls_in_phase(bp, "BEDTIME_LOCK")
     assert sorted(s["service"] for _, s in lock) == \
-        ["climate.set_fan_mode", "climate.set_hvac_mode", "climate.set_temperature"]
+        ["climate.set_fan_mode", "climate.set_hvac_mode", "climate.set_temperature", "climate.turn_off"]
     assert not any("manual" in t for c, _ in lock for t in c)
     # the deep-night check keeps its correction (literal "next phase boundary" reading, spec §3.2)
     deep = _climate_calls_in_phase(bp, "DEEP_NIGHT_CHECK")
@@ -903,7 +918,7 @@ def test_override_variables_are_defined_in_dependency_order(text):
     assert _def_index(text, "manual_off") < text.index("# STEP 3: RUNTIME (CONFIG) VALIDATION")
 
 
-# --- v1.1.0 fan coordination (design 2026-09-09, board 20260909-130652) --------------
+# --- v1.2.0 fan coordination (design 2026-09-09, board 20260909-130652) --------------
 
 class _S:
     """A fake HA State object as `expand()` returns it. last_changed (state transitions)
@@ -964,7 +979,11 @@ def _v110_ctx(**over):
                ac_is_running=False, warmest_bedroom=23.0, ac_started_ts=0.0, phase="NIGHT_HOLD",
                forecast_max=18.0, skip_threshold=21, maintaining_setpoint=21.0, current_hvac_mode="cool",
                current_setpoint_known=True, current_setpoint=21.0, current_fan="low", night_fan_mode="low",
-               enable_fan_control=True, ac_fan_modes=["auto", "low", "medium", "high"])
+               enable_fan_control=True, ac_fan_modes=["auto", "low", "medium", "high"],
+               # v1.2.0: guard_due / guard_settle_due read these as already-resolved facts
+               # (computed upstream, out of scope for these narrower chains) — same pattern
+               # as ac_is_running / warmest_bedroom above.
+               manual_off=False, manual_setpoint=False)
     ctx.update(over)
     return ctx
 
@@ -1080,6 +1099,17 @@ def test_rendered_guard_settle_asserts_the_parked_state_only_after_a_night_start
     assert _guard(bp, t, **dict(base, phase="PRECOOL"), current_hvac_mode="heat")["settle_mode_due"] is False
 
 
+def test_rendered_guard_due_and_settle_respect_a_manual_override(bp):
+    t = datetime(2026, 9, 9, 23, 0, tzinfo=TZ)
+    hot = dict(night_mode="fan_only", warmest_bedroom=24.6, phase="NIGHT_HOLD")
+    assert _guard(bp, t, **hot)["guard_due"] is True
+    assert _guard(bp, t, manual_off=True, **hot)["guard_due"] is False               # a respected manual off
+    started = (t - timedelta(minutes=2)).timestamp()
+    settling = dict(night_mode="fan_only", phase="NIGHT_HOLD", ac_is_running=True, ac_started_ts=started)
+    assert _guard(bp, t, **settling)["guard_settle_due"] is True
+    assert _guard(bp, t, manual_setpoint=True, **settling)["guard_settle_due"] is False   # a person's setpoint
+
+
 def test_rendered_interlock_blocked_fails_safe_and_honours_the_clear_hold(bp):
     now = datetime(2026, 9, 9, 19, 29, tzinfo=TZ)
     render = lambda states, sensors: _reparse(_fan_env(now, states).from_string(
@@ -1108,7 +1138,7 @@ def test_config_validation_rejects_a_settle_window_across_midnight(bp):
     assert render(bedtime="23:00:00", fan_settle_minutes=45) is False    # 23:45, same day
 
 
-# --- v1.1.0 T2: BEDTIME_LOCK fan-only branch (park, then off unless already over the band) ---
+# --- v1.2.0 T2: BEDTIME_LOCK fan-only branch (park, then off unless already over the band) ---
 
 def _services_in_phase(bp, phase):
     steps = _service_steps(bp.get("action") or bp.get("actions"), [])
@@ -1141,7 +1171,7 @@ def test_bedtime_lock_switches_the_unit_off_only_in_fan_only_mode_after_parking_
         assert not any("fan_only_mode" in t for t in c)
 
 
-# --- v1.1.0 T3: night guard + guard settle (board 20260909-130652) ------------------
+# --- v1.2.0 T3: night guard + guard settle (board 20260909-130652) ------------------
 
 def _calls_with(bp, marker):
     steps = _service_steps(bp.get("action") or bp.get("actions"), [])
@@ -1174,7 +1204,7 @@ def test_night_guard_is_one_bare_turn_on_plus_notice_and_the_settle_step_correct
         assert _services_in_phase(bp, ph) == []
 
 
-# --- v1.1.0 T4: fan due-lists (the fan write rule as rendered variables) ------------
+# --- v1.2.0 T4: fan due-lists (the fan write rule as rendered variables) ------------
 
 KIDS, MASTER = "fan.ceiling_fan_light_v2", "fan.ceiling_fan_light_v2_2"
 LOCK = datetime(2026, 9, 9, 19, 29, tzinfo=TZ)
@@ -1248,7 +1278,7 @@ def test_fan_due_lists_are_defined_after_their_inputs_and_use_state_attr(text):
     assert "s.attributes.percentage" not in text          # Undefined would kill the variables step (board R1-04)
 
 
-# --- v1.1.0 T5: fan step (before the AC dispatch), skipped notice, docs, instance, version ---
+# --- v1.2.0 T5: fan step (before the AC dispatch), skipped notice, docs, instance, version ---
 
 def _fan_service_calls(bp):
     steps = _service_steps(bp.get("action") or bp.get("actions"), [])
@@ -1293,7 +1323,7 @@ def test_fan_skipped_notice_fires_once_on_the_last_settle_tick(bp):
 def test_v110_version_docs_and_instance():
     inst = json.loads(PRECOOL_INSTANCE.read_text())
     i = inst["use_blueprint"]["input"]
-    assert inst["alias"].endswith("v1.1.0")
+    assert inst["alias"].endswith("v1.2.0")
     assert i["night_mode"] == "fan_only" and i["prechill_offset"] == 0.5
     assert i["bedroom_fans"] == ["fan.ceiling_fan_light_v2_2", "fan.ceiling_fan_light_v2"]
     assert i["interlocked_fans"] == ["fan.ceiling_fan_light_v2"]
@@ -1302,9 +1332,9 @@ def test_v110_version_docs_and_instance():
     assert i["night_fans"] == "all" and i["fan_assist"] == "off" and i["fans_at_wake"] == "leave"
     assert i["night_fan_percentage"] == 1 and i["precool_fan_percentage"] == 21 and i["fan_settle_minutes"] == 45
     text = BP_PATH.read_text()
-    assert "**Version: 1.1.0**" in text
+    assert "**Version: 1.2.0**" in text
     req = (ROOT / "requirements_bedroom_precool.md").read_text()
     for token in ("fan_only", "Night guard", "settle window", "last_updated", "odd/even", "interlock_clear_minutes"):
         assert token in req, token
     readme = (ROOT / "README.md").read_text()
-    assert "Fan-Only Night Hold (v1.1.0)" in readme
+    assert "Fan-Only Night Hold (v1.2.0)" in readme
