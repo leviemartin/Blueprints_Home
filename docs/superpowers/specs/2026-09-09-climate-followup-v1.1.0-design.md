@@ -41,12 +41,13 @@ STEP 2c, after `lead_bias`:
 ```
 bias_helper_min:      state_attr(lead_bias_entity, 'min') | float(-60)     # '' entity → None → default
 bias_helper_max:      state_attr(lead_bias_entity, 'max') | float(120)
-bias_floor:           max(bias_helper_min, -60)
-bias_ceiling:         min(bias_helper_max, 120)
+bias_floor:           ceil(max(bias_helper_min, -60))      # whole numbers INSIDE the intersection (helper step 1)
+bias_ceiling:         floor(min(bias_helper_max, 120))
+bias_range_valid:     bias_floor <= bias_ceiling                # false when the helper does not overlap −60…120 at all
 bias_helper_range_ok: bias_helper_min <= -60 and bias_helper_max >= 120
 ```
 
-BEDTIME_LOCK: `new_bias = min(max(new_bias_raw, bias_floor), bias_ceiling) | round(0) | int` (the helper has step 1). The write can no longer be rejected by the helper's range, so a narrow helper floors/ceils the bias instead of aborting the run (2026-09-08 17:29Z: `Invalid value for input_number.autolearner: 58.0 (range 60.0 - 240.0)` aborted the lock run after the setpoint commands).
+BEDTIME_LOCK: `new_bias = min(max(round(new_bias_raw), bias_floor), bias_ceiling) | int` (rounded first, the helper has step 1), written only while `bias_range_valid` (board R2-A-01/R2-B1-002/R1-04: a helper above 120 or a fractional bound can no longer produce a rejected value — the write is skipped and the notice says so). The write can no longer be rejected by the helper's range, so a narrow helper floors/ceils the bias instead of aborting the run (2026-09-08 17:29Z: `Invalid value for input_number.autolearner: 58.0 (range 60.0 - 240.0)` aborted the lock run after the setpoint commands).
 
 STEP 7d (new, state-driven, LG STEP 2b pattern): while `enable_notifications and enable_auto_learn and lead_bias_configured and not bias_helper_range_ok` → `persistent_notification.create` id `bedroom_precool_bias_helper_range` naming the helper, its live min/max, the required −60…120 and the effective clamp; otherwise `persistent_notification.dismiss` the same id (`continue_on_error: true`). No push (the blueprint has no notify targets).
 
@@ -79,17 +80,20 @@ Definitions (STEP 2c, after `maintaining_setpoint` / `effective_drive`):
 ```
 ac_temp_step:      max(state_attr(ac_climate,'target_temp_step') | float(0.5), 0.1)
 known_setpoints:   [effective_drive, maintaining_setpoint, clamp(maintaining − correction_step), clamp(maintaining + correction_step)]
-                   each quantised as the DEVICE holds it: int(v) when ac_temp_step ≥ 1 (lg_thinq sends int() there), else v
+                   each quantised as the DEVICE holds it: int(v) when ac_temp_step ≥ 1 (lg_thinq sends int() there), else v;
+                   effective_drive / maintaining_setpoint / deep_target_setpoint are quantised the same way at their source (R2-B1-005)
 setpoint_is_known: any |current_setpoint − k| <= 0.1 over known_setpoints
-manual_setpoint:   ac_is_running and current_setpoint_known and not setpoint_is_known
+ac_state_age_sec:  now − states[ac_climate].last_changed              # age of the current running/off spell
+manual_setpoint:   ac_is_running and current_setpoint_known and not setpoint_is_known and ac_state_age_sec >= 120
+                   # two-tick grace (board R1-01): the first tick after turn-on retries a lagged/lost command as in v1.0.x
 automation_up_since_ts: as_timestamp(this.last_changed)        # boot / reload / enable of this automation
 ac_off_since_ts:   as_timestamp(states[ac_climate].last_changed)
 earliest_turn_on_ts: as_timestamp(today_at(bedtime) − lead_cap)  # the instant form of earliest_turn_on_tod
 vacation_changed_ts: newest last_changed over vacation_toggle, else 0
 manual_off:        not ac_is_running and not ac_unavailable
-                   and ac_off_since_ts >= earliest_turn_on_ts            # went off inside the adoption window
-                   and ac_off_since_ts > automation_up_since_ts + 60     # not the state re-created at HA start/reload
-                   and vacation_changed_ts < ac_off_since_ts − 5          # not the vacation turn-off
+                   and ac_off_since_ts >= earliest_turn_on_ts + 120      # went off inside the window (120 s margin: a DAY_OFF turn_off confirmed late — R1-05)
+                   and ac_off_since_ts > automation_up_since_ts + 600    # not the state re-created at HA start/reload (cloud setup lag — R1-02/R2-B1-004)
+                   and vacation_changed_ts < ac_off_since_ts − 120       # not the vacation turn-off (coordinator lag — R2-B1-003)
 ```
 
 Behaviour:
@@ -98,7 +102,7 @@ Behaviour:
 - **NIGHT_HOLD:** issues nothing (unchanged). **DEEP_NIGHT_CHECK** is the next phase boundary: it keeps its existing correction rule (literal reading of "respected until the next phase boundary"). *Operator question recorded for the board/Martin:* if the deep-night check should also stand down on a manual value, it is a one-line gate (`not manual_setpoint`) — not implemented by default.
 - **Notification (STEP 7e, state-driven):** while `enable_notifications and phase in [PRECOOL, BEDTIME_LOCK, NIGHT_HOLD] and (manual_setpoint or manual_off)` → `bedroom_precool_manual_override` (which was detected, the value, and when the blueprint resumes); otherwise dismiss. "One push max" is read as one notification per override episode; the blueprint has no mobile-push inputs.
 
-Residuals (documented in the requirements doc): (1) a manual change *to* one of the blueprint's own values is not detected (v1.0.x behaviour: re-asserted within a minute); (2) if a setpoint command fails at the turn-on tick and the unit comes back with an unknown remembered value, that night reads as a manual override (notification shown; self-heals next day) — the research's B design shares this class; (3) a config edit of `ideal_temp`/`hall_offset` during PRECOOL reloads the automation, which resets `this.last_changed` (manual-off guard) but makes the old setpoint read as manual until the lock; (4) a ThinQ cloud outage that ends inside the window (`unavailable` → `off`) re-stamps `last_changed` and reads as a manual off for that night — the notice names the recovery (switch the unit on by hand; a running unit inside the window is adopted as PRECOOL at once). Triple-check 2026-09-09: (1)–(4) accepted-documented; the device-held quantisation was a P1 fixed pre-board.
+Residuals (documented in the requirements doc): (1) a manual change *to* one of the blueprint's own values is not detected (v1.0.x behaviour: re-asserted within a minute); (2) if a setpoint command fails at the turn-on tick and the unit comes back with an unknown remembered value, that night reads as a manual override (notification shown; self-heals next day) — the research's B design shares this class; (3) a config edit of `ideal_temp`/`hall_offset` during PRECOOL reloads the automation, which resets `this.last_changed` (manual-off guard) but makes the old setpoint read as manual until the lock; (4) a ThinQ cloud outage that ends inside the window (`unavailable` → `off`) re-stamps `last_changed` and reads as a manual off for that night — the notice names the recovery (switch the unit on by hand; a running unit inside the window is adopted as PRECOOL at once). Triple-check 2026-09-09: (1)–(4) accepted-documented; the device-held quantisation was a P1 fixed pre-board. Board 20260909-113000 (design-time): the two-tick grace (R1-01, P1), the lag margins on the three manual-off guards, the write gate on a non-overlapping helper range, the parsing hardening of both forecast loops (`as_datetime(ts, none)`, `float(none)`) and the STEP 2 validation on the configured LG band were actioned in-session; a reload after a manual off ends that hold (documented).
 
 ### 3.3 Dry-run in tests (R1-04)
 
@@ -134,13 +138,14 @@ Top-level `variables:` pass-through: `presence_entities`, `home_indicators`, `aw
 presence_enabled:  presence_entities is a non-empty list
 away_delay_sec:    away_delay | int(0) * 60
 persons_all_away:  presence_enabled and for every p: states[p] exists, state not in [home, unknown, unavailable], and now − last_changed >= away_delay_sec
-home_indicator_on: any of home_indicators is 'on'
+                   # the delay measures the CURRENT away state: a zone→zone move re-arms it once (documented; R1-08/R2-B2-02)
+home_indicator_on: any of home_indicators is NOT exactly 'off' (on, unknown, unavailable, missing) — fail toward comfort (R2-A-03/R2-B2-01)
 away_active:       presence_enabled and persons_all_away and not home_indicator_on and away_delta > 0
 temp_low:          temp_low_cfg − (away_delta if away_active else 0)
 temp_high:         temp_high_cfg + (away_delta if away_active else 0)
 ```
 
-Everything downstream (quantised setpoints, deep-pull gates, `target_mode` hysteresis, distances, maintenance midpoint, STEP 2 validation) reads the effective band. Live instance while away: 19.0–25.5 °C.
+Everything downstream (quantised setpoints, deep-pull gates, `target_mode` hysteresis, distances, maintenance midpoint) reads the effective band; the STEP 2 validation gates and their messages read the CONFIGURED band `temp_low_cfg`/`temp_high_cfg` so the widened away band never masks an inverted or too-narrow config (R1-06). Live instance while away: 19.0–25.5 °C.
 
 Behaviour: on leaving, a unit that was heating at 21.5 °C finds itself inside the widened band → `target_mode` off → one `climate.turn_off` (one beep); it re-heats only below 19.0 °C (setback floor), re-cools only above 25.5 °C. On return the band snaps back on the `presence_return` trigger / next tick → normal control (one command if the room is outside 21–23.5). Vacation, schedule window and door-open pierces are unchanged and outrank presence. Manual-hold machinery follows `desired_setpoint` automatically. `unknown`/`unavailable` presence = home (fail toward comfort, the security resolver's rule). HA restart resets `last_changed` → setback re-arms `away_delay_minutes` after boot.
 
@@ -159,7 +164,7 @@ LG (`tests/test_lg_ac_climate_structure.py`): version 1.3.0; input schemas + def
 1. Merge `origin/main` into the branch, PR with `Session: #19`, merge.
 2. Deploy pre-checks: helper range live (min ≤ −60, max ≥ 120); `input_boolean.climate_guest_mode` created/verified; both dry-runs green; HA `validate_config` on the input-substituted configs (`triggers`/`actions` plural).
 3. `scripts/deploy-blueprint.sh` for both blueprints with their instance JSON (backs up `deploy/<id>.prev.json`); both automations `on`.
-4. Live-verify: manual "Run" of pre-cool → debug dump shows `daily high`, `manual`, helper range fields; next non-fetch day-side tick trace has `forecast_daily_high`; LG: a simulated everyone-away (persons injected `not_home` via the REST states API, EV latch off, guest off, instance temporarily at `away_delay_minutes: 0`) → trace `away_active: True`, `temp_low: 19.0`; guest on → `away_active: False`; then restore states and the 10-min delay. *Note for Martin:* the simulation touches `person.*` (4 flips, under the security flap guard's 6/h) and `input_boolean.security_ev_car_home` (restored immediately; `sec_ev_tracker` re-latches within 30 min anyway).
+4. Live-verify: manual "Run" of pre-cool → debug dump shows `daily high`, `manual`, helper range fields; next non-fetch day-side tick trace has `forecast_daily_high` and a non-zero `automation_up_since_ts`; LG: a temporary instance variant wired to two throwaway `device_tracker.climate_test_*` entities (created with `device_tracker.see`) and the guest toggle only — everyone-away after the real 10-min debounce → a natural tick traces `away_active: True`, `temp_low: 19.0`; guest on → an `indicator_on`-triggered run with `away_active: False`; a tracker home → a `presence_return`-triggered run. **No production security entity is written** (board R2-A-04: the live EV-charger guard would cut the plug on a faked latch). Immutable pre-deploy copies of both live instance configs and both shipped YAMLs are taken first; rollback is pinned to `5c5a08b` (board R2-A-05).
 5. At deploy time, note on #22 and #24 that the live pre-cool moved to v1.1.0 (their observation windows were reading v1.0.3).
 6. Observe (24 h): both `on`; the first bedtime lock writes the bias with no log error and no helper-range notification; a non-fetch tick with a non-empty daily forecast; zero log errors.
 

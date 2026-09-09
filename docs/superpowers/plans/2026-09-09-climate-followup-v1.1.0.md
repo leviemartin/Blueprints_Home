@@ -50,9 +50,9 @@ Engineering constraints:
 
 **Behaviour stated for the board (not a decision re-open):**
 - *Setback depth.* Dutch heat-pump guidance caps setback at 1–2 °C (Milieu Centraal: none for floor heating, 1 °C reasonable insulation, 2 °C poor insulation); the inverter air-to-air unit has no resistive backup, so the DOE aux-heat penalty does not apply. 2.0 °C is the locked default and per-instance tunable (0–5).
-- *Away debounce.* 10 min re-checked every tick (`last_changed`-based, stateless; the Better Thermostat blueprint precedent). Return is immediate via the two new triggers. An HA restart re-arms the setback 10 min after boot.
+- *Away debounce.* 10 min re-checked every tick (`last_changed`-based, stateless; the Better Thermostat blueprint precedent) — measured on the CURRENT away state, so a move between named zones re-arms the delay once (documented in the input and the requirements; R1-08/R2-B2-02). Return is immediate via the two new triggers. An HA restart re-arms the setback 10 min after boot. Any home indicator that is not exactly `off` (on, unknown, unavailable, missing) holds comfort. The STEP 2 validation gates read the CONFIGURED band (R1-06).
 - *Leaving while heating.* A unit heating at 21.5 °C (release 22) finds itself inside 19–25.5 → `target_mode` off → one `climate.turn_off`; it re-heats only below 19.0. This is the setback, not "off": the unit runs whenever the room leaves the widened band.
-- *Override residuals.* A manual change to one of the blueprint's own four values is re-asserted within a minute (v1.0.x behaviour). The known set holds the values as the DEVICE stores them (lg_thinq sends `int(value)` on a whole-degree step). A cloud outage that ends inside the window re-stamps the `off` state and reads as a manual off for that night (notice text names the recovery: switch the unit on by hand). A setpoint command that fails on the turn-on tick can leave the unit at a remembered unknown value that reads as manual for the night (notification shown; self-heals next day). A reload of the instance (config edit) resets `this.last_changed` and, if the old setpoint is not in the new set, reads as manual until the lock.
+- *Override residuals (board 20260909-113000).* A manual change to one of the blueprint's own four values is re-asserted within a minute (v1.0.x behaviour). A manual value counts only once the unit has been running for two ticks (≥ 120 s since its off→on change), so a lagged or lost command on the turn-on tick is retried by the next tick exactly as in v1.0.3 (R1-01); a person's change inside those first two minutes is re-asserted once. The commanded setpoints and the known set are both quantised the way the DEVICE stores them (lg_thinq sends `int(value)` on a whole-degree step). Manual-off guards carry coordinator-lag margins: 120 s past the window start (a DAY_OFF turn_off confirmed late), 600 s after HA start / reload (a cloud integration's first state), 120 s after a vacation toggle; a reload made after a manual off ends the hold. A cloud outage that ends inside the window re-stamps the `off` state and reads as a manual off for that night (notice text names the recovery: switch the unit on by hand). A setpoint command that fails on the turn-on tick can leave the unit at a remembered unknown value that reads as manual for the night (notification shown; self-heals next day). A reload of the instance (config edit) resets `this.last_changed` and, if the old setpoint is not in the new set, reads as manual until the lock.
 - *Daily high in the evening.* `temperature` is the day's HIGH; after the afternoon peak the backstop overstates the remaining heat → an earlier start (the asymmetric-cost rule accepts early).
 - *`get_forecasts` cadence.* Both calls read HA's cached coordinator data (Met.no polls upstream every 55–65 min); a daily call on 14 of 15 day-side ticks costs no upstream traffic.
 
@@ -65,16 +65,16 @@ Engineering constraints:
 - [x] Branch `climate-followup-v1.1.0` created off `main` (`5c5a08b` = `origin/main`) in the main checkout (no worktree; #15/#22/#24 branches are merged).
 - [x] TCB: `verify` against `/home/martin/AI/reviews/tcb-baseline-16ef53e7f973185a.txt` with `TCB_EXTRA` = the deploy script → rc 2 on ONE undeclared drift (`~/.claude/settings.json`, evidence in the header); declared at its sha in `/home/martin/AI/reviews/declared-tcb-16ef53e7f973185a.txt` → `verify BASELINE declared` rc 0; ABSENT lines 0; deploy script present in the baseline (path-column match).
 - [x] HA 2026.9.0 reachable (`Europe/Amsterdam`). Live facts (spec §2): `input_number.autolearner` min −60 / max 240 / step 1 / state 62; `climate.bedrooms` + `climate.livingroom` min 18 / max 30 / step 0.5, fan modes auto/low/medium/high, `temperature: null` while off; `weather.home_sm` = Met.no, `supported_features` 3, daily 6 entries (`temperature` = high, `templow` = low, `datetime` local-noon-as-UTC), hourly 48; `weather.openweathermap` no forecast; persons `person.martin_levie` / `person.savannah_levie`; `input_boolean.security_ev_car_home` on, `security_presence_unreliable` off, `security_auto_away` off (= the alarm's auto-arm toggle); `input_boolean.climate_guest_mode` ABSENT (created in T5); automation entities `automation.bedroom_sleep_pre_cool_v1_0_0` / `automation.lg_ac_climate_control_v1_0_0` both `on`.
-- [x] Empirical probes: both climate states last written by their automations' time-pattern runs carry `context.parent_id null, user_id null` (context inspection rejected); `climate.bedrooms` last_changed 05:15Z / last_updated 07:59Z (attribute-only pushes do not move `last_changed`); HA stores 5 traces per automation.
+- [x] Empirical probes: both climate states last written by their automations' time-pattern runs carry `context.parent_id null, user_id null` (context inspection rejected); `climate.bedrooms` last_changed 05:15Z / last_updated 07:59Z (attribute-only pushes do not move `last_changed`); HA stores 5 traces per automation; `this.last_changed` renders inside an automation's action `variables:` at runtime (throwaway automation created, triggered, verified `up_ts` = the entity's last_changed, deleted — board R1-02); live renders of `round(0, 'ceil') | int`, `as_datetime(x, none)`, `float(none)` on junk, `set` inside a single-lined `if`, the state-age expression and the indicator loop all match the harness.
 - [x] Baseline suite green: `282 passed` on `5c5a08b`.
-- [x] Scratch run of the inline artifacts in a throwaway repo copy: full suite **312 passed**; RED at the Task 1 state (tests + instance JSON patched, blueprints unchanged) **32 failed / 67 passed** in the two changed test files (every new blueprint pin red; only the pre-cool instance test — which needs nothing from the blueprint — is already green); `scripts/deploy-blueprint.sh --dry-run` green for both instances (`9 inputs` / `31 inputs`); HA `validate_config` on both input-substituted configs: `{"triggers":{"valid":true},"actions":{"valid":true}}`; live `/api/template` renders match the harness for `bitwise_and`, `as_local` date match, `states[entity]` item access (none when missing), `state_attr('', …)` → default, `expand(...)` last_changed max, the list literal, the string-form guard, the persons loop and the indicator `selectattr`; all nine diffs re-applied with `git apply` onto a clean checkout reproduce the pinned sha256s.
+- [x] Scratch run of the inline artifacts in a throwaway repo copy: full suite **315 passed**; RED at the Task 1 state (tests + instance JSON patched, blueprints unchanged) **36 failed / 66 passed** in the two changed test files (every new blueprint pin red; only the pre-cool instance test — which needs nothing from the blueprint — is already green); `scripts/deploy-blueprint.sh --dry-run` green for both instances (observed output: `9 inputs` / `30 inputs`); HA `validate_config` on both input-substituted configs: `{"triggers":{"valid":true},"actions":{"valid":true}}`; live `/api/template` renders match the harness for `bitwise_and`, `as_local` date match, `states[entity]` item access (none when missing), `state_attr('', …)` → default, `expand(...)` last_changed max, the list literal, the string-form guard, the persons loop and the indicator `selectattr`; all nine diffs re-applied with `git apply` onto a clean checkout reproduce the pinned sha256s.
 - [ ] At T5 time only: confirm `git rev-parse HEAD` = `origin/main`, re-read both live instance configs (the deploy script backs them up to `deploy/<id>.prev.json`, gitignored), re-check the helper range live.
 
 **Observation criteria ([8] applies — deploying session; issue #19 carries `<!-- observe:open -->`):**
 1. `automation.bedroom_sleep_pre_cool_v1_0_0` and `automation.lg_ac_climate_control_v1_0_0` (entity ids unchanged; aliases v1.1.0 / v1.3.0) are `on` immediately after deploy and still `on` 24 h later.
-2. The first bedtime lock after deploy (19:29 CEST) writes the bias: `input_number.autolearner` `last_changed` at 19:29 local with a whole-number value inside −60…120, **no** `Invalid value for input_number.autolearner` log line, and no `bedroom_precool_bias_helper_range` notification (range −60…240 covers −60…120).
+2. The first bedtime lock after deploy (19:29 CEST) on a running unit executes the learn write: the 19:29 trace (stored_traces 30) shows the `input_number.set_value` step executed with a whole-number `value` inside −60…120 and `script_execution: finished` (a write of an unchanged value does not move `last_changed`, so the trace is the evidence — board R2-A-07), **no** `Invalid value for input_number.autolearner` log line, and no `bedroom_precool_bias_helper_range` notification (range −60…240 covers −60…120). If the lock tick shows `manual_setpoint: True` the skip is intentional and is recorded as such, not as a failure.
 3. A day-side tick with `forecast_fetch_due: False` traces `finished` with `forecast_daily_high` = today's high (a number), `forecast_daily_ok: True`, `forecast_max ≥ outdoor_now`; a `/15` tick shows the hourly path.
-4. LG: with the instance temporarily at `away_delay_minutes: 0`, both persons injected `not_home`, the EV latch and guest mode off → the triggered run's `changed_variables` show `away_active: True`, `temp_low: 19.0`, `temp_high: 25.5`; with `input_boolean.climate_guest_mode` on → `away_active: False`, `temp_low: 21.0`, `temp_high: 23.5`; states restored and the 10-min delay redeployed afterwards.
+4. LG: on the temporary variant wired to two throwaway `device_tracker.climate_test_*` entities (both `not_home` for ≥ 10 min, guest off) a natural `/10` tick traces `away_active: True`, `temp_low: 19.0`, `temp_high: 25.5`; switching `input_boolean.climate_guest_mode` on produces an `indicator_on`-triggered run with `away_active: False`, `temp_low: 21.0`, `temp_high: 23.5`; a tracker returning `home` produces a `presence_return`-triggered run with `persons_all_away: False`; the committed instance (real persons + three indicators) is redeployed and `on` afterwards. No production security entity is written.
 5. Zero `Error executing script` / `Invalid value` / `does not support` log lines for either automation over 24 h; `bedroom_precool_manual_override` appears only if a setpoint is changed by hand during PRECOOL (optional exercise: change the setpoint by remote at ~18:30, confirm no re-assert for the following minutes + the notice; the 19:29 lock re-applies 21 °C and dismisses it).
 
 ---
@@ -88,8 +88,8 @@ Engineering constraints:
 **Context budget:** ~25k tokens · 4 files modified · shell only.
 
 **Files:**
-- Modify: `tests/test_bedroom_precool_structure.py` (v1.0.3 pins → v1.1.0; R1-04 dry-run tests; harness stubs; 22 new tests)
-- Modify: `tests/test_lg_ac_climate_structure.py` (v1.2.0 pins → v1.3.0; trigger roster; 10 new tests incl. the LG instance dry-run moved here from the pre-cool file)
+- Modify: `tests/test_bedroom_precool_structure.py` (v1.0.3 pins → v1.1.0; R1-04 dry-run tests; harness stubs; 24 new tests)
+- Modify: `tests/test_lg_ac_climate_structure.py` (v1.2.0 pins → v1.3.0; trigger roster; validation gates on the configured band; 11 new tests incl. the LG instance dry-run moved here from the pre-cool file)
 - Modify: `deploy/bedroom_precool_1779553673971.json` (alias v1.1.0, `trace.stored_traces` 30)
 - Modify: `deploy/lg_ac_climate_1775578219942.json` (alias v1.3.0, presence inputs, `trace.stored_traces` 20)
 
@@ -127,8 +127,8 @@ sha256sum tests/test_bedroom_precool_structure.py tests/test_lg_ac_climate_struc
 ```
 Expected (exact):
 ```
-95f714329d2676312b3459239d0897e00f5a02b692ba0156402bb75c277155e2  tests/test_bedroom_precool_structure.py
-52c9b2fa43ae33e43bfac79a59ebad5482acfc3ab4de59e9d607f57b0e650156  tests/test_lg_ac_climate_structure.py
+f610ec4e575878e11740302cb752a9251be0c852d07b5cf590cc112076242d6b  tests/test_bedroom_precool_structure.py
+d37f42ce68e153f51df67edf81236b31a9f60df085d3aa4dcacf33d38b28077f  tests/test_lg_ac_climate_structure.py
 16441db6049bb0d53d62d756eb6fd0febc0d95afe54c7b02fe4aaa9708ee7641  deploy/bedroom_precool_1779553673971.json
 7b7fa2d5bd13c781bb446fa0ce8d4e9e216b33b733c06ca896d82e8d0b982aaf  deploy/lg_ac_climate_1775578219942.json
 ```
@@ -137,7 +137,7 @@ A mismatch means the diff did not apply cleanly (stale base) — stop and report
 - [ ] **Step 3: Run the two changed test files — expect RED**
 
 Run: `PY=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python; $PY -m pytest tests/test_bedroom_precool_structure.py tests/test_lg_ac_climate_structure.py -q`
-Expected: `32 failed, 67 passed` — the failing set is exactly: pre-cool `test_version_bumped, test_rendered_new_bias_is_clamped_to_the_helpers_live_range, test_bias_range_variables_are_defined_after_lead_bias_and_before_the_lock, test_bias_helper_range_notice_is_state_driven, test_auto_learn_write_is_clamped_and_skipped_on_an_override_night, test_dead_forecast_attribute_read_is_gone, test_rendered_weather_daily_supported_reads_feature_bit_1, test_rendered_forecast_daily_high_picks_todays_entry_by_local_date, test_rendered_forecast_max_prefers_hourly_then_daily_then_outdoor, test_rendered_forecast_daily_due_only_when_the_hourly_window_is_empty_on_the_day_side, test_daily_forecast_call_is_gated_and_error_tolerant, test_forecast_variables_are_defined_in_dependency_order, test_forecast_unavailable_notice_also_requires_the_daily_backstop_to_be_absent, test_rendered_manual_setpoint_is_any_value_the_blueprint_could_not_have_commanded, test_rendered_known_setpoints_are_the_values_the_device_holds, test_rendered_setpoint_is_known_treats_a_non_list_as_known, test_rendered_manual_off_only_for_an_off_transition_inside_the_adoption_window, test_rendered_manual_off_survives_a_missing_climate_state, test_precool_commands_are_gated_on_the_override_flags_and_the_boundaries_are_not, test_manual_override_notice_is_state_driven_and_phase_gated, test_override_variables_are_defined_in_dependency_order` (21) and LG `test_version_bumped, test_trigger_roster, test_presence_inputs_are_additive_with_defaults, test_presence_variable_mappings_and_cfg_rename, test_presence_triggers, test_presence_variables_precede_every_band_consumer, test_rendered_persons_all_away_requires_everyone_away_for_the_delay, test_rendered_home_indicator_on, test_rendered_away_active_and_effective_band, test_description_documents_presence_setback, test_lg_instance_passes_the_deploy_dry_run_and_wires_presence` (11). `test_precool_instance_values` already passes (the pre-cool instance needs nothing new from the blueprint); the LG instance dry-run fails until Task 3 declares the presence inputs.
+Expected: `36 failed, 66 passed` — the failing set is exactly: pre-cool `test_version_bumped, test_rendered_new_bias_is_clamped_to_the_helpers_live_range, test_bias_range_variables_are_defined_after_lead_bias_and_before_the_lock, test_bias_helper_range_notice_is_state_driven, test_auto_learn_write_is_clamped_and_skipped_on_an_override_night, test_dead_forecast_attribute_read_is_gone, test_rendered_weather_daily_supported_reads_feature_bit_1, test_rendered_forecast_daily_high_picks_todays_entry_by_local_date, test_rendered_hourly_window_skips_malformed_entries, test_rendered_forecast_max_prefers_hourly_then_daily_then_outdoor, test_rendered_forecast_daily_due_only_when_the_hourly_window_is_empty_on_the_day_side, test_daily_forecast_call_is_gated_and_error_tolerant, test_forecast_variables_are_defined_in_dependency_order, test_forecast_unavailable_notice_also_requires_the_daily_backstop_to_be_absent, test_rendered_manual_setpoint_is_any_value_the_blueprint_could_not_have_commanded, test_rendered_known_setpoints_are_the_values_the_device_holds, test_rendered_commanded_setpoints_are_quantised_at_the_source, test_rendered_setpoint_is_known_treats_a_non_list_as_known, test_rendered_manual_off_only_for_an_off_transition_inside_the_adoption_window, test_rendered_manual_off_survives_a_missing_climate_state, test_precool_commands_are_gated_on_the_override_flags_and_the_boundaries_are_not, test_manual_override_notice_is_state_driven_and_phase_gated, test_override_variables_are_defined_in_dependency_order` (23) and LG `test_version_bumped, test_trigger_roster, test_validation_gate_covers_margin, test_presence_inputs_are_additive_with_defaults, test_presence_variable_mappings_and_cfg_rename, test_presence_triggers, test_presence_variables_precede_every_band_consumer, test_rendered_persons_all_away_requires_everyone_away_for_the_delay, test_rendered_home_indicator_on, test_rendered_away_active_and_effective_band, test_rendered_presence_chain_reaches_target_mode, test_description_documents_presence_setback, test_lg_instance_passes_the_deploy_dry_run_and_wires_presence` (13). `test_precool_instance_values` already passes (the pre-cool instance needs nothing new from the blueprint); the LG instance dry-run fails until Task 3 declares the presence inputs.
 
 - [ ] **Step 4: Commit (tests + instance pillar)**
 
@@ -146,14 +146,14 @@ git add tests/test_bedroom_precool_structure.py tests/test_lg_ac_climate_structu
 git commit -m "test(climate): v1.1.0 pre-cool + v1.3.0 LG pins (RED) — helper-range clamp, daily backstop, manual override, presence setback; instances migrated (aliases, presence inputs, stored_traces)"
 ```
 
-Step 5: Report the two changed files' counts as `precool+lg (RED): PASS=67 FAIL=32` and the four hash lines.
+Step 5: Report the two changed files' counts as `precool+lg (RED): PASS=66 FAIL=36` and the four hash lines.
 
 ### Artifacts for Task 1
 
 <!-- patch:tests/test_bedroom_precool_structure.py -->
 ````diff
 diff --git a/tests/test_bedroom_precool_structure.py b/tests/test_bedroom_precool_structure.py
-index 252976b..b0fd920 100644
+index 252976b..1362689 100644
 --- a/tests/test_bedroom_precool_structure.py
 +++ b/tests/test_bedroom_precool_structure.py
 @@ -1,4 +1,4 @@
@@ -175,6 +175,10 @@ index 252976b..b0fd920 100644
 -# --- deployed instance configs ---------------------------------------------------------
 +# --- deployed instance config (board 20260907-163522 R1-04: the deploy dry-run owns the
 +# schema checks — unknown keys, required inputs, use_blueprint.path, instance-id rule) ---
++
++from test_deploy_blueprint_script import run as deploy_run
++
++HA_PATH = "leviemartin/bedroom_precool.yaml"
  
 -def test_precool_instance_keys_exist_and_weather_supports_hourly_forecasts():
 -    inst = json.loads(PRECOOL_INSTANCE.read_text())
@@ -186,10 +190,12 @@ index 252976b..b0fd920 100644
 -    # service); weather.home_sm (Met.no) supports hourly forecasts (features 3).
 -    assert inst["use_blueprint"]["input"]["weather_entity"] == "weather.home_sm"
 -    assert inst["alias"].endswith("v1.0.3")
-+from test_deploy_blueprint_script import run as deploy_run
-+
-+HA_PATH = "leviemartin/bedroom_precool.yaml"
  
++def test_precool_instance_passes_the_deploy_dry_run():
++    r = deploy_run("--dry-run", str(BP_PATH), HA_PATH, str(PRECOOL_INSTANCE))
++    assert r.returncode == 0, r.stdout + r.stderr
++    assert "dry-run: validation passed" in r.stdout
++    assert "ok (id 1779553673971" in r.stdout
  
 -def test_lg_ac_instance_escalation_stages_are_ordered_and_in_range():
 -    inst = json.loads(LG_INSTANCE.read_text())
@@ -204,12 +210,6 @@ index 252976b..b0fd920 100644
 -    for key, val in (("escalation_stage_1_minutes", s1), ("escalation_stage_2_minutes", s2)):
 -        sel = inputs[key]["selector"]["number"]
 -        assert sel["min"] <= val <= sel["max"], f"{key}={val} outside selector range"
-+def test_precool_instance_passes_the_deploy_dry_run():
-+    r = deploy_run("--dry-run", str(BP_PATH), HA_PATH, str(PRECOOL_INSTANCE))
-+    assert r.returncode == 0, r.stdout + r.stderr
-+    assert "dry-run: validation passed" in r.stdout
-+    assert "ok (id 1779553673971" in r.stdout
-+
 +
 +def test_precool_instance_values():
 +    inst = json.loads(PRECOOL_INSTANCE.read_text())
@@ -223,7 +223,7 @@ index 252976b..b0fd920 100644
  
  
  # --- rendered behaviour (board 20260907-163522 R1-01: realized outputs, not name pins) ---
-@@ -132,9 +129,24 @@ def _reparse(rendered):
+@@ -132,16 +129,38 @@ def _reparse(rendered):
          return rendered
  
  
@@ -249,7 +249,22 @@ index 252976b..b0fd920 100644
      env.filters["timestamp_custom"] = (
          lambda ts, fmt="%Y-%m-%d %H:%M:%S", local=True: datetime.fromtimestamp(float(ts), tz=TZ).strftime(fmt)
      )
-@@ -384,3 +396,337 @@ def test_night_fan_unsupported_notice_is_gated_on_fan_control_and_resolution(bp)
+     env.globals["now"] = lambda: now
+     env.globals["timedelta"] = timedelta
+     env.globals["as_timestamp"] = lambda d: d.timestamp() if hasattr(d, "timestamp") else float(d)
+-    env.globals["as_datetime"] = lambda s: datetime.fromisoformat(s) if isinstance(s, str) else s
++    def _as_datetime(s, d=_MISSING):
++        try:
++            return datetime.fromisoformat(s) if isinstance(s, str) else s
++        except ValueError:
++            if d is _MISSING:
++                raise
++            return d
++    env.globals["as_datetime"] = _as_datetime
+     env.globals["today_at"] = lambda hhmmss: datetime.combine(now.date(), time.fromisoformat(hhmmss), tzinfo=TZ)
+     return env
+ 
+@@ -384,3 +403,402 @@ def test_night_fan_unsupported_notice_is_gated_on_fan_control_and_resolution(bp)
  def test_precool_instance_sets_night_fan_low():
      inst = json.loads(PRECOOL_INSTANCE.read_text())
      assert inst["use_blueprint"]["input"]["night_fan"] == "low"
@@ -306,7 +321,8 @@ index 252976b..b0fd920 100644
 +
 +# ---- Task 0: the auto-learn write is clamped to the helper's live range --------------
 +
-+BIAS_CHAIN = ["bias_helper_min", "bias_helper_max", "bias_floor", "bias_ceiling", "bias_helper_range_ok"]
++BIAS_CHAIN = ["bias_helper_min", "bias_helper_max", "bias_floor", "bias_ceiling", "bias_range_valid",
++              "bias_helper_range_ok"]
 +
 +
 +def _bias_chain(bp, helper_min, helper_max, raw):
@@ -330,16 +346,25 @@ index 252976b..b0fd920 100644
 +    assert _bias_chain(bp, -60.0, 240.0, 130.0)["new_bias"] == 120
 +    # attributes missing (helper unavailable / unconfigured '') -> the blueprint's own bounds
 +    ctx = _bias_chain(bp, None, None, 130.0)
-+    assert (ctx["bias_floor"], ctx["bias_ceiling"], ctx["new_bias"]) == (-60.0, 120.0, 120)
-+    assert ctx["bias_helper_range_ok"] is True
++    assert (ctx["bias_floor"], ctx["bias_ceiling"], ctx["new_bias"]) == (-60, 120, 120)
++    assert ctx["bias_helper_range_ok"] is True and ctx["bias_range_valid"] is True
 +    assert _bias_chain(bp, None, None, -80.0)["new_bias"] == -60
++    # fractional helper bounds round INWARD so the whole-number write stays inside the helper
++    # (board 20260909-113000 R2-A-01/R2-B1-002/R1-04)
++    ctx = _bias_chain(bp, -59.5, 119.5, -70.0)
++    assert (ctx["bias_floor"], ctx["bias_ceiling"], ctx["new_bias"]) == (-59, 119, -59)
++    assert _bias_chain(bp, -59.5, 119.5, 130.0)["new_bias"] == 119
++    # a helper that does not overlap -60..120 at all: floor > ceiling -> the write is skipped
++    ctx = _bias_chain(bp, 130.0, 240.0, 58.0)
++    assert (ctx["bias_floor"], ctx["bias_ceiling"]) == (130, 120)
++    assert ctx["bias_range_valid"] is False and ctx["bias_helper_range_ok"] is False
 +
 +
 +def test_bias_range_variables_are_defined_after_lead_bias_and_before_the_lock(text):
 +    assert (_def_index(text, "lead_bias") < _def_index(text, "bias_helper_min")
 +            < _def_index(text, "bias_helper_max") < _def_index(text, "bias_floor")
-+            < _def_index(text, "bias_ceiling") < _def_index(text, "bias_helper_range_ok")
-+            < text.index("new_bias:"))
++            < _def_index(text, "bias_ceiling") < _def_index(text, "bias_range_valid")
++            < _def_index(text, "bias_helper_range_ok") < text.index("new_bias:"))
 +
 +
 +def test_bias_helper_range_notice_is_state_driven(bp):
@@ -359,10 +384,13 @@ index 252976b..b0fd920 100644
 +    conds, step = writes[0]
 +    assert any("phase == 'BEDTIME_LOCK'" in t for t in conds)
 +    assert any("ac_is_running" in t for t in conds)
-+    assert any("enable_auto_learn" in t and "lead_bias_configured" in t and "not manual_setpoint" in t for t in conds)
++    assert any("enable_auto_learn" in t and "lead_bias_configured" in t and "not manual_setpoint" in t
++               and "bias_range_valid" in t for t in conds)
 +    assert step["data"]["value"] == "{{ new_bias | float }}"
 +    nb = _var_template_deep(bp, "new_bias")
 +    assert "bias_floor" in nb and "bias_ceiling" in nb and "-60" not in nb and "120" not in nb
++    # rounded BEFORE the clamp so the result cannot leave the whole-number bounds
++    assert nb.index("round(0)") < nb.index("bias_floor")
 +
 +
 +# ---- R1-07: a real daily forecast backs the non-fetch ticks --------------------------
@@ -396,6 +424,24 @@ index 252976b..b0fd920 100644
 +    # local-date match: 23:30 local on the 9th is 21:30Z, still the 9th's entry
 +    late = datetime(2026, 9, 9, 23, 30, tzinfo=TZ)
 +    assert _reparse(_render(bp, "forecast_daily_high", late, forecast_daily_list=lst)) == 18.1
++    # malformed entries are skipped, never raised (board R2-B1-001 / R2-A-09): the fetch's
++    # continue_on_error does not protect these templates
++    bad = [{"datetime": "garbage", "temperature": 30.0}, {"datetime": "2026-09-09T10:00:00+00:00", "temperature": "abc"},
++           "not-a-mapping", {"datetime": "2026-09-09T10:00:00+00:00", "temperature": 18.1}]
++    assert _reparse(_render(bp, "forecast_daily_high", now, forecast_daily_list=bad)) == 18.1
++    assert _reparse(_render(bp, "forecast_daily_high", now, forecast_daily_list=bad[:3])) == 30.0  # first usable temp
++
++
++def test_rendered_hourly_window_skips_malformed_entries(bp):
++    now = datetime(2026, 9, 7, 18, 0, tzinfo=TZ)
++    bedtime_ts = _reparse(_render(bp, "bedtime_ts", now, bedtime="21:30:00"))
++    forecast = [
++        {"datetime": "garbage", "temperature": 99.0},
++        {"datetime": "2026-09-07T19:00:00+02:00", "temperature": "abc"},
++        {"datetime": "2026-09-07T19:00:00+02:00", "temperature": 24.0},
++        "not-a-mapping",
++    ]
++    assert _reparse(_render(bp, "forecast_window_temps", now, forecast_list_safe=forecast, bedtime_ts=bedtime_ts)) == [24.0]
 +
 +
 +def _forecast_max_chain(bp, now, hourly, daily_high, outdoor_now):
@@ -457,12 +503,14 @@ index 252976b..b0fd920 100644
 +OVERRIDE_CHAIN = ["known_setpoints", "setpoint_is_known", "manual_setpoint"]
 +
 +
-+def _override(bp, current_setpoint, running=True, known=True, **over):
++def _override(bp, current_setpoint, running=True, known=True, age_sec=600, **over):
 +    now = datetime(2026, 9, 9, 17, 0, tzinfo=TZ)
 +    ctx = dict(effective_drive=18.0, maintaining_setpoint=21.0, correction_step=1.5,
 +               ac_min_temp=18.0, ac_max_temp=30.0, ac_temp_step=0.5, current_setpoint=current_setpoint,
-+               current_setpoint_known=known, ac_is_running=running)
++               current_setpoint_known=known, ac_is_running=running, ac_climate="climate.bedrooms",
++               states=_States({"climate.bedrooms": _St("cool" if running else "off", now - timedelta(seconds=age_sec))}))
 +    ctx.update(over)
++    ctx["ac_state_age_sec"] = _reparse(_render(bp, "ac_state_age_sec", now, **ctx))
 +    return _render_chain(bp, OVERRIDE_CHAIN, now, ctx)
 +
 +
@@ -475,6 +523,13 @@ index 252976b..b0fd920 100644
 +        assert _override(bp, v)["manual_setpoint"] is True, v
 +    assert _override(bp, 24.0, running=False)["manual_setpoint"] is False      # off: nothing to respect
 +    assert _override(bp, 24.0, known=False)["manual_setpoint"] is False        # LG null setpoint
++    # two-tick grace (board R1-01): a lagged/lost command on the turn-on tick is re-sent by
++    # the next tick's idempotency guard instead of standing PRECOOL down for the evening
++    assert _override(bp, 24.0, age_sec=60)["manual_setpoint"] is False
++    assert _override(bp, 24.0, age_sec=119)["manual_setpoint"] is False
++    assert _override(bp, 24.0, age_sec=120)["manual_setpoint"] is True
++    ctx = _override(bp, 24.0, age_sec=60)
++    assert ctx["ac_state_age_sec"] == 60.0
 +    # deep-night values clamp to the device range like the commands themselves
 +    assert _override(bp, 18.0, ac_max_temp=22.0)["known_setpoints"] == [18.0, 21.0, 19.5, 22.0]
 +
@@ -489,6 +544,22 @@ index 252976b..b0fd920 100644
 +    assert _override(bp, 22.0, ac_temp_step=1.0, maintaining_setpoint=21.5)["manual_setpoint"] is True
 +    # a 0.5-step unit holds the blueprint's values as commanded
 +    assert _override(bp, 21.5, ac_temp_step=0.5, maintaining_setpoint=21.5)["known_setpoints"] == [18.0, 21.5, 20.0, 23.0]
++
++
++def test_rendered_commanded_setpoints_are_quantised_at_the_source(bp):
++    """board R2-B1-005: the idempotency guards compare against the same device-held value as
++    the override detection — a whole-degree unit would otherwise be re-sent 21.5 every tick."""
++    now = datetime(2026, 9, 9, 17, 0, tzinfo=TZ)
++    base = dict(drive_setpoint=16.0, ideal_temp=23.5, hall_offset=2.0, ac_min_temp=18.0, ac_max_temp=30.0)
++    r = lambda name, step, **kw: _reparse(_render(bp, name, now, ac_temp_step=step, **{**base, **kw}))
++    assert r("maintaining_setpoint", 0.5) == 21.5 and r("maintaining_setpoint", 1.0) == 21
++    assert r("effective_drive", 0.5) == 18.0 and r("effective_drive", 1.0) == 18
++    assert r("maintaining_setpoint", 1.0, ideal_temp=23.0) == 21
++    deep = _env(now).from_string(_var_template_deep(bp, "deep_target_setpoint"))
++    row = lambda step, drift: _reparse(deep.render(deep_drift=drift, tolerance=1.5, maintaining_setpoint=21.5 if step < 1 else 21,
++                                                   correction_step=1.5, ac_min_temp=18.0, ac_max_temp=30.0, ac_temp_step=step).strip())
++    assert row(0.5, 2.0) == 20.0 and row(0.5, -2.0) == 23.0 and row(0.5, 0.0) == 21.5
++    assert row(1.0, 2.0) == 19 and row(1.0, -2.0) == 22 and row(1.0, 0.0) == 21
 +
 +
 +def test_rendered_setpoint_is_known_treats_a_non_list_as_known(bp):
@@ -517,21 +588,29 @@ index 252976b..b0fd920 100644
 +
 +
 +def test_rendered_manual_off_only_for_an_off_transition_inside_the_adoption_window(bp):
-+    t = lambda h, m: datetime(2026, 9, 9, h, m, tzinfo=TZ)
++    t = lambda h, m, s=0: datetime(2026, 9, 9, h, m, s, tzinfo=TZ)
 +    ctx = _manual_off(bp, "off", t(16, 30))
 +    assert ctx["earliest_turn_on_ts"] == t(15, 30).timestamp()
 +    assert ctx["manual_off"] is True                                            # switched off inside 15:30-19:29
 +    assert _manual_off(bp, "off", t(7, 15))["manual_off"] is False              # the wake turn-off
 +    assert _manual_off(bp, "off", t(15, 29))["manual_off"] is False             # DAY_OFF ended a manual daytime start
-+    assert _manual_off(bp, "off", t(15, 30))["manual_off"] is True              # window edge is inclusive
++    # board R1-05: a DAY_OFF turn_off issued on the last pre-window tick may be CONFIRMED by the
++    # coordinator after the window opens — a 120 s margin keeps it out of the detector
++    assert _manual_off(bp, "off", t(15, 30))["manual_off"] is False
++    assert _manual_off(bp, "off", t(15, 31, 59))["manual_off"] is False
++    assert _manual_off(bp, "off", t(15, 32))["manual_off"] is True
 +    assert _manual_off(bp, "cool", t(16, 30))["manual_off"] is False            # running
 +    assert _manual_off(bp, "unavailable", t(16, 30), unavailable=True)["manual_off"] is False
-+    # HA start / automation reload re-creates the state with a fresh last_changed
++    # HA start / automation reload re-creates the state with a fresh last_changed; a cloud
++    # integration may publish its first state minutes later (board R1-02 / R2-B1-004): 600 s
 +    assert _manual_off(bp, "off", t(16, 30), automation_last_changed=t(16, 29))["manual_off"] is False
-+    assert _manual_off(bp, "off", t(16, 30), automation_last_changed=t(16, 28))["manual_off"] is True
-+    # the vacation branch's turn_off is not a manual off
++    assert _manual_off(bp, "off", t(16, 30), automation_last_changed=t(16, 21))["manual_off"] is False
++    assert _manual_off(bp, "off", t(16, 30), automation_last_changed=t(16, 19))["manual_off"] is True
++    # the vacation branch's turn_off is not a manual off, even when the coordinator confirms it
++    # up to two minutes later (board R2-B1-003)
 +    assert _manual_off(bp, "off", t(16, 30), vacation=[t(16, 30)])["manual_off"] is False
-+    assert _manual_off(bp, "off", t(16, 30), vacation=[t(15, 0)])["manual_off"] is True
++    assert _manual_off(bp, "off", t(16, 30), vacation=[t(16, 28, 30)])["manual_off"] is False
++    assert _manual_off(bp, "off", t(16, 30), vacation=[t(16, 27)])["manual_off"] is True
 +
 +
 +def test_rendered_manual_off_survives_a_missing_climate_state(bp):
@@ -578,7 +657,8 @@ index 252976b..b0fd920 100644
 +
 +
 +def test_override_variables_are_defined_in_dependency_order(text):
-+    assert _def_index(text, "ac_temp_step") < _def_index(text, "known_setpoints")
++    assert _def_index(text, "ac_temp_step") < _def_index(text, "effective_drive") < _def_index(text, "known_setpoints")
++    assert _def_index(text, "ac_state_age_sec") < _def_index(text, "manual_setpoint")
 +    assert (_def_index(text, "maintaining_setpoint") < _def_index(text, "known_setpoints")
 +            < _def_index(text, "setpoint_is_known") < _def_index(text, "manual_setpoint"))
 +    assert (_def_index(text, "earliest_turn_on_tod") < _def_index(text, "earliest_turn_on_ts")
@@ -592,7 +672,7 @@ index 252976b..b0fd920 100644
 <!-- patch:tests/test_lg_ac_climate_structure.py -->
 ````diff
 diff --git a/tests/test_lg_ac_climate_structure.py b/tests/test_lg_ac_climate_structure.py
-index 184b524..6ca64cc 100644
+index 184b524..c4dac81 100644
 --- a/tests/test_lg_ac_climate_structure.py
 +++ b/tests/test_lg_ac_climate_structure.py
 @@ -1,16 +1,21 @@
@@ -631,7 +711,26 @@ index 184b524..6ca64cc 100644
  
  
  def test_new_input_schemas(inputs):
-@@ -220,7 +225,8 @@ def test_window_formula_owns_overnight_tail(bp):
+@@ -144,11 +149,16 @@ def test_validation_gate_covers_margin(bp):
+     # STEP 2 is the first choose in action (after the variables step)
+     gate = bp["action"][1]["choose"]
+     conds = [branch_cond(b) for b in gate]
+-    assert conds[0] == "{{ temp_low | float >= temp_high | float }}"
++    # v1.3.0 (board R1-06): the gates validate the CONFIGURED band — the effective band is
++    # wider while away and must not mask an inverted or too-narrow config
++    assert conds[0] == "{{ temp_low_cfg | float >= temp_high_cfg | float }}"
+     # strict > (v1.2.0 C4): equality margin*2 == width is legal — releases meet
+     # at the midpoint, active targets straddle it under the _deep_ok gates
+     assert conds[1] == ("{{ (margin | float * 2) > "
+-                        "(temp_high | float - temp_low | float) }}")
++                        "(temp_high_cfg | float - temp_low_cfg | float) }}")
++    for b in gate:
++        msg = b["sequence"][0]["data"]["message"]
++        assert "temp_low_cfg" in msg and "temp_high_cfg" in msg and "{{ temp_low }}" not in msg
+     assert "must not exceed the range" in gate[1]["sequence"][0]["data"]["message"]
+     for b in gate:
+         assert seq_kinds(b["sequence"]) == ["service:persistent_notification.create", "stop"]
+@@ -220,7 +230,8 @@ def test_window_formula_owns_overnight_tail(bp):
  def test_trigger_roster(bp):
      trigs = bp["trigger"]
      ids = [t.get("id") for t in trigs]
@@ -641,7 +740,7 @@ index 184b524..6ca64cc 100644
      reload_t = trigs[5]
      # reloads don't fire homeassistant:start (board R2-2); same id → same seed semantics.
      # If the event name were ever wrong, the trigger is inert — safe either way.
-@@ -775,3 +781,177 @@ def test_rendered_manual_detected(bp):
+@@ -775,3 +786,207 @@ def test_rendered_manual_detected(bp):
      ]
      for ctx, want in cases:
          assert render_var(bp, "manual_detected", ctx) == want, ctx
@@ -728,14 +827,17 @@ index 184b524..6ca64cc 100644
 +                  "away_active", "temp_low", "temp_high"]
 +
 +
-+def _away(bp, persons, delay=10, indicators=(), delta=2.0, enabled=True, entities=None, tl=21.0, th=23.5):
-+    """persons: [(state, minutes_since_last_change)]; indicators: states of the home indicators."""
++def _away(bp, persons, delay=10, indicators=(), delta=2.0, enabled=True, entities=None, tl=21.0, th=23.5,
++          indicator_ids=None):
++    """persons: [(state, minutes_since_last_change)]; indicators: states of the home indicators
++    (an indicator id listed in indicator_ids but absent from `indicators` is a MISSING entity)."""
 +    now = datetime(2026, 9, 9, 17, 0)
 +    ids = [f"person.p{i}" for i in range(len(persons))]
++    ind_ids = [f"input_boolean.i{i}" for i in range(len(indicators))] if indicator_ids is None else indicator_ids
 +    st = _States({pid: _St(state, now - timedelta(minutes=mins)) for pid, (state, mins) in zip(ids, persons)})
++    st.update({f"input_boolean.i{i}": _St(x, now) for i, x in enumerate(indicators)})
 +    ctx = dict(presence_entities=(ids if enabled else []) if entities is None else entities,
-+               home_indicators=[f"input_boolean.i{i}" for i in range(len(indicators))],
-+               expand=lambda _ids: [_St(x, now) for x in indicators],
++               home_indicators=ind_ids,
 +               away_delay=delay, away_delta=delta, temp_low_cfg=tl, temp_high_cfg=th, states=st)
 +    for name in PRESENCE_CHAIN:
 +        ctx[name] = _reparse(render_var(bp, name, ctx, now=now))
@@ -758,12 +860,24 @@ index 184b524..6ca64cc 100644
 +    assert ctx["presence_enabled"] is False and ctx["persons_all_away"] is False
 +    # an entity that does not exist fails toward home
 +    assert _away(bp, [("not_home", 15)], entities=["person.p0", "person.gone"])["persons_all_away"] is False
++    # documented semantics (board R1-08 / R2-B2-02): the delay measures the CURRENT away state —
++    # a person who left long ago but moved between zones 2 minutes ago re-arms the delay once
++    assert _away(bp, [("work", 2), ("not_home", 30)])["persons_all_away"] is False
++    assert _away(bp, [("work", 10), ("not_home", 30)])["persons_all_away"] is True
 +
 +
 +def test_rendered_home_indicator_on(bp):
 +    assert _away(bp, [("not_home", 15)], indicators=("off", "on"))["home_indicator_on"] is True
 +    assert _away(bp, [("not_home", 15)], indicators=("off", "off"))["home_indicator_on"] is False
 +    assert _away(bp, [("not_home", 15)], indicators=())["home_indicator_on"] is False
++    # board R2-A-03 / R2-B2-01: an indicator that cannot be read holds comfort — unknown,
++    # unavailable, or a missing entity all fail toward comfort, never toward setback
++    assert _away(bp, [("not_home", 15)], indicators=("unknown", "off"))["home_indicator_on"] is True
++    assert _away(bp, [("not_home", 15)], indicators=("unavailable", "off"))["home_indicator_on"] is True
++    assert _away(bp, [("not_home", 15)], indicators=("off",),
++                 indicator_ids=["input_boolean.i0", "input_boolean.gone"])["home_indicator_on"] is True
++    # a string-form list on the far side of the boundary is not iterated as characters
++    assert _away(bp, [("not_home", 15)], indicators=("off",), indicator_ids="['input_boolean.i0']")["home_indicator_on"] is False
 +
 +
 +def test_rendered_away_active_and_effective_band(bp):
@@ -778,6 +892,21 @@ index 184b524..6ca64cc 100644
 +    assert ctx["away_active"] is False and (ctx["temp_low"], ctx["temp_high"]) == (21.0, 23.5)
 +    ctx = _away(bp, [("not_home", 15)], enabled=False)
 +    assert ctx["away_active"] is False and (ctx["temp_low"], ctx["temp_high"]) == (21.0, 23.5)
++
++
++def test_rendered_presence_chain_reaches_target_mode(bp):
++    """board R2-B2-03: from presence states through the effective band into the dispatch input —
++    every value re-parsed across the boundary, no hand-fed band."""
++    now = datetime(2026, 9, 9, 17, 0)
++    ctx = _away(bp, [("not_home", 15), ("not_home", 30)], indicators=("off", "off", "off"))
++    tm = lambda c, temp, mode: render_var(bp, "target_mode", {**c, "margin": 1.0, "current_temp": temp, "current_ac_mode": mode}, now=now)
++    assert ctx["away_active"] is True and tm(ctx, 21.5, "heat") == "off"      # inside 19-25.5: release
++    assert tm(ctx, 18.8, "off") == "heat"                                        # below the setback floor
++    assert tm(ctx, 25.7, "off") == "cool"                                        # above the setback ceiling
++    home = _away(bp, [("home", 1), ("not_home", 30)], indicators=("off", "off", "off"))
++    assert home["away_active"] is False and tm(home, 21.5, "heat") == "heat"     # back home: keep heating to 22
++    guest = _away(bp, [("not_home", 15), ("not_home", 30)], indicators=("on", "off", "off"))
++    assert guest["away_active"] is False and tm(guest, 21.5, "heat") == "heat"
 +
 +
 +def test_rendered_target_mode_turns_off_inside_the_widened_band(bp):
@@ -901,7 +1030,7 @@ index 8713f40..da51d60 100644
 
 **Interfaces:**
 - Consumes: the T1 test names/variables; `deploy/bedroom_precool_1779553673971.json`.
-- Produces: `bedroom_precool.yaml` v1.1.0 with every variable listed under T1 "Produces" (pre-cool half, plus `ac_temp_step` in STEP 2a), the wrapped PRECOOL branch (`{{ not manual_setpoint and not manual_off }}`), the learn-write gate `{{ enable_auto_learn and lead_bias_configured and not manual_setpoint }}`, `new_bias` clamped to `bias_floor`/`bias_ceiling`, notices 7d/7e.
+- Produces: `bedroom_precool.yaml` v1.1.0 with every variable listed under T1 "Produces" (pre-cool half, plus `ac_temp_step` and `ac_state_age_sec` in STEP 2a and `bias_range_valid` in STEP 2c), the wrapped PRECOOL branch (`{{ not manual_setpoint and not manual_off }}`), the learn-write gate `{{ enable_auto_learn and lead_bias_configured and not manual_setpoint and bias_range_valid }}`, `new_bias` clamped to `bias_floor`/`bias_ceiling`, notices 7d/7e.
 
 - [ ] **Step 1: Extract and apply the diff**
 
@@ -918,12 +1047,12 @@ EOF
 git apply --check /tmp/claude-1000/-home-martin/plan-patches/bedroom_precool.yaml.patch && git apply /tmp/claude-1000/-home-martin/plan-patches/bedroom_precool.yaml.patch
 sha256sum bedroom_precool.yaml
 ```
-Expected: `75f79f882c0eb5989717814f8b27bf3bf6d42ce81b542236b80c15220d2eb5a2  bedroom_precool.yaml`
+Expected: `3784a0797a7d4fcc9fc45a342a772cd803942a92afc97cc32ce761f3546d63ee  bedroom_precool.yaml`
 
 - [ ] **Step 2: Pre-cool tests GREEN**
 
 Run: `PY=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python; $PY -m pytest tests/test_bedroom_precool_structure.py -q`
-Expected: `42 passed` (every pre-cool pin: the 22 new ones plus the unchanged phase/boundary tests; the LG file is still RED until Task 3).
+Expected: `44 passed` (every pre-cool pin: the 24 new ones plus the unchanged phase/boundary tests; the LG file is still RED until Task 3).
 
 - [ ] **Step 3: Offline deploy validation**
 
@@ -963,14 +1092,14 @@ git add bedroom_precool.yaml
 git commit -m "feat(bedroom-precool): v1.1.0 — auto-learn clamped to the helper's range (+notice), daily forecast backstop, manual setpoint/off respected until the next phase boundary"
 ```
 
-Step 6: Report `precool: PASS=42 FAIL=0`, the hash line, the dry-run line, the validate_config line.
+Step 6: Report `precool: PASS=44 FAIL=0`, the hash line, the dry-run line, the validate_config line.
 
 ### Artifact for Task 2
 
 <!-- patch:bedroom_precool.yaml -->
 ````diff
 diff --git a/bedroom_precool.yaml b/bedroom_precool.yaml
-index aa508ce..18b232f 100644
+index aa508ce..b49c82e 100644
 --- a/bedroom_precool.yaml
 +++ b/bedroom_precool.yaml
 @@ -1,12 +1,15 @@
@@ -1030,15 +1159,18 @@ index aa508ce..18b232f 100644
        default: []
        selector:
          entity:
-@@ -569,6 +581,7 @@ action:
+@@ -569,6 +581,10 @@ action:
        # --- AC capability discovery (never hard-code) ---
        ac_min_temp: "{{ state_attr(ac_climate, 'min_temp') | float(16) }}"
        ac_max_temp: "{{ state_attr(ac_climate, 'max_temp') | float(30) }}"
 +      ac_temp_step: "{{ [state_attr(ac_climate, 'target_temp_step') | float(0.5), 0.1] | max }}"
++      # Seconds since the unit's last STATE (hvac-mode) change — the age of its
++      # current running or off spell. Attribute-only pushes do not move it.
++      ac_state_age_sec: "{{ (as_timestamp(now()) - (as_timestamp(states[ac_climate].last_changed) | float(0))) if states[ac_climate] is not none else 0 }}"
        ac_fan_modes: "{{ state_attr(ac_climate, 'fan_modes') | default([], true) }}"
        ac_hvac_modes: "{{ state_attr(ac_climate, 'hvac_modes') | default([], true) }}"
        # --- Vacation ---
-@@ -581,28 +594,36 @@ action:
+@@ -581,28 +597,36 @@ action:
          {% endif %}
  
    # =============================================
@@ -1081,7 +1213,17 @@ index aa508ce..18b232f 100644
            - service: weather.get_forecasts
              continue_on_error: true
              target:
-@@ -643,18 +664,62 @@ action:
+@@ -635,26 +659,72 @@ action:
+         {% for f in forecast_list_safe %}
+           {% set ts = f.datetime | default(none) %}
+           {% set tp = f.temperature | default(none) %}
+-          {% if ts is not none and tp is not none %}
+-            {% set fdt = as_datetime(ts) %}
++          {% if ts is not none and tp | float(none) is not none %}
++            {% set fdt = as_datetime(ts, none) %}
+             {% if fdt is not none and fdt >= now() and as_timestamp(fdt) <= bedtime_ts | float %}
+               {% set ns.vals = ns.vals + [tp | float] %}
+             {% endif %}
            {% endif %}
          {% endfor %}
          {{ ns.vals }}
@@ -1123,15 +1265,17 @@ index aa508ce..18b232f 100644
 +      # A daily entry's `temperature` is the day's HIGH (Met.no: the max of
 +      # that day's hourly readings; `templow` is the low) stamped at local
 +      # noon. Take today's entry by LOCAL date, else the first entry, else
-+      # none (the `None` literal re-parses to none on the far side).
++      # none (the `None` literal re-parses to none on the far side). Entries
++      # without a parsable datetime or a numeric temperature are skipped —
++      # continue_on_error on the fetch does not protect these templates.
 +      forecast_daily_high: >-
 +        {% set ns = namespace(today=none, first=none) %}
 +        {% for f in forecast_daily_list %}
 +          {% set ts = f.datetime | default(none) %}
 +          {% set tp = f.temperature | default(none) %}
-+          {% if ts is not none and tp is not none %}
++          {% if ts is not none and tp | float(none) is not none %}
 +            {% if ns.first is none %}{% set ns.first = tp | float %}{% endif %}
-+            {% set fdt = as_datetime(ts) %}
++            {% set fdt = as_datetime(ts, none) %}
 +            {% if fdt is not none and ns.today is none and (fdt | as_local).date() == now().date() %}
 +              {% set ns.today = tp | float %}
 +            {% endif %}
@@ -1152,7 +1296,7 @@ index aa508ce..18b232f 100644
          {% endif %}
  
    # =============================================
-@@ -697,6 +762,15 @@ action:
+@@ -697,6 +767,19 @@ action:
          {% else %}
            0
          {% endif %}
@@ -1162,13 +1306,17 @@ index aa508ce..18b232f 100644
 +      # state_attr of an unconfigured ('') helper is none -> the defaults.
 +      bias_helper_min: "{{ state_attr(lead_bias_entity, 'min') | float(-60) }}"
 +      bias_helper_max: "{{ state_attr(lead_bias_entity, 'max') | float(120) }}"
-+      bias_floor: "{{ [bias_helper_min | float, -60] | max }}"
-+      bias_ceiling: "{{ [bias_helper_max | float, 120] | min }}"
++      # Whole-number bounds INSIDE the intersection (the helper has step 1):
++      # a fractional helper bound is rounded inward, and a helper that does
++      # not overlap -60..120 at all (floor > ceiling) disables the write.
++      bias_floor: "{{ ([bias_helper_min | float, -60] | max) | round(0, 'ceil') | int }}"
++      bias_ceiling: "{{ ([bias_helper_max | float, 120] | min) | round(0, 'floor') | int }}"
++      bias_range_valid: "{{ bias_floor | float <= bias_ceiling | float }}"
 +      bias_helper_range_ok: "{{ bias_helper_min | float <= -60 and bias_helper_max | float >= 120 }}"
        # --- Lead-time formula (transparent linear blend), then clamp ---
        lead_raw: >-
          {{ (base_minutes | float)
-@@ -745,6 +819,33 @@ action:
+@@ -745,6 +828,38 @@ action:
        # ABOVE wake_time and slip past a string compare.
        earliest_turn_on_tod: >-
          {{ (today_at(bedtime) - timedelta(minutes=lead_cap_minutes | int)).strftime('%H:%M:%S') }}
@@ -1179,10 +1327,15 @@ index aa508ce..18b232f 100644
 +      # branch can), so an `off` transition stamped inside that window came
 +      # from a person (remote, app, the unit's own timer). It is respected:
 +      # PRECOOL does not restart the unit and the night is a cool-day no-op.
-+      # Guards: the state re-created at HA start / automation reload carries
-+      # a fresh last_changed (this.last_changed moves at the same moment), and
-+      # the vacation branch's turn_off is recognised by the toggle's own
-+      # last_changed. Instants are compared as timestamps in one template.
++      # Guards (all coordinator-lag tolerant): the window start carries a
++      # 120 s margin so a DAY_OFF turn_off issued on the last pre-window tick
++      # whose confirmation lands after the window opens is not a person's;
++      # the state re-created at HA start / automation reload carries a fresh
++      # last_changed (this.last_changed moves at the same moment — a cloud
++      # integration may publish its first state up to minutes later, hence
++      # 600 s); the vacation branch's turn_off is recognised by the toggle's
++      # own last_changed within 120 s. A reload AFTER a manual off ends that
++      # hold (the reload stamp is newer). Instants compared as timestamps.
 +      automation_up_since_ts: "{{ as_timestamp(this.last_changed) | float(0) if this is defined else 0 }}"
 +      ac_off_since_ts: "{{ as_timestamp(states[ac_climate].last_changed) | float(0) if states[ac_climate] is not none else 0 }}"
 +      vacation_changed_ts: >-
@@ -1196,16 +1349,34 @@ index aa508ce..18b232f 100644
 +        {{ ns.ts }}
 +      manual_off: >-
 +        {{ (not ac_is_running) and (not ac_unavailable)
-+           and ac_off_since_ts | float >= earliest_turn_on_ts | float
-+           and ac_off_since_ts | float > automation_up_since_ts | float + 60
-+           and vacation_changed_ts | float < ac_off_since_ts | float - 5 }}
++           and ac_off_since_ts | float >= earliest_turn_on_ts | float + 120
++           and ac_off_since_ts | float > automation_up_since_ts | float + 600
++           and vacation_changed_ts | float < ac_off_since_ts | float - 120 }}
        # --- Phase derivation (all time-of-day string comparisons) ---
        # The "day side" of the schedule runs wake -> bedtime_lock.
        on_day_side: "{{ wake_tod <= now_tod and now_tod < lock_tod }}"
-@@ -774,6 +875,24 @@ action:
+@@ -767,13 +882,42 @@ action:
+       # --- PRECOOL sub-state ---
+       precool_substate: >-
+         {% if warmest_bedroom | float > ideal_temp | float %}DRIVE{% else %}HOLD{% endif %}
+-      # --- Setpoints, all clamped to the AC's discovered min/max ---
++      # --- Setpoints, all clamped to the AC's discovered min/max, and held
++      # the way the DEVICE holds them: the LG ThinQ integration sends
++      # int(value) to a unit whose target_temp_step is a whole degree (core
++      # lg_thinq/climate.py), so the blueprint quantises the same way and
++      # every compare (idempotency guards, override detection) uses the
++      # device-held value. On a 0.5-step unit every input is already on the
++      # grid (all temperature selectors step 0.5). ---
+       effective_drive: >-
+-        {{ [[drive_setpoint | float, ac_min_temp | float] | max,
+-            ac_max_temp | float] | min }}
++        {% set v = [[drive_setpoint | float, ac_min_temp | float] | max, ac_max_temp | float] | min %}
++        {{ (v | int) if ac_temp_step | float >= 1 else v }}
        maintaining_setpoint: >-
-         {{ [[ideal_temp | float - hall_offset | float, ac_min_temp | float] | max,
-             ac_max_temp | float] | min }}
+-        {{ [[ideal_temp | float - hall_offset | float, ac_min_temp | float] | max,
+-            ac_max_temp | float] | min }}
++        {% set v = [[ideal_temp | float - hall_offset | float, ac_min_temp | float] | max, ac_max_temp | float] | min %}
++        {{ (v | int) if ac_temp_step | float >= 1 else v }}
 +      # --- Manual SETPOINT override (v1.1.0) ---
 +      # The blueprint can only ever have commanded four setpoints: drive,
 +      # maintaining, and the two deep-night corrections. A running unit whose
@@ -1215,19 +1386,24 @@ index aa508ce..18b232f 100644
 +      # tell this automation's writes from the remote's (both carry no
 +      # parent/user on a time-pattern run — verified live 2026-09-09), so the
 +      # comparison is against values, not authorship — the values as the
-+      # DEVICE holds them: the LG ThinQ integration sends int(value) to a unit
-+      # whose target_temp_step is a whole degree (core lg_thinq/climate.py),
-+      # so 21.5 is held as 21 there; on a 0.5-step unit every blueprint value
-+      # is already on the grid. Single-lined: the list crosses the variables
-+      # boundary and is re-parsed as a list; a value that arrives in any
-+      # other shape counts as known (v1.0.x behaviour).
++      # DEVICE holds them (see the quantisation note above). Single-lined: the
++      # list crosses the variables boundary and is re-parsed as a list; a
++      # value that arrives in any other shape counts as known (v1.0.x
++      # behaviour).
++      # Two-tick grace (board R1-01): the unit's own coordinator publishes a
++      # commanded setpoint seconds AFTER the call, and a lost command was
++      # self-healed by the next tick's idempotency guard in v1.0.x. A value
++      # that does not match is therefore treated as a person's only once the
++      # unit has been running for two ticks (>= 120 s since its off->on
++      # change); the first tick after turn-on re-sends as before. A person's
++      # change inside those first two minutes is re-asserted once (documented).
 +      known_setpoints: "{% set ns = namespace(vals=[]) %}{% for v in [effective_drive | float, maintaining_setpoint | float, [[maintaining_setpoint | float - correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min, [[maintaining_setpoint | float + correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min] %}{% set ns.vals = ns.vals + [(v | int) if ac_temp_step | float >= 1 else v] %}{% endfor %}{{ ns.vals }}"
 +      setpoint_is_known: "{% set ns = namespace(ok=false) %}{% if known_setpoints is string or known_setpoints is not iterable %}{% set ns.ok = true %}{% else %}{% for k in known_setpoints %}{% if (current_setpoint | float - k | float) | abs <= 0.1 %}{% set ns.ok = true %}{% endif %}{% endfor %}{% endif %}{{ ns.ok }}"
-+      manual_setpoint: "{{ ac_is_running and current_setpoint_known and not setpoint_is_known }}"
++      manual_setpoint: "{{ ac_is_running and current_setpoint_known and not setpoint_is_known and ac_state_age_sec | float >= 120 }}"
        # --- Cool vs dry mode (only chosen while beeps are free) ---
        # Single-lined: this value feeds == comparisons and hvac_mode:; a
        # folded scalar would leave trailing whitespace on the rendered token.
-@@ -971,63 +1090,71 @@ action:
+@@ -971,63 +1115,71 @@ action:
                          {% else %}
                            {{ fan_normal }}
                          {% endif %}
@@ -1249,6 +1425,18 @@ index aa508ce..18b232f 100644
 -                  # was off, so the unit IS on by now; the stale current_hvac_mode
 -                  # ('off') still differs from desired_mode ('cool'), so the mode is
 -                  # set the same tick instead of waiting for the next minute.
+-                  - choose:
+-                      - conditions:
+-                          - condition: template
+-                            value_template: >-
+-                              {{ current_hvac_mode != desired_mode }}
+-                        sequence:
+-                          - service: climate.set_hvac_mode
+-                            target:
+-                              entity_id: "{{ ac_climate }}"
+-                            data:
+-                              hvac_mode: "{{ desired_mode }}"
+-                  # 2. Then set the temperature (separate, sequenced call).
 +                  # v1.1.0: a person's setpoint, or a manual off inside the
 +                  # window, wins until the bedtime lock — no command at all
 +                  # while either flag is set (STEP 7e says so).
@@ -1256,23 +1444,11 @@ index aa508ce..18b232f 100644
                        - conditions:
                            - condition: template
 -                            value_template: >-
--                              {{ current_hvac_mode != desired_mode }}
-+                            value_template: "{{ not manual_setpoint and not manual_off }}"
-                         sequence:
--                          - service: climate.set_hvac_mode
--                            target:
--                              entity_id: "{{ ac_climate }}"
--                            data:
--                              hvac_mode: "{{ desired_mode }}"
--                  # 2. Then set the temperature (separate, sequenced call).
--                  - choose:
--                      - conditions:
--                          - condition: template
--                            value_template: >-
 -                              {{ (not current_setpoint_known)
 -                                 or (current_setpoint | float - precool_setpoint | float)
 -                                    | abs > 0.1 }}
--                        sequence:
++                            value_template: "{{ not manual_setpoint and not manual_off }}"
+                         sequence:
 -                          - service: climate.set_temperature
 -                            target:
 -                              entity_id: "{{ ac_climate }}"
@@ -1352,7 +1528,7 @@ index aa508ce..18b232f 100644
  
                # ---------- BEDTIME_LOCK: one locking command + auto-learn write ----------
                - conditions:
-@@ -1079,11 +1206,13 @@ action:
+@@ -1079,11 +1231,13 @@ action:
                                      data:
                                        fan_mode: "{{ night_fan_mode }}"
                            # Auto-learn helper write — beep-free (an input_number,
@@ -1364,11 +1540,11 @@ index aa508ce..18b232f 100644
                                - conditions:
                                    - condition: template
 -                                    value_template: "{{ enable_auto_learn and lead_bias_configured }}"
-+                                    value_template: "{{ enable_auto_learn and lead_bias_configured and not manual_setpoint }}"
++                                    value_template: "{{ enable_auto_learn and lead_bias_configured and not manual_setpoint and bias_range_valid }}"
                                  sequence:
                                    - variables:
                                        bedtime_error: "{{ warmest_bedroom | float - ideal_temp | float }}"
-@@ -1092,10 +1221,11 @@ action:
+@@ -1092,10 +1246,12 @@ action:
                                             + (learn_gain | float)
                                               * (bedtime_error | float)
                                               * (k_indoor | float) }}
@@ -1376,15 +1552,25 @@ index aa508ce..18b232f 100644
 -                                      # is created with step 1, so the written value must be
 -                                      # a whole number to match the helper's step.
 -                                      new_bias: "{{ [[new_bias_raw | float, -60] | max, 120] | min | round(0) | int }}"
-+                                      # Clamped to the helper's live range intersected with
-+                                      # -60..120 (bias_floor/bias_ceiling) so the write can
-+                                      # never be rejected; round(0) | int — the helper is
-+                                      # created with step 1, so the value must be whole.
-+                                      new_bias: "{{ [[new_bias_raw | float, bias_floor | float] | max, bias_ceiling | float] | min | round(0) | int }}"
++                                      # Rounded to a whole number first (the helper has
++                                      # step 1), then clamped to the whole-number bounds
++                                      # inside the helper's range ∩ -60..120, so the write
++                                      # can never be rejected (the branch is skipped when
++                                      # the ranges do not overlap — bias_range_valid).
++                                      new_bias: "{{ [[new_bias_raw | float | round(0), bias_floor | float] | max, bias_ceiling | float] | min | int }}"
                                    - service: input_number.set_value
                                      target:
                                        entity_id: "{{ lead_bias_entity }}"
-@@ -1180,13 +1310,15 @@ action:
+@@ -1122,7 +1278,7 @@ action:
+                               # idempotency guard genuinely caps the correction at exactly
+                               # one climate.set_temperature call. Single-lined to avoid a
+                               # folded-scalar trailing-whitespace artifact.
+-                              deep_target_setpoint: "{% if deep_drift | float > tolerance | float %}{{ [[maintaining_setpoint | float - correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min }}{% elif deep_drift | float < (0 - tolerance | float) %}{{ [[maintaining_setpoint | float + correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min }}{% else %}{{ maintaining_setpoint | float }}{% endif %}"
++                              deep_target_setpoint: "{% if deep_drift | float > tolerance | float %}{% set t = [[maintaining_setpoint | float - correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min %}{% elif deep_drift | float < (0 - tolerance | float) %}{% set t = [[maintaining_setpoint | float + correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min %}{% else %}{% set t = maintaining_setpoint | float %}{% endif %}{{ (t | int) if ac_temp_step | float >= 1 else t }}"
+                           - choose:
+                               - conditions:
+                                   - condition: template
+@@ -1180,13 +1336,15 @@ action:
              value_template: >-
                {{ enable_notifications and phase == 'DAY_OFF'
                   and forecast_window_temps | length == 0
@@ -1401,7 +1587,7 @@ index aa508ce..18b232f 100644
                  The prediction is leaning on the indoor gap and solar term only
                  until one recovers.
                notification_id: "bedroom_precool_forecast_warning"
-@@ -1211,6 +1343,80 @@ action:
+@@ -1211,6 +1369,86 @@ action:
                  The bedtime lock uses {{ fan_normal }} instead.
                notification_id: "bedroom_precool_night_fan_unsupported"
  
@@ -1423,11 +1609,17 @@ index aa508ce..18b232f 100644
 +              message: >
 +                {{ lead_bias_entity }} allows {{ bias_helper_min }} to
 +                {{ bias_helper_max }}, but the lead-time bias needs -60 to 120.
++                {% if bias_range_valid %}
 +                Until the helper is widened the learned bias is clamped to
 +                {{ bias_floor }}…{{ bias_ceiling }} (a bias floored at
 +                {{ bias_floor }} min starts the pre-cool that much early every
-+                night). Edit the helper's min/max under Settings -> Devices &
-+                Services -> Helpers.
++                night).
++                {% else %}
++                The ranges do not overlap at all, so no bias is written until
++                the helper is fixed.
++                {% endif %}
++                Edit the helper's min/max under Settings -> Devices & Services
++                -> Helpers.
 +              notification_id: "bedroom_precool_bias_helper_range"
 +            continue_on_error: true
 +    default:
@@ -1482,7 +1674,7 @@ index aa508ce..18b232f 100644
    # =============================================
    # STEP 8: DEBUG NOTIFICATION (manual run only)
    # =============================================
-@@ -1236,12 +1442,15 @@ action:
+@@ -1236,12 +1474,15 @@ action:
                  **ΔT indoor:** {{ delta_in }}°C
                  | **ΔT outdoor:** {{ delta_out }}°C
                  | **forecast_max:** {{ forecast_max }}°C
@@ -1498,7 +1690,7 @@ index aa508ce..18b232f 100644
  
                  **lead:** {{ lead }} min
                  | **turn_on:** {{ turn_on_ts | float | timestamp_custom('%H:%M') }}
-@@ -1257,6 +1466,9 @@ action:
+@@ -1257,6 +1498,9 @@ action:
  
                  **AC limits:** min={{ ac_min_temp }}°C, max={{ ac_max_temp }}°C
  
@@ -1543,17 +1735,17 @@ EOF
 git apply --check /tmp/claude-1000/-home-martin/plan-patches/lg_ac_climate.yaml.patch && git apply /tmp/claude-1000/-home-martin/plan-patches/lg_ac_climate.yaml.patch
 sha256sum lg_ac_climate.yaml
 ```
-Expected: `269faa50c05f69e33c4c99d9fc30c12782afe85eafecc5eaad694fd90ed8c442  lg_ac_climate.yaml`
+Expected: `953c00dbe93810d7cd0dcf7fe3e8771b8c7a3e6d43955fa597e05740c0c79329  lg_ac_climate.yaml`
 
 - [ ] **Step 2: Full suite GREEN**
 
 Run: `PY=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python; $PY -m pytest tests -q`
-Expected: `312 passed` (282 baseline − 2 hand-rolled instance tests removed + 32 new).
+Expected: `315 passed` (282 baseline − 2 hand-rolled instance tests removed + 35 new).
 
 - [ ] **Step 3: Offline deploy validation**
 
 Run: `PYTHON=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python scripts/deploy-blueprint.sh --dry-run lg_ac_climate.yaml leviemartin/lg_ac_climate.yaml deploy/lg_ac_climate_1775578219942.json`
-Expected: `blueprint: LG AC Climate Control v1.3.0`, `instance deploy/lg_ac_climate_1775578219942.json: ok (id 1775578219942, 31 inputs)`, `dry-run: validation passed, nothing deployed`.
+Expected (observed on the scratch build): `blueprint: LG AC Climate Control v1.3.0`, `instance deploy/lg_ac_climate_1775578219942.json: ok (id 1775578219942, 30 inputs)`, `dry-run: validation passed, nothing deployed`.
 
 - [ ] **Step 4: HA schema validation (same substitution script as Task 2 Step 4 with `lg_ac_climate.yaml deploy/lg_ac_climate_1775578219942.json`, output file `/tmp/claude-1000/-home-martin/lg_substituted.json`)**
 
@@ -1566,14 +1758,14 @@ git add lg_ac_climate.yaml
 git commit -m "feat(lg-ac-climate): v1.3.0 — presence setback (widened band while everyone is away; guest-mode/EV/flap-guard hold comfort; immediate resume)"
 ```
 
-Step 6: Report `suite: PASS=312 FAIL=0`, the hash line, the dry-run line, the validate_config line.
+Step 6: Report `suite: PASS=315 FAIL=0`, the hash line, the dry-run line, the validate_config line.
 
 ### Artifact for Task 3
 
 <!-- patch:lg_ac_climate.yaml -->
 ````diff
 diff --git a/lg_ac_climate.yaml b/lg_ac_climate.yaml
-index 8156cf1..2633662 100644
+index 8156cf1..8704938 100644
 --- a/lg_ac_climate.yaml
 +++ b/lg_ac_climate.yaml
 @@ -1,7 +1,7 @@
@@ -1625,7 +1817,7 @@ index 8156cf1..2633662 100644
 +          multiple: true
 +    home_indicators:
 +      name: Home Indicators (Optional)
-+      description: "input_boolean / binary_sensor entities that hold comfort while ON regardless of the trackers — e.g. a guest-mode toggle, an EV-at-home latch, a presence-unreliable guard."
++      description: "input_boolean / binary_sensor entities that hold comfort regardless of the trackers — e.g. a guest-mode toggle, an EV-at-home latch, a presence-unreliable guard. Any of them that is not exactly OFF (on, unknown, unavailable, missing) holds comfort."
 +      default: []
 +      selector:
 +        entity:
@@ -1645,7 +1837,7 @@ index 8156cf1..2633662 100644
 +          unit_of_measurement: "°C"
 +    away_delay_minutes:
 +      name: Away Delay (min)
-+      description: "Every presence entity must have been away at least this long before the setback applies (short absences such as walking the dog do not count). Return is immediate."
++      description: "Every presence entity must have been in its current away state at least this long before the setback applies (short absences such as walking the dog do not count; a move between named zones re-arms the delay). Return is immediate."
 +      default: 10
 +      selector:
 +        number:
@@ -1703,7 +1895,7 @@ index 8156cf1..2633662 100644
  action:
    # =============================================
    # STEP 1: COMPUTE VARIABLES
-@@ -405,6 +476,45 @@ action:
+@@ -405,6 +476,57 @@ action:
            {{ ((valid_temps | sum) / (valid_temps | length)) | round(1) }}
          {% endif %}
  
@@ -1716,9 +1908,11 @@ index 8156cf1..2633662 100644
 +      away_delay_sec: "{{ away_delay | int(0) * 60 }}"
 +      # Every listed entity must be away — any state except home / unknown /
 +      # unavailable (a named zone counts as away; unknown fails toward home,
-+      # the house's security-resolver rule) — and must have been in that
-+      # state for at least the away delay (last_changed moves only on a real
-+      # state change, never on a GPS attribute update). Return is immediate.
++      # the house's security-resolver rule) — and must have been in its
++      # CURRENT state for at least the away delay (last_changed moves on a
++      # state change, incl. zone -> zone, never on a GPS attribute update; a
++      # zone move therefore re-arms the delay — at most one delay of comfort).
++      # Return is immediate.
 +      persons_all_away: >-
 +        {% if not presence_enabled %}
 +          {{ false }}
@@ -1733,10 +1927,20 @@ index 8156cf1..2633662 100644
 +          {% endfor %}
 +          {{ ns.ok }}
 +        {% endif %}
++      # Any configured indicator that is not exactly `off` — on, unknown,
++      # unavailable, or missing — holds comfort (fail toward comfort).
 +      home_indicator_on: >-
-+        {{ home_indicators is iterable and home_indicators is not string
-+           and home_indicators | length > 0
-+           and expand(home_indicators) | selectattr('state', 'eq', 'on') | list | count > 0 }}
++        {% if home_indicators is iterable and home_indicators is not string
++              and home_indicators | length > 0 %}
++          {% set ns = namespace(hold=false) %}
++          {% for e in home_indicators %}
++            {% set st = states[e] %}
++            {% if st is none or st.state != 'off' %}{% set ns.hold = true %}{% endif %}
++          {% endfor %}
++          {{ ns.hold }}
++        {% else %}
++          {{ false }}
++        {% endif %}
 +      away_active: >-
 +        {{ presence_enabled and persons_all_away and not home_indicator_on
 +           and away_delta | float(0) > 0 }}
@@ -1749,6 +1953,47 @@ index 8156cf1..2633662 100644
        # --- Outdoor (from weather entity) ---
        outdoor_temp_raw: "{{ state_attr(entity_weather, 'temperature') }}"
        weather_ok: "{{ outdoor_temp_raw is not none and outdoor_temp_raw | float(none) is not none }}"
+@@ -608,33 +730,34 @@ action:
+         {% endif %}
+ 
+   # =============================================
+-  # STEP 2: RUNTIME VALIDATION
++  # STEP 2: RUNTIME VALIDATION — on the CONFIGURED band (temp_*_cfg): the
++  # effective band is wider while away and must not mask a bad config.
+   # =============================================
+   - choose:
+       - conditions:
+           - condition: template
+-            value_template: "{{ temp_low | float >= temp_high | float }}"
++            value_template: "{{ temp_low_cfg | float >= temp_high_cfg | float }}"
+         sequence:
+           - service: persistent_notification.create
+             data:
+               title: "AC Climate Blueprint — Configuration Error"
+               message: >
+-                Comfort range is misconfigured: Low ({{ temp_low }}°C) must be
+-                less than High ({{ temp_high }}°C). AC control is paused until
++                Comfort range is misconfigured: Low ({{ temp_low_cfg }}°C) must be
++                less than High ({{ temp_high_cfg }}°C). AC control is paused until
+                 this is corrected.
+               notification_id: "ac_climate_config_error"
+           - stop: "Comfort range misconfigured"
+ 
+       - conditions:
+           - condition: template
+-            value_template: "{{ (margin | float * 2) > (temp_high | float - temp_low | float) }}"
++            value_template: "{{ (margin | float * 2) > (temp_high_cfg | float - temp_low_cfg | float) }}"
+         sequence:
+           - service: persistent_notification.create
+             data:
+               title: "AC Climate Blueprint — Configuration Error"
+               message: >
+                 Comfort margin ({{ margin }}°C) is too large for the comfort
+-                range ({{ temp_low }}–{{ temp_high }}°C): twice the margin must
++                range ({{ temp_low_cfg }}–{{ temp_high_cfg }}°C): twice the margin must
+                 not exceed the range. AC control is paused until corrected.
+               notification_id: "ac_climate_config_error"
+           - stop: "Comfort margin misconfigured"
 ````
 
 ---
@@ -1785,12 +2030,12 @@ sha256sum requirements_bedroom_precool.md requirements_lg_ac_climate.md README.m
 ```
 Expected:
 ```
-6cfdd5b0122c70ccf1782532241332e793aed974ed8f5fc29003b8d390d48347  requirements_bedroom_precool.md
-52c3b9ecb13dc879b1c5b5a2b9c8d05dc336bb2057d616b8f226af3c878c2b42  requirements_lg_ac_climate.md
+6e56b093fb3f94959f6b7771866ca607236db383407f93cc57d50410c46ea2b9  requirements_bedroom_precool.md
+dde198ee2cc746374e31951f6993e6404ed8e1803064e649dc2448f6131ae14e  requirements_lg_ac_climate.md
 bb6d7dcce1d3c5baf90b413dc5553c130771ce4fa10c84e4c2db9628c08f4b3c  README.md
 ```
 
-- [ ] **Step 2: Suite still green** — Run: `PY=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python; $PY -m pytest tests -q` → `312 passed`.
+- [ ] **Step 2: Suite still green** — Run: `PY=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python; $PY -m pytest tests -q` → `315 passed`.
 
 - [ ] **Step 3: Commit (docs pillar)**
 
@@ -1799,30 +2044,31 @@ git add requirements_bedroom_precool.md requirements_lg_ac_climate.md README.md
 git commit -m "docs(climate): pre-cool v1.1.0 (helper range, daily backstop, manual override) + LG v1.3.0 presence setback requirements; README bullets"
 ```
 
-Step 4: Report the three hash lines and `suite: PASS=312 FAIL=0`.
+Step 4: Report the three hash lines and `suite: PASS=315 FAIL=0`.
 
 ### Artifacts for Task 4
 
 <!-- patch:requirements_bedroom_precool.md -->
 ````diff
 diff --git a/requirements_bedroom_precool.md b/requirements_bedroom_precool.md
-index 65bb5f7..29113d5 100644
+index 65bb5f7..ac584c1 100644
 --- a/requirements_bedroom_precool.md
 +++ b/requirements_bedroom_precool.md
-@@ -40,7 +40,11 @@ observed outcome.
+@@ -40,7 +40,12 @@ observed outcome.
    `set_temperature` fix (PR #147008).
  - **input_number helper:** Persists the self-learned lead-time bias across
    restarts. Create one via Settings -> Devices & Services -> Helpers ->
 -  Number (range roughly -60 to 120, step 1).
 +  Number with **min −60 (or lower), max 120 (or higher), step 1**. The
-+  blueprint clamps its write to the helper's live range intersected with
-+  −60…120 and raises a persistent notification while the helper is narrower
++  blueprint clamps its write to the whole numbers inside the helper's live
++  range intersected with −60…120, skips the write when the two do not overlap
++  at all, and raises a persistent notification while the helper is narrower
 +  (v1.1.0 — a helper created with min 60 used to reject the write and abort
 +  the lock run).
  - **input_boolean helper (optional):** For the vacation toggle.
  
  ## Daily State Machine
-@@ -51,7 +55,7 @@ acts. Phase boundaries span midnight (bedtime -> wake is an overnight window).
+@@ -51,7 +56,7 @@ acts. Phase boundaries span midnight (bedtime -> wake is an overnight window).
  | Phase | Window | AC behaviour | Beeps |
  |---|---|---|---|
  | DAY-OFF | wake -> min(turn_on, bedtime − lead_cap) | Ensure AC off — any running unit is switched off on the next tick; recompute turn-on each tick | 1 at wake (+1 per manual daytime turn-on) |
@@ -1831,7 +2077,7 @@ index 65bb5f7..29113d5 100644
  | BEDTIME-LOCK | bedtime − 1 min -> bedtime | Lock mode, maintaining setpoint and the night fan (`night_fan`, default low) + auto-learn write | ≤ 3 (typically 1–2) |
  | NIGHT-HOLD | bedtime -> deep-night check | Holds; blueprint issues nothing | 0 |
  | DEEP-NIGHT-CHECK | deep-night check -> +10 min | At most one corrective command | 0 or 1 |
-@@ -64,17 +68,51 @@ onward; earlier on the day side (from wake) a running unit is a leftover
+@@ -64,17 +69,57 @@ onward; earlier on the day side (from wake) a running unit is a leftover
  night hold and DAY-OFF turns it off. Consequence: a unit switched on by hand
  between wake and `bedtime − lead_cap_minutes` is switched off again within a
  minute (one beep) — to use it manually during the day, disable the
@@ -1847,8 +2093,9 @@ index 65bb5f7..29113d5 100644
 +phase boundary:
 +
 +- **Manual setpoint.** The blueprint can only ever have commanded four
-+  setpoints (drive, maintaining, and the two deep-night corrections). A
-+  running unit whose setpoint is none of them (±0.1 °C) was set by a person:
++  setpoints (drive, maintaining, and the two deep-night corrections, each as
++  the device holds it). A unit that has been running for at least two ticks
++  and whose setpoint is none of them (±0.1 °C) was set by a person:
 +  PRECOOL issues no command at all (mode, setpoint, fan) until the bedtime
 +  lock, which re-applies the maintaining setpoint and the night fan as usual;
 +  that night's auto-learn update is skipped when the override is still active
@@ -1856,21 +2103,26 @@ index 65bb5f7..29113d5 100644
 +  deep-night check, which keeps its correction rule.
 +- **Manual off.** The blueprint never switches the unit off between
 +  `bedtime − lead_cap_minutes` and the lock (only the vacation branch can), so
-+  an `off` transition stamped inside that window came from a person: the unit
-+  stays off for the night (no lock, no deep-night check). The state re-created
-+  at an HA start / automation reload and the vacation turn-off are recognised
-+  and not treated as manual.
++  an `off` transition stamped more than two minutes into that window came from
++  a person: the unit stays off for the night (no lock, no deep-night check).
++  The state re-created at an HA start / automation reload (up to ten minutes
++  after it) and the vacation turn-off (confirmed up to two minutes after the
++  toggle) are recognised and not treated as manual; a reload made after a
++  manual off ends that hold.
 +- One persistent notification per override episode, dismissed at the boundary.
 +- HA state contexts cannot distinguish this automation's own writes from the
 +  remote's (both carry no parent/user on a time-pattern run), so detection is
 +  by value, not authorship (the values as the device holds them — a
-+  whole-degree unit stores 21 for a commanded 21.5). Known limits: a manual
-+  change *to* one of the blueprint's own values is re-asserted within a
-+  minute; a setpoint command that fails on the turn-on tick can leave the
-+  unit at a remembered value that reads as manual for that night; a cloud
-+  outage that ends inside the window re-stamps the `off` state and reads as
-+  a manual off for that night (the notification says so; switching the unit
-+  on by hand resumes the pre-cool at once).
++  whole-degree unit stores 21 for a commanded 21.5, and the blueprint commands
++  the same quantised values). Known limits: a manual change *to* one of the
++  blueprint's own values is re-asserted within a minute; a manual change made
++  within the first two minutes after the unit switched on is re-asserted once
++  (that grace is what lets a lagged or lost command on the turn-on tick be
++  retried by the next tick instead of reading as manual); two consecutive lost
++  commands can still leave a remembered unknown value that reads as manual for
++  that night; a cloud outage that ends inside the window re-stamps the `off`
++  state and reads as a manual off for that night (the notification says so;
++  switching the unit on by hand resumes the pre-cool at once).
 +
  ## Prediction Model
  
@@ -1885,7 +2137,7 @@ index 65bb5f7..29113d5 100644
  delta_out       = max(0, max(forecast_max, outdoor_now) − ideal_temp)
  solar_load      = 0..1 from sun elevation + azimuth
  lead_bias       = self-learned correction (minutes)
-@@ -102,7 +140,8 @@ The blueprint self-learns one scalar — the lead-time bias — persisted in an
+@@ -102,7 +147,8 @@ The blueprint self-learns one scalar — the lead-time bias — persisted in an
  ```
  # at BEDTIME-LOCK, only if the AC was running this night:
  bedtime_error = warmest_bedroom − ideal_temp
@@ -1895,7 +2147,7 @@ index 65bb5f7..29113d5 100644
  ```
  
  Room too warm at bedtime -> bias rises (start earlier tomorrow); overcooled ->
-@@ -140,8 +179,10 @@ the bias and subsequent nights wash the outlier out.
+@@ -140,8 +186,10 @@ the bias and subsequent nights wash the outlier out.
  ### Safety
  1. Bedroom sensor failure: holds state, fires a persistent notification.
  2. AC entity unavailable: skips the tick, retries next minute.
@@ -1913,7 +2165,7 @@ index 65bb5f7..29113d5 100644
 <!-- patch:requirements_lg_ac_climate.md -->
 ````diff
 diff --git a/requirements_lg_ac_climate.md b/requirements_lg_ac_climate.md
-index d160d96..d492066 100644
+index d160d96..1ac252e 100644
 --- a/requirements_lg_ac_climate.md
 +++ b/requirements_lg_ac_climate.md
 @@ -23,6 +23,9 @@ manual human input.
@@ -1926,13 +2178,14 @@ index d160d96..d492066 100644
  - **Integration:** SmartThinQ Sensors or LG ThinQ (cloud or local)
  
  ## Functional Requirements
-@@ -46,6 +49,15 @@ manual human input.
+@@ -46,6 +49,16 @@ manual human input.
     v1.2.0 adds genuine off/on cycles, whose transitions beep by design — the
     operator's explicit silence-over-beeps trade
  
-+7. Presence setback (v1.3.0): while every presence entity has been away
-+   (any state except home/unknown/unavailable) for the away delay (default
-+   10 min) and no home indicator is on, the comfort band widens by the away
++7. Presence setback (v1.3.0): while every presence entity has been in its
++   current away state (any state except home/unknown/unavailable; a move
++   between named zones re-arms the delay) for the away delay (default
++   10 min) and no home indicator holds comfort, the comfort band widens by the away
 +   setback delta (default 2 °C) on both sides — a setback, never off: a unit
 +   heating inside the widened band turns off and re-heats only below
 +   `low − delta`, cooling mirrors it. Someone arriving or an indicator
@@ -1942,19 +2195,31 @@ index d160d96..d492066 100644
  ### Fan Control
  1. Proportional fan speed based on distance from comfort boundary
  2. Multi-stage time-based escalation when target isn't reached, applied only
-@@ -64,6 +76,11 @@ manual human input.
- 2. Door sensor: AC turns off at exactly the configured delay after the door
-    opens (dedicated timed trigger), except across HA restarts — last_changed
-    resets at boot, so shut-off resumes within door_off_delay of startup
+@@ -69,6 +82,13 @@ manual human input.
+    and honored for a configurable hold window (default 60 min). Vacation,
+    schedule end, and door-open still force off during a hold. Requires a
+    dedicated helper per instance.
 +4. Presence gating: the guest-mode toggle (`input_boolean.climate_guest_mode`
 +   on the living-room instance) holds comfort while guests are in the house;
 +   the security system's EV-at-home latch and presence-unreliable guard do the
-+   same. `input_boolean.security_auto_away` is the alarm's auto-arm feature
-+   toggle, not an away state, and is deliberately not a presence input
- 3. Manual-override hold: a human change via remote/app (mode, setpoint beyond
-    ±0.3 °C, or fan) is detected against the last automation-commanded state
-    and honored for a configurable hold window (default 60 min). Vacation,
-@@ -88,3 +105,6 @@ manual human input.
++   same. Any indicator that is not exactly `off` (on, unknown, unavailable,
++   missing) holds comfort. `input_boolean.security_auto_away` is the alarm's
++   auto-arm feature toggle, not an away state, and is deliberately not a
++   presence input
+ 
+ ### Safety & Degradation
+ 1. Sensor failure: holds current AC state, fires persistent notification;
+@@ -79,7 +99,8 @@ manual human input.
+ 3. Comfort range validation: blocks operation if low >= high or if twice the
+    hysteresis margin exceeds the range (equality is legal since v1.2.0 — the
+    release thresholds meet at the midpoint; the deep-pull feasibility gates
+-   keep the active targets strictly apart)
++   keep the active targets strictly apart). Validated on the CONFIGURED band
++   (v1.3.0): the widened away band never masks a bad configuration
+ 4. Graceful handling of AC entity unavailability
+ 5. Warnings self-dismiss when their condition heals
+ 6. HA restart never triggers a false manual-hold detection
+@@ -88,3 +109,6 @@ manual human input.
  8. A transient cloud command failure can produce one spurious manual-hold
     window (self-clears); floors sharing one LG account can fail correlated
     at the /10 boundary
@@ -1986,9 +2251,9 @@ index 02710af..fd6c298 100644
 
 **Model tier:** Fable (main loop). **Effort:** xhigh at the gate, high otherwise.
 
-**Context budget:** ~30k tokens · 0 repo files edited (the deploy script writes gitignored `deploy/<id>.prev.json`).
+**Context budget:** ~35k tokens · 0 repo files edited (the deploy script writes gitignored `deploy/<id>.prev.json`).
 
-**Shell invariants for this task:** no shell script is written or edited — `scripts/deploy-blueprint.sh` is the pinned TCB file and keeps its `set -euo pipefail` (a deploy must fail fast); every command below is run from the repo root with `source ~/.config/hass-cli/env` in the same shell; no output containing the token is pasted into an issue body (the deploy script never prints it).
+**Shell invariants for this task:** no shell script is written or edited — `scripts/deploy-blueprint.sh` is the pinned TCB file and keeps its `set -euo pipefail` (a deploy must fail fast); every command below is run from the repo root with `source ~/.config/hass-cli/env` in the same shell; no output containing the token is pasted into an issue body (the deploy script never prints it). **No production security entity is written** (board R2-A-04): the presence simulation uses isolated test trackers; `person.*`, `input_boolean.security_ev_car_home` and `input_boolean.security_presence_unreliable` are read only — the EV-charger guard (`sec_ev_cutoff` / `sec_ev_absence`) is live and would cut the plug on a faked latch.
 
 - [ ] **Step 1: Pre-checks**
 
@@ -2006,19 +2271,29 @@ sleep 2; hass-cli -o json state get input_boolean.climate_guest_mode | jq -c '(.
 Expected: `{"entity_id":"input_boolean.climate_guest_mode","state":"off"}`. If the entity id differs (device-derived-id lesson), rename it via `config/entity_registry/update` (`new_entity_id`) before deploying — the instance JSON names this exact id.
 Both dry-runs green (Task 2/3 Step 3 commands).
 
-- [ ] **Step 2: Deploy both blueprints**
+- [ ] **Step 2: Immutable pre-deploy copies + pinned rollback (board R2-A-05)**
+
+```bash
+B=/home/martin/AI/reviews/deploy-19-live-before-$(date -u +%Y%m%dT%H%M%SZ); mkdir -p "$B"
+for id in 1779553673971 1775578219942; do curl -sS -H "Authorization: Bearer $HASS_TOKEN" "$HASS_SERVER/api/config/automation/config/$id" > "$B/instance-$id.json"; done
+git show 5c5a08b:bedroom_precool.yaml > "$B/bedroom_precool.v1.0.3.yaml"; git show 5c5a08b:lg_ac_climate.yaml > "$B/lg_ac_climate.v1.2.0.yaml"
+sha256sum "$B"/*; chmod -w "$B"/*
+```
+These copies are never overwritten by later deploys (the deploy script's `deploy/<id>.prev.json` is a rolling backup that Step 4's temporary deploy replaces). Rollback for either blueprint = `blueprint/save` of the copied YAML (same WS frame the deploy script uses) + `POST /api/config/automation/config/<id>` with the copied instance JSON + confirm `state=on` in `/api/states`; the pre-change git revision is `5c5a08b` (main before this session), not `main~1`.
+
+- [ ] **Step 3: Deploy both blueprints**
 
 ```bash
 scripts/deploy-blueprint.sh bedroom_precool.yaml leviemartin/bedroom_precool.yaml deploy/bedroom_precool_1779553673971.json
 scripts/deploy-blueprint.sh lg_ac_climate.yaml leviemartin/lg_ac_climate.yaml deploy/lg_ac_climate_1775578219942.json
 ```
-Expected per run: `backup: deploy/<id>.prev.json`, `blueprint/save: ok`, `instance <id>: config written`, `automation.… state=on …`, `deploy complete`. Rollback = `POST /api/config/automation/config/<id>` with `deploy/<id>.prev.json` + re-save the previous YAML from `git show main~1:<file>`.
+Expected per run: `backup: deploy/<id>.prev.json`, `blueprint/save: ok`, `instance <id>: config written`, `automation.… state=on …`, `deploy complete`.
 
-- [ ] **Step 3: Pre-cool read-path proof** — trigger a manual Run (`hass-cli service call automation.trigger --arguments entity_id=automation.bedroom_sleep_pre_cool_v1_0_0,skip_condition=true`), read `persistent_notification` `bedroom_precool_debug`: it lists `daily high`, `helper range … (ok=True)`, `manual: setpoint=False …, off=False`. Then read the next tick's trace (`hass-cli -o json raw ws trace/list --json '{"domain":"automation","item_id":"1779553673971"}'` → newest run_id → `trace/get`), confirm `script_execution: finished` and, on a non-`/15` day-side tick, `forecast_daily_high` numeric + `forecast_daily_ok: True` in `changed_variables`; confirm no `bedroom_precool_bias_helper_range` notification exists.
+- [ ] **Step 4: Pre-cool read-path proof** — trigger a manual Run (`hass-cli service call automation.trigger --arguments entity_id=automation.bedroom_sleep_pre_cool_v1_0_0,skip_condition=true`), read `persistent_notification` `bedroom_precool_debug`: it lists `daily high`, `helper range … (ok=True)`, `manual: setpoint=False …, off=False`. Then read the next tick's trace (`hass-cli -o json raw ws trace/list --json '{"domain":"automation","item_id":"1779553673971"}'` → newest run_id → `trace/get`): `script_execution: finished`; on a non-`/15` day-side tick `forecast_daily_high` numeric + `forecast_daily_ok: True`; `automation_up_since_ts` a non-zero float (the HA-start guard is live, board R1-02); no `bedroom_precool_bias_helper_range` notification exists.
 
-- [ ] **Step 4: LG away/hold proof (criterion 4)** — deploy a temporary variant with `away_delay_minutes: 0` (a copy of the instance JSON with that one value, via the deploy script), inject `person.martin_levie` and `person.savannah_levie` = `not_home` (`POST /api/states/<id>` with the current attributes), turn `input_boolean.security_ev_car_home` off (`input_boolean.turn_off`; guest and `security_presence_unreliable` are off), trigger the automation (`automation.trigger`, `skip_condition=true`), read the newest trace: `away_active: True`, `temp_low: 19.0`, `temp_high: 25.5`. Turn `input_boolean.climate_guest_mode` on, trigger again: `away_active: False`, `temp_low: 21.0`, `temp_high: 23.5`. Restore: guest off, EV latch on, re-inject both persons `home` (their trackers overwrite on the next report anyway), redeploy the committed instance JSON (`away_delay_minutes: 10`), confirm `on`. Note on #19 that the simulation touched the persons (4 flips, below the security flap guard's 6/h) and the EV latch.
+- [ ] **Step 5: LG away / hold proof on ISOLATED entities (criterion 4; board R2-A-04, R2-A-08)** — create two throwaway trackers: `hass-cli service call device_tracker.see --arguments dev_id=climate_test_a,location_name=not_home` and `dev_id=climate_test_b` (they appear as `device_tracker.climate_test_a/b`). Deploy a temporary variant of the instance JSON (a copy with `presence_entities: [device_tracker.climate_test_a, device_tracker.climate_test_b]`, `home_indicators: [input_boolean.climate_guest_mode]`, `away_delay_minutes: 10` unchanged) with the deploy script. After ≥ 10 min (the real debounce), read the newest `/10` trace: `persons_all_away: True`, `away_active: True`, `temp_low: 19.0`, `temp_high: 25.5`. Then turn `input_boolean.climate_guest_mode` on WITHOUT triggering by hand and read the trace the `indicator_on` trigger produced (trigger id in the trace header): `home_indicator_on: True`, `away_active: False`, `temp_low: 21.0`, `temp_high: 23.5`. Guest off; `device_tracker.see dev_id=climate_test_a location_name=home` → read the `presence_return` trace: `persons_all_away: False`. Climate commands are not exercisable in this weather (the room sits inside both bands with the unit off) — record it as such, like the #15 fan-stage criterion. Cleanup: redeploy the committed instance JSON (real persons + three indicators), confirm `on`; the throwaway trackers stay harmless (`known_devices`-less HA ignores them) or are removed via the entity registry. The real wiring is proven by the committed JSON's dry-run + a read-only `/api/template` render of the live `persons_all_away`/`home_indicator_on` expressions against `person.martin_levie`/`person.savannah_levie` and the three indicators.
 
-- [ ] **Step 5: Evidence on #19 (and a note on #22 / #24)** — sessions #22 and #24 are observing the live v1.0.3; post one comment on each that the live blueprint moved to v1.1.0 at the deploy timestamp (their remaining criteria are read against v1.1.0 or waived by Martin). Then post the deploy output lines, the debug-dump fields, the trace excerpts and the criteria table (criteria 1–5 pending → PASS as observed) via `gh issue comment 19 -R leviemartin/Blueprints_Home --body-file …` (secret-scanned). Keep `<!-- observe:open -->` until criteria 1–5 pass (or Martin waives), then `observe:closed` → `gh_finish_session` in [9]; epic #18 stays open until #24 closes.
+- [ ] **Step 6: Evidence on #19 (and a note on #22 / #24)** — sessions #22 and #24 are observing the live v1.0.3; post one comment on each that the live blueprint moved to v1.1.0 at the deploy timestamp (their remaining criteria are read against v1.1.0 or waived by Martin). Then post the deploy output lines, the debug-dump fields, the trace excerpts and the criteria table (criteria 1–5 pending → PASS as observed) on #19 via `gh issue comment 19 -R leviemartin/Blueprints_Home --body-file …` (secret-scanned). Keep `<!-- observe:open -->` until criteria 1–5 pass (or Martin waives), then `observe:closed` → `gh_finish_session` in [9]; epic #18 stays open until #24 closes.
 
 ## Chain notes
 
