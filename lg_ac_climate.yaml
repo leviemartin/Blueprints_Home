@@ -1,7 +1,7 @@
 blueprint:
-  name: "LG AC Climate Control v1.2.0"
+  name: "LG AC Climate Control v1.3.0"
   description: >
-    **Version: 1.2.0**
+    **Version: 1.3.0**
 
     Automates LG air conditioners per-floor using external temperature sensors
     for reliable ambient readings.
@@ -26,6 +26,12 @@ blueprint:
       stays command-free. If the device's setpoint grid or limits leave no
       valid deep setpoint, that mode falls back to v1.1.0 boundary idling
       and a persistent notification is raised.
+    - **Presence Setback (v1.3.0):** While every listed person / tracker has
+      been away for a configurable delay and no home indicator (guest-mode
+      toggle, EV-at-home latch, presence-unreliable guard) is on, the comfort
+      band widens by a configurable delta — a setback, never off. Someone
+      arriving, or an indicator turning on, restores the band at once.
+      Unknown/unavailable presence counts as home.
     - **Manual-Override Hold:** Optional input_text helper detects remote/app
       changes and pauses comfort control for a configurable window (vacation,
       schedule end, and door-open still force off). Reloading any automation
@@ -39,6 +45,8 @@ blueprint:
     - Weather entity for outdoor temperature (e.g., Met.no)
     - input_boolean helper for vacation mode
     - input_text helper (optional) for manual-override hold
+    - person / device_tracker entities and input_boolean helpers (optional)
+      for the presence setback
 
   domain: automation
   homeassistant:
@@ -291,6 +299,48 @@ blueprint:
           step: 5
           unit_of_measurement: min
 
+    # --- PRESENCE SETBACK (v1.3.0, optional) ---
+    presence_entities:
+      name: Presence Entities (Optional)
+      description: "person or device_tracker entities. The setback applies only while EVERY one of them has been away (any state except home/unknown/unavailable) for the Away Delay. Leave empty to disable presence gating."
+      default: []
+      selector:
+        entity:
+          domain:
+            - person
+            - device_tracker
+          multiple: true
+    home_indicators:
+      name: Home Indicators (Optional)
+      description: "input_boolean / binary_sensor entities that hold comfort regardless of the trackers — e.g. a guest-mode toggle, an EV-at-home latch, a presence-unreliable guard. Any of them that is not exactly OFF (on, unknown, unavailable, missing) holds comfort."
+      default: []
+      selector:
+        entity:
+          domain:
+            - input_boolean
+            - binary_sensor
+          multiple: true
+    away_setback_delta:
+      name: Away Setback (°C)
+      description: "How far the comfort band widens on each side while everyone is away: heat only below Low − delta, cool only above High + delta. 0 disables the setback. Guidance for heat pumps is 1–2 °C; deeper is allowed for poorly insulated homes."
+      default: 2.0
+      selector:
+        number:
+          min: 0.0
+          max: 5.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    away_delay_minutes:
+      name: Away Delay (min)
+      description: "Every presence entity must have been in its current away state at least this long before the setback applies (short absences such as walking the dog do not count; every state change — including a move between named zones — restarts the delay). Return is immediate."
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 120
+          step: 5
+          unit_of_measurement: min
+
 mode: restart
 max_exceeded: silent
 
@@ -330,6 +380,19 @@ trigger:
     event_type: automation_reloaded
     id: "init"
 
+  # 7. Someone arrives — restore the comfort band at once (v1.3.0).
+  #    An empty entity list is a valid, inert state trigger (door_sensor precedent).
+  - platform: state
+    entity_id: !input presence_entities
+    to: "home"
+    id: "presence_return"
+
+  # 8. A home indicator switches on (guest mode, EV arrives, flap guard) (v1.3.0)
+  - platform: state
+    entity_id: !input home_indicators
+    to: "on"
+    id: "indicator_on"
+
 variables:
   # --- Entity Mappings ---
   climate_ac: !input climate_entity
@@ -340,8 +403,10 @@ variables:
   entity_vacation: !input vacation_toggle
 
   # --- Comfort ---
-  temp_low: !input temp_range_low
-  temp_high: !input temp_range_high
+  # The configured band. The EFFECTIVE temp_low / temp_high are defined in
+  # STEP 1 (widened while away) so every downstream consumer stays unchanged.
+  temp_low_cfg: !input temp_range_low
+  temp_high_cfg: !input temp_range_high
   deadband_thresh: !input deadband_outdoor_threshold
 
   # --- Schedule (Start/End per day) ---
@@ -375,6 +440,12 @@ variables:
   hold_helper: !input manual_hold_helper
   hold_minutes: !input manual_hold_minutes
 
+  # --- Presence setback (v1.3.0) ---
+  presence_entities: !input presence_entities
+  home_indicators: !input home_indicators
+  away_delta: !input away_setback_delta
+  away_delay: !input away_delay_minutes
+
 action:
   # =============================================
   # STEP 1: COMPUTE VARIABLES
@@ -404,6 +475,60 @@ action:
         {% else %}
           {{ ((valid_temps | sum) / (valid_temps | length)) | round(1) }}
         {% endif %}
+
+      # --- Presence setback (v1.3.0) — declared BEFORE the first consumer of
+      # temp_low / temp_high (outdoor_distance, the quantised setpoints, the
+      # gates, target_mode); HA renders this block top to bottom. ---
+      presence_enabled: >-
+        {{ presence_entities is iterable and presence_entities is not string
+           and presence_entities | length > 0 }}
+      away_delay_sec: "{{ away_delay | int(0) * 60 }}"
+      # Every listed entity must be away — any state except home / unknown /
+      # unavailable (a named zone counts as away; unknown fails toward home,
+      # the house's security-resolver rule) — and must have been in its
+      # CURRENT state for at least the away delay (last_changed moves on
+      # EVERY state change, incl. zone -> zone, never on a GPS attribute
+      # update; each zone move restarts the delay, so the setback engages one
+      # delay after the LAST change — a commute through several zones
+      # postpones it repeatedly). Return is immediate.
+      persons_all_away: >-
+        {% if not presence_enabled %}
+          {{ false }}
+        {% else %}
+          {% set ns = namespace(ok=true) %}
+          {% for p in presence_entities %}
+            {% set st = states[p] %}
+            {% if st is none or st.state in ['home', 'unknown', 'unavailable']
+                  or (as_timestamp(now()) - as_timestamp(st.last_changed)) < away_delay_sec | float %}
+              {% set ns.ok = false %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.ok }}
+        {% endif %}
+      # Any configured indicator that is not exactly `off` — on, unknown,
+      # unavailable, or missing — holds comfort (fail toward comfort); so
+      # does a collection that arrives in any shape other than a list.
+      home_indicator_on: >-
+        {% if home_indicators is string or home_indicators is not iterable %}
+          {{ true }}
+        {% elif home_indicators | length > 0 %}
+          {% set ns = namespace(hold=false) %}
+          {% for e in home_indicators %}
+            {% set st = states[e] %}
+            {% if st is none or st.state != 'off' %}{% set ns.hold = true %}{% endif %}
+          {% endfor %}
+          {{ ns.hold }}
+        {% else %}
+          {{ false }}
+        {% endif %}
+      away_active: >-
+        {{ presence_enabled and persons_all_away and not home_indicator_on
+           and away_delta | float(0) > 0 }}
+      # The effective band: widened by the delta while away. A unit that was
+      # heating inside the widened band turns OFF on the next tick (one beep)
+      # and re-heats only below the setback floor; cooling mirrors it.
+      temp_low: "{{ (temp_low_cfg | float) - (away_delta | float if away_active else 0) }}"
+      temp_high: "{{ (temp_high_cfg | float) + (away_delta | float if away_active else 0) }}"
 
       # --- Outdoor (from weather entity) ---
       outdoor_temp_raw: "{{ state_attr(entity_weather, 'temperature') }}"
@@ -608,33 +733,34 @@ action:
         {% endif %}
 
   # =============================================
-  # STEP 2: RUNTIME VALIDATION
+  # STEP 2: RUNTIME VALIDATION — on the CONFIGURED band (temp_*_cfg): the
+  # effective band is wider while away and must not mask a bad config.
   # =============================================
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ temp_low | float >= temp_high | float }}"
+            value_template: "{{ temp_low_cfg | float >= temp_high_cfg | float }}"
         sequence:
           - service: persistent_notification.create
             data:
               title: "AC Climate Blueprint — Configuration Error"
               message: >
-                Comfort range is misconfigured: Low ({{ temp_low }}°C) must be
-                less than High ({{ temp_high }}°C). AC control is paused until
+                Comfort range is misconfigured: Low ({{ temp_low_cfg }}°C) must be
+                less than High ({{ temp_high_cfg }}°C). AC control is paused until
                 this is corrected.
               notification_id: "ac_climate_config_error"
           - stop: "Comfort range misconfigured"
 
       - conditions:
           - condition: template
-            value_template: "{{ (margin | float * 2) > (temp_high | float - temp_low | float) }}"
+            value_template: "{{ (margin | float * 2) > (temp_high_cfg | float - temp_low_cfg | float) }}"
         sequence:
           - service: persistent_notification.create
             data:
               title: "AC Climate Blueprint — Configuration Error"
               message: >
                 Comfort margin ({{ margin }}°C) is too large for the comfort
-                range ({{ temp_low }}–{{ temp_high }}°C): twice the margin must
+                range ({{ temp_low_cfg }}–{{ temp_high_cfg }}°C): twice the margin must
                 not exceed the range. AC control is paused until corrected.
               notification_id: "ac_climate_config_error"
           - stop: "Comfort margin misconfigured"
