@@ -77,7 +77,9 @@ Consequence on #19's acceptance: on a non-fetch day-side tick the trace's `chang
 Definitions (STEP 2c, after `maintaining_setpoint` / `effective_drive`):
 
 ```
+ac_temp_step:      max(state_attr(ac_climate,'target_temp_step') | float(0.5), 0.1)
 known_setpoints:   [effective_drive, maintaining_setpoint, clamp(maintaining − correction_step), clamp(maintaining + correction_step)]
+                   each quantised as the DEVICE holds it: int(v) when ac_temp_step ≥ 1 (lg_thinq sends int() there), else v
 setpoint_is_known: any |current_setpoint − k| <= 0.1 over known_setpoints
 manual_setpoint:   ac_is_running and current_setpoint_known and not setpoint_is_known
 automation_up_since_ts: as_timestamp(this.last_changed)        # boot / reload / enable of this automation
@@ -96,7 +98,7 @@ Behaviour:
 - **NIGHT_HOLD:** issues nothing (unchanged). **DEEP_NIGHT_CHECK** is the next phase boundary: it keeps its existing correction rule (literal reading of "respected until the next phase boundary"). *Operator question recorded for the board/Martin:* if the deep-night check should also stand down on a manual value, it is a one-line gate (`not manual_setpoint`) — not implemented by default.
 - **Notification (STEP 7e, state-driven):** while `enable_notifications and phase in [PRECOOL, BEDTIME_LOCK, NIGHT_HOLD] and (manual_setpoint or manual_off)` → `bedroom_precool_manual_override` (which was detected, the value, and when the blueprint resumes); otherwise dismiss. "One push max" is read as one notification per override episode; the blueprint has no mobile-push inputs.
 
-Residuals (documented in the requirements doc): (1) a manual change *to* one of the blueprint's own values is not detected (v1.0.x behaviour: re-asserted within a minute); (2) if a setpoint command fails at the turn-on tick and the unit comes back with an unknown remembered value, that night reads as a manual override (notification shown; self-heals next day) — the research's B design shares this class; (3) a config edit of `ideal_temp`/`hall_offset` during PRECOOL reloads the automation, which resets `this.last_changed` (manual-off guard) but makes the old setpoint read as manual until the lock.
+Residuals (documented in the requirements doc): (1) a manual change *to* one of the blueprint's own values is not detected (v1.0.x behaviour: re-asserted within a minute); (2) if a setpoint command fails at the turn-on tick and the unit comes back with an unknown remembered value, that night reads as a manual override (notification shown; self-heals next day) — the research's B design shares this class; (3) a config edit of `ideal_temp`/`hall_offset` during PRECOOL reloads the automation, which resets `this.last_changed` (manual-off guard) but makes the old setpoint read as manual until the lock; (4) a ThinQ cloud outage that ends inside the window (`unavailable` → `off`) re-stamps `last_changed` and reads as a manual off for that night — the notice names the recovery (switch the unit on by hand; a running unit inside the window is adopted as PRECOOL at once). Triple-check 2026-09-09: (1)–(4) accepted-documented; the device-held quantisation was a P1 fixed pre-board.
 
 ### 3.3 Dry-run in tests (R1-04)
 
@@ -158,7 +160,8 @@ LG (`tests/test_lg_ac_climate_structure.py`): version 1.3.0; input schemas + def
 2. Deploy pre-checks: helper range live (min ≤ −60, max ≥ 120); `input_boolean.climate_guest_mode` created/verified; both dry-runs green; HA `validate_config` on the input-substituted configs (`triggers`/`actions` plural).
 3. `scripts/deploy-blueprint.sh` for both blueprints with their instance JSON (backs up `deploy/<id>.prev.json`); both automations `on`.
 4. Live-verify: manual "Run" of pre-cool → debug dump shows `daily high`, `manual`, helper range fields; next non-fetch day-side tick trace has `forecast_daily_high`; LG: a simulated everyone-away (persons injected `not_home` via the REST states API, EV latch off, guest off, instance temporarily at `away_delay_minutes: 0`) → trace `away_active: True`, `temp_low: 19.0`; guest on → `away_active: False`; then restore states and the 10-min delay. *Note for Martin:* the simulation touches `person.*` (4 flips, under the security flap guard's 6/h) and `input_boolean.security_ev_car_home` (restored immediately; `sec_ev_tracker` re-latches within 30 min anyway).
-5. Observe (24 h): both `on`; the first bedtime lock writes the bias with no log error and no helper-range notification; a non-fetch tick with a non-empty daily forecast; zero log errors.
+5. At deploy time, note on #22 and #24 that the live pre-cool moved to v1.1.0 (their observation windows were reading v1.0.3).
+6. Observe (24 h): both `on`; the first bedtime lock writes the bias with no log error and no helper-range notification; a non-fetch tick with a non-empty daily forecast; zero log errors.
 
 ## 7. Alternatives considered
 

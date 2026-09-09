@@ -52,7 +52,7 @@ Engineering constraints:
 - *Setback depth.* Dutch heat-pump guidance caps setback at 1–2 °C (Milieu Centraal: none for floor heating, 1 °C reasonable insulation, 2 °C poor insulation); the inverter air-to-air unit has no resistive backup, so the DOE aux-heat penalty does not apply. 2.0 °C is the locked default and per-instance tunable (0–5).
 - *Away debounce.* 10 min re-checked every tick (`last_changed`-based, stateless; the Better Thermostat blueprint precedent). Return is immediate via the two new triggers. An HA restart re-arms the setback 10 min after boot.
 - *Leaving while heating.* A unit heating at 21.5 °C (release 22) finds itself inside 19–25.5 → `target_mode` off → one `climate.turn_off`; it re-heats only below 19.0. This is the setback, not "off": the unit runs whenever the room leaves the widened band.
-- *Override residuals.* A manual change to one of the blueprint's own four values is re-asserted within a minute (v1.0.x behaviour). A setpoint command that fails on the turn-on tick can leave the unit at a remembered unknown value that reads as manual for the night (notification shown; self-heals next day). A reload of the instance (config edit) resets `this.last_changed` and, if the old setpoint is not in the new set, reads as manual until the lock.
+- *Override residuals.* A manual change to one of the blueprint's own four values is re-asserted within a minute (v1.0.x behaviour). The known set holds the values as the DEVICE stores them (lg_thinq sends `int(value)` on a whole-degree step). A cloud outage that ends inside the window re-stamps the `off` state and reads as a manual off for that night (notice text names the recovery: switch the unit on by hand). A setpoint command that fails on the turn-on tick can leave the unit at a remembered unknown value that reads as manual for the night (notification shown; self-heals next day). A reload of the instance (config edit) resets `this.last_changed` and, if the old setpoint is not in the new set, reads as manual until the lock.
 - *Daily high in the evening.* `temperature` is the day's HIGH; after the afternoon peak the backstop overstates the remaining heat → an earlier start (the asymmetric-cost rule accepts early).
 - *`get_forecasts` cadence.* Both calls read HA's cached coordinator data (Met.no polls upstream every 55–65 min); a daily call on 14 of 15 day-side ticks costs no upstream traffic.
 
@@ -67,7 +67,7 @@ Engineering constraints:
 - [x] HA 2026.9.0 reachable (`Europe/Amsterdam`). Live facts (spec §2): `input_number.autolearner` min −60 / max 240 / step 1 / state 62; `climate.bedrooms` + `climate.livingroom` min 18 / max 30 / step 0.5, fan modes auto/low/medium/high, `temperature: null` while off; `weather.home_sm` = Met.no, `supported_features` 3, daily 6 entries (`temperature` = high, `templow` = low, `datetime` local-noon-as-UTC), hourly 48; `weather.openweathermap` no forecast; persons `person.martin_levie` / `person.savannah_levie`; `input_boolean.security_ev_car_home` on, `security_presence_unreliable` off, `security_auto_away` off (= the alarm's auto-arm toggle); `input_boolean.climate_guest_mode` ABSENT (created in T5); automation entities `automation.bedroom_sleep_pre_cool_v1_0_0` / `automation.lg_ac_climate_control_v1_0_0` both `on`.
 - [x] Empirical probes: both climate states last written by their automations' time-pattern runs carry `context.parent_id null, user_id null` (context inspection rejected); `climate.bedrooms` last_changed 05:15Z / last_updated 07:59Z (attribute-only pushes do not move `last_changed`); HA stores 5 traces per automation.
 - [x] Baseline suite green: `282 passed` on `5c5a08b`.
-- [x] Scratch run of the inline artifacts in a throwaway repo copy: full suite **311 passed**; RED against the shipped files **32 failed / 66 passed** in the two changed test files (every new test red); `scripts/deploy-blueprint.sh --dry-run` green for both instances (`9 inputs` / `31 inputs`); HA `validate_config` on both input-substituted configs: `{"triggers":{"valid":true},"actions":{"valid":true}}`; live `/api/template` renders match the harness for `bitwise_and`, `as_local` date match, `states[entity]` item access (none when missing), `state_attr('', …)` → default, `expand(...)` last_changed max, the list literal, the string-form guard, the persons loop and the indicator `selectattr`; all nine diffs re-applied with `git apply` onto a clean checkout reproduce the pinned sha256s.
+- [x] Scratch run of the inline artifacts in a throwaway repo copy: full suite **312 passed**; RED at the Task 1 state (tests + instance JSON patched, blueprints unchanged) **32 failed / 67 passed** in the two changed test files (every new blueprint pin red; only the pre-cool instance test — which needs nothing from the blueprint — is already green); `scripts/deploy-blueprint.sh --dry-run` green for both instances (`9 inputs` / `31 inputs`); HA `validate_config` on both input-substituted configs: `{"triggers":{"valid":true},"actions":{"valid":true}}`; live `/api/template` renders match the harness for `bitwise_and`, `as_local` date match, `states[entity]` item access (none when missing), `state_attr('', …)` → default, `expand(...)` last_changed max, the list literal, the string-form guard, the persons loop and the indicator `selectattr`; all nine diffs re-applied with `git apply` onto a clean checkout reproduce the pinned sha256s.
 - [ ] At T5 time only: confirm `git rev-parse HEAD` = `origin/main`, re-read both live instance configs (the deploy script backs them up to `deploy/<id>.prev.json`, gitignored), re-check the helper range live.
 
 **Observation criteria ([8] applies — deploying session; issue #19 carries `<!-- observe:open -->`):**
@@ -88,7 +88,7 @@ Engineering constraints:
 **Context budget:** ~25k tokens · 4 files modified · shell only.
 
 **Files:**
-- Modify: `tests/test_bedroom_precool_structure.py` (v1.0.3 pins → v1.1.0; R1-04 dry-run tests; harness stubs; 21 new tests)
+- Modify: `tests/test_bedroom_precool_structure.py` (v1.0.3 pins → v1.1.0; R1-04 dry-run tests; harness stubs; 22 new tests)
 - Modify: `tests/test_lg_ac_climate_structure.py` (v1.2.0 pins → v1.3.0; trigger roster; 10 new tests incl. the LG instance dry-run moved here from the pre-cool file)
 - Modify: `deploy/bedroom_precool_1779553673971.json` (alias v1.1.0, `trace.stored_traces` 30)
 - Modify: `deploy/lg_ac_climate_1775578219942.json` (alias v1.3.0, presence inputs, `trace.stored_traces` 20)
@@ -127,7 +127,7 @@ sha256sum tests/test_bedroom_precool_structure.py tests/test_lg_ac_climate_struc
 ```
 Expected (exact):
 ```
-c9672742b2a756c2dc468e236edb25a8101055073c083350536f3547f7925bd1  tests/test_bedroom_precool_structure.py
+95f714329d2676312b3459239d0897e00f5a02b692ba0156402bb75c277155e2  tests/test_bedroom_precool_structure.py
 52c9b2fa43ae33e43bfac79a59ebad5482acfc3ab4de59e9d607f57b0e650156  tests/test_lg_ac_climate_structure.py
 16441db6049bb0d53d62d756eb6fd0febc0d95afe54c7b02fe4aaa9708ee7641  deploy/bedroom_precool_1779553673971.json
 7b7fa2d5bd13c781bb446fa0ce8d4e9e216b33b733c06ca896d82e8d0b982aaf  deploy/lg_ac_climate_1775578219942.json
@@ -137,7 +137,7 @@ A mismatch means the diff did not apply cleanly (stale base) — stop and report
 - [ ] **Step 3: Run the two changed test files — expect RED**
 
 Run: `PY=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python; $PY -m pytest tests/test_bedroom_precool_structure.py tests/test_lg_ac_climate_structure.py -q`
-Expected: `32 failed, 66 passed` — the failing set is exactly: pre-cool `test_version_bumped, test_precool_instance_values, test_rendered_new_bias_is_clamped_to_the_helpers_live_range, test_bias_range_variables_are_defined_after_lead_bias_and_before_the_lock, test_bias_helper_range_notice_is_state_driven, test_auto_learn_write_is_clamped_and_skipped_on_an_override_night, test_dead_forecast_attribute_read_is_gone, test_rendered_weather_daily_supported_reads_feature_bit_1, test_rendered_forecast_daily_high_picks_todays_entry_by_local_date, test_rendered_forecast_max_prefers_hourly_then_daily_then_outdoor, test_rendered_forecast_daily_due_only_when_the_hourly_window_is_empty_on_the_day_side, test_daily_forecast_call_is_gated_and_error_tolerant, test_forecast_variables_are_defined_in_dependency_order, test_forecast_unavailable_notice_also_requires_the_daily_backstop_to_be_absent, test_rendered_manual_setpoint_is_any_value_the_blueprint_could_not_have_commanded, test_rendered_setpoint_is_known_treats_a_non_list_as_known, test_rendered_manual_off_only_for_an_off_transition_inside_the_adoption_window, test_rendered_manual_off_survives_a_missing_climate_state, test_precool_commands_are_gated_on_the_override_flags_and_the_boundaries_are_not, test_manual_override_notice_is_state_driven_and_phase_gated, test_override_variables_are_defined_in_dependency_order` (21) and LG `test_version_bumped, test_trigger_roster, test_presence_inputs_are_additive_with_defaults, test_presence_variable_mappings_and_cfg_rename, test_presence_triggers, test_presence_variables_precede_every_band_consumer, test_rendered_persons_all_away_requires_everyone_away_for_the_delay, test_rendered_home_indicator_on, test_rendered_away_active_and_effective_band, test_description_documents_presence_setback, test_lg_instance_passes_the_deploy_dry_run_and_wires_presence` (11). The instance dry-run tests fail here only because the blueprints do not yet declare the new inputs / versions.
+Expected: `32 failed, 67 passed` — the failing set is exactly: pre-cool `test_version_bumped, test_rendered_new_bias_is_clamped_to_the_helpers_live_range, test_bias_range_variables_are_defined_after_lead_bias_and_before_the_lock, test_bias_helper_range_notice_is_state_driven, test_auto_learn_write_is_clamped_and_skipped_on_an_override_night, test_dead_forecast_attribute_read_is_gone, test_rendered_weather_daily_supported_reads_feature_bit_1, test_rendered_forecast_daily_high_picks_todays_entry_by_local_date, test_rendered_forecast_max_prefers_hourly_then_daily_then_outdoor, test_rendered_forecast_daily_due_only_when_the_hourly_window_is_empty_on_the_day_side, test_daily_forecast_call_is_gated_and_error_tolerant, test_forecast_variables_are_defined_in_dependency_order, test_forecast_unavailable_notice_also_requires_the_daily_backstop_to_be_absent, test_rendered_manual_setpoint_is_any_value_the_blueprint_could_not_have_commanded, test_rendered_known_setpoints_are_the_values_the_device_holds, test_rendered_setpoint_is_known_treats_a_non_list_as_known, test_rendered_manual_off_only_for_an_off_transition_inside_the_adoption_window, test_rendered_manual_off_survives_a_missing_climate_state, test_precool_commands_are_gated_on_the_override_flags_and_the_boundaries_are_not, test_manual_override_notice_is_state_driven_and_phase_gated, test_override_variables_are_defined_in_dependency_order` (21) and LG `test_version_bumped, test_trigger_roster, test_presence_inputs_are_additive_with_defaults, test_presence_variable_mappings_and_cfg_rename, test_presence_triggers, test_presence_variables_precede_every_band_consumer, test_rendered_persons_all_away_requires_everyone_away_for_the_delay, test_rendered_home_indicator_on, test_rendered_away_active_and_effective_band, test_description_documents_presence_setback, test_lg_instance_passes_the_deploy_dry_run_and_wires_presence` (11). `test_precool_instance_values` already passes (the pre-cool instance needs nothing new from the blueprint); the LG instance dry-run fails until Task 3 declares the presence inputs.
 
 - [ ] **Step 4: Commit (tests + instance pillar)**
 
@@ -146,14 +146,14 @@ git add tests/test_bedroom_precool_structure.py tests/test_lg_ac_climate_structu
 git commit -m "test(climate): v1.1.0 pre-cool + v1.3.0 LG pins (RED) — helper-range clamp, daily backstop, manual override, presence setback; instances migrated (aliases, presence inputs, stored_traces)"
 ```
 
-Step 5: Report the two changed files' counts as `precool+lg (RED): PASS=66 FAIL=32` and the four hash lines.
+Step 5: Report the two changed files' counts as `precool+lg (RED): PASS=67 FAIL=32` and the four hash lines.
 
 ### Artifacts for Task 1
 
 <!-- patch:tests/test_bedroom_precool_structure.py -->
 ````diff
 diff --git a/tests/test_bedroom_precool_structure.py b/tests/test_bedroom_precool_structure.py
-index 252976b..13e93ad 100644
+index 252976b..b0fd920 100644
 --- a/tests/test_bedroom_precool_structure.py
 +++ b/tests/test_bedroom_precool_structure.py
 @@ -1,4 +1,4 @@
@@ -249,7 +249,7 @@ index 252976b..13e93ad 100644
      env.filters["timestamp_custom"] = (
          lambda ts, fmt="%Y-%m-%d %H:%M:%S", local=True: datetime.fromtimestamp(float(ts), tz=TZ).strftime(fmt)
      )
-@@ -384,3 +396,324 @@ def test_night_fan_unsupported_notice_is_gated_on_fan_control_and_resolution(bp)
+@@ -384,3 +396,337 @@ def test_night_fan_unsupported_notice_is_gated_on_fan_control_and_resolution(bp)
  def test_precool_instance_sets_night_fan_low():
      inst = json.loads(PRECOOL_INSTANCE.read_text())
      assert inst["use_blueprint"]["input"]["night_fan"] == "low"
@@ -460,7 +460,7 @@ index 252976b..13e93ad 100644
 +def _override(bp, current_setpoint, running=True, known=True, **over):
 +    now = datetime(2026, 9, 9, 17, 0, tzinfo=TZ)
 +    ctx = dict(effective_drive=18.0, maintaining_setpoint=21.0, correction_step=1.5,
-+               ac_min_temp=18.0, ac_max_temp=30.0, current_setpoint=current_setpoint,
++               ac_min_temp=18.0, ac_max_temp=30.0, ac_temp_step=0.5, current_setpoint=current_setpoint,
 +               current_setpoint_known=known, ac_is_running=running)
 +    ctx.update(over)
 +    return _render_chain(bp, OVERRIDE_CHAIN, now, ctx)
@@ -477,6 +477,18 @@ index 252976b..13e93ad 100644
 +    assert _override(bp, 24.0, known=False)["manual_setpoint"] is False        # LG null setpoint
 +    # deep-night values clamp to the device range like the commands themselves
 +    assert _override(bp, 18.0, ac_max_temp=22.0)["known_setpoints"] == [18.0, 21.0, 19.5, 22.0]
++
++
++def test_rendered_known_setpoints_are_the_values_the_device_holds(bp):
++    """A whole-degree unit receives int(value) from the lg_thinq integration: 21.5 is held as
++    21, 20.0 stays 20, 23.0 stays 23 — the set must match what the unit reports, or every
++    tick reads as manual (memory: compare against the value the device actually holds)."""
++    ctx = _override(bp, 21.0, ac_temp_step=1.0, maintaining_setpoint=21.5)
++    assert ctx["known_setpoints"] == [18, 21, 20, 23]
++    assert ctx["manual_setpoint"] is False
++    assert _override(bp, 22.0, ac_temp_step=1.0, maintaining_setpoint=21.5)["manual_setpoint"] is True
++    # a 0.5-step unit holds the blueprint's values as commanded
++    assert _override(bp, 21.5, ac_temp_step=0.5, maintaining_setpoint=21.5)["known_setpoints"] == [18.0, 21.5, 20.0, 23.0]
 +
 +
 +def test_rendered_setpoint_is_known_treats_a_non_list_as_known(bp):
@@ -566,6 +578,7 @@ index 252976b..13e93ad 100644
 +
 +
 +def test_override_variables_are_defined_in_dependency_order(text):
++    assert _def_index(text, "ac_temp_step") < _def_index(text, "known_setpoints")
 +    assert (_def_index(text, "maintaining_setpoint") < _def_index(text, "known_setpoints")
 +            < _def_index(text, "setpoint_is_known") < _def_index(text, "manual_setpoint"))
 +    assert (_def_index(text, "earliest_turn_on_tod") < _def_index(text, "earliest_turn_on_ts")
@@ -888,7 +901,7 @@ index 8713f40..da51d60 100644
 
 **Interfaces:**
 - Consumes: the T1 test names/variables; `deploy/bedroom_precool_1779553673971.json`.
-- Produces: `bedroom_precool.yaml` v1.1.0 with every variable listed under T1 "Produces" (pre-cool half), the wrapped PRECOOL branch (`{{ not manual_setpoint and not manual_off }}`), the learn-write gate `{{ enable_auto_learn and lead_bias_configured and not manual_setpoint }}`, `new_bias` clamped to `bias_floor`/`bias_ceiling`, notices 7d/7e.
+- Produces: `bedroom_precool.yaml` v1.1.0 with every variable listed under T1 "Produces" (pre-cool half, plus `ac_temp_step` in STEP 2a), the wrapped PRECOOL branch (`{{ not manual_setpoint and not manual_off }}`), the learn-write gate `{{ enable_auto_learn and lead_bias_configured and not manual_setpoint }}`, `new_bias` clamped to `bias_floor`/`bias_ceiling`, notices 7d/7e.
 
 - [ ] **Step 1: Extract and apply the diff**
 
@@ -905,12 +918,12 @@ EOF
 git apply --check /tmp/claude-1000/-home-martin/plan-patches/bedroom_precool.yaml.patch && git apply /tmp/claude-1000/-home-martin/plan-patches/bedroom_precool.yaml.patch
 sha256sum bedroom_precool.yaml
 ```
-Expected: `f191557e1aa71e94567b890a13e9f57a4c15154d448c8c5e5d7b470c529aed0c  bedroom_precool.yaml`
+Expected: `75f79f882c0eb5989717814f8b27bf3bf6d42ce81b542236b80c15220d2eb5a2  bedroom_precool.yaml`
 
 - [ ] **Step 2: Pre-cool tests GREEN**
 
 Run: `PY=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python; $PY -m pytest tests/test_bedroom_precool_structure.py -q`
-Expected: `41 passed` (every pre-cool pin: the 21 new ones plus the unchanged phase/boundary tests; the LG file is still RED until Task 3).
+Expected: `42 passed` (every pre-cool pin: the 22 new ones plus the unchanged phase/boundary tests; the LG file is still RED until Task 3).
 
 - [ ] **Step 3: Offline deploy validation**
 
@@ -950,14 +963,14 @@ git add bedroom_precool.yaml
 git commit -m "feat(bedroom-precool): v1.1.0 — auto-learn clamped to the helper's range (+notice), daily forecast backstop, manual setpoint/off respected until the next phase boundary"
 ```
 
-Step 6: Report `precool: PASS=41 FAIL=0`, the hash line, the dry-run line, the validate_config line.
+Step 6: Report `precool: PASS=42 FAIL=0`, the hash line, the dry-run line, the validate_config line.
 
 ### Artifact for Task 2
 
 <!-- patch:bedroom_precool.yaml -->
 ````diff
 diff --git a/bedroom_precool.yaml b/bedroom_precool.yaml
-index aa508ce..99d6e10 100644
+index aa508ce..18b232f 100644
 --- a/bedroom_precool.yaml
 +++ b/bedroom_precool.yaml
 @@ -1,12 +1,15 @@
@@ -1017,7 +1030,15 @@ index aa508ce..99d6e10 100644
        default: []
        selector:
          entity:
-@@ -581,28 +593,36 @@ action:
+@@ -569,6 +581,7 @@ action:
+       # --- AC capability discovery (never hard-code) ---
+       ac_min_temp: "{{ state_attr(ac_climate, 'min_temp') | float(16) }}"
+       ac_max_temp: "{{ state_attr(ac_climate, 'max_temp') | float(30) }}"
++      ac_temp_step: "{{ [state_attr(ac_climate, 'target_temp_step') | float(0.5), 0.1] | max }}"
+       ac_fan_modes: "{{ state_attr(ac_climate, 'fan_modes') | default([], true) }}"
+       ac_hvac_modes: "{{ state_attr(ac_climate, 'hvac_modes') | default([], true) }}"
+       # --- Vacation ---
+@@ -581,28 +594,36 @@ action:
          {% endif %}
  
    # =============================================
@@ -1060,7 +1081,7 @@ index aa508ce..99d6e10 100644
            - service: weather.get_forecasts
              continue_on_error: true
              target:
-@@ -643,18 +663,62 @@ action:
+@@ -643,18 +664,62 @@ action:
            {% endif %}
          {% endfor %}
          {{ ns.vals }}
@@ -1131,7 +1152,7 @@ index aa508ce..99d6e10 100644
          {% endif %}
  
    # =============================================
-@@ -697,6 +761,15 @@ action:
+@@ -697,6 +762,15 @@ action:
          {% else %}
            0
          {% endif %}
@@ -1147,7 +1168,7 @@ index aa508ce..99d6e10 100644
        # --- Lead-time formula (transparent linear blend), then clamp ---
        lead_raw: >-
          {{ (base_minutes | float)
-@@ -745,6 +818,33 @@ action:
+@@ -745,6 +819,33 @@ action:
        # ABOVE wake_time and slip past a string compare.
        earliest_turn_on_tod: >-
          {{ (today_at(bedtime) - timedelta(minutes=lead_cap_minutes | int)).strftime('%H:%M:%S') }}
@@ -1181,7 +1202,7 @@ index aa508ce..99d6e10 100644
        # --- Phase derivation (all time-of-day string comparisons) ---
        # The "day side" of the schedule runs wake -> bedtime_lock.
        on_day_side: "{{ wake_tod <= now_tod and now_tod < lock_tod }}"
-@@ -774,6 +874,20 @@ action:
+@@ -774,6 +875,24 @@ action:
        maintaining_setpoint: >-
          {{ [[ideal_temp | float - hall_offset | float, ac_min_temp | float] | max,
              ac_max_temp | float] | min }}
@@ -1193,16 +1214,20 @@ index aa508ce..99d6e10 100644
 +      # lock skips that night's auto-learn write. HA state contexts cannot
 +      # tell this automation's writes from the remote's (both carry no
 +      # parent/user on a time-pattern run — verified live 2026-09-09), so the
-+      # comparison is against values, not authorship. Single-lined: the list
-+      # crosses the variables boundary and is re-parsed as a list; a value
-+      # that arrives in any other shape counts as known (v1.0.x behaviour).
-+      known_setpoints: "{{ [effective_drive | float, maintaining_setpoint | float, [[maintaining_setpoint | float - correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min, [[maintaining_setpoint | float + correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min] }}"
++      # comparison is against values, not authorship — the values as the
++      # DEVICE holds them: the LG ThinQ integration sends int(value) to a unit
++      # whose target_temp_step is a whole degree (core lg_thinq/climate.py),
++      # so 21.5 is held as 21 there; on a 0.5-step unit every blueprint value
++      # is already on the grid. Single-lined: the list crosses the variables
++      # boundary and is re-parsed as a list; a value that arrives in any
++      # other shape counts as known (v1.0.x behaviour).
++      known_setpoints: "{% set ns = namespace(vals=[]) %}{% for v in [effective_drive | float, maintaining_setpoint | float, [[maintaining_setpoint | float - correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min, [[maintaining_setpoint | float + correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min] %}{% set ns.vals = ns.vals + [(v | int) if ac_temp_step | float >= 1 else v] %}{% endfor %}{{ ns.vals }}"
 +      setpoint_is_known: "{% set ns = namespace(ok=false) %}{% if known_setpoints is string or known_setpoints is not iterable %}{% set ns.ok = true %}{% else %}{% for k in known_setpoints %}{% if (current_setpoint | float - k | float) | abs <= 0.1 %}{% set ns.ok = true %}{% endif %}{% endfor %}{% endif %}{{ ns.ok }}"
 +      manual_setpoint: "{{ ac_is_running and current_setpoint_known and not setpoint_is_known }}"
        # --- Cool vs dry mode (only chosen while beeps are free) ---
        # Single-lined: this value feeds == comparisons and hvac_mode:; a
        # folded scalar would leave trailing whitespace on the rendered token.
-@@ -971,63 +1085,71 @@ action:
+@@ -971,63 +1090,71 @@ action:
                          {% else %}
                            {{ fan_normal }}
                          {% endif %}
@@ -1327,7 +1352,7 @@ index aa508ce..99d6e10 100644
  
                # ---------- BEDTIME_LOCK: one locking command + auto-learn write ----------
                - conditions:
-@@ -1079,11 +1201,13 @@ action:
+@@ -1079,11 +1206,13 @@ action:
                                      data:
                                        fan_mode: "{{ night_fan_mode }}"
                            # Auto-learn helper write — beep-free (an input_number,
@@ -1343,7 +1368,7 @@ index aa508ce..99d6e10 100644
                                  sequence:
                                    - variables:
                                        bedtime_error: "{{ warmest_bedroom | float - ideal_temp | float }}"
-@@ -1092,10 +1216,11 @@ action:
+@@ -1092,10 +1221,11 @@ action:
                                             + (learn_gain | float)
                                               * (bedtime_error | float)
                                               * (k_indoor | float) }}
@@ -1359,7 +1384,7 @@ index aa508ce..99d6e10 100644
                                    - service: input_number.set_value
                                      target:
                                        entity_id: "{{ lead_bias_entity }}"
-@@ -1180,13 +1305,15 @@ action:
+@@ -1180,13 +1310,15 @@ action:
              value_template: >-
                {{ enable_notifications and phase == 'DAY_OFF'
                   and forecast_window_temps | length == 0
@@ -1376,7 +1401,7 @@ index aa508ce..99d6e10 100644
                  The prediction is leaning on the indoor gap and solar term only
                  until one recovers.
                notification_id: "bedroom_precool_forecast_warning"
-@@ -1211,6 +1338,78 @@ action:
+@@ -1211,6 +1343,80 @@ action:
                  The bedtime lock uses {{ fan_normal }} instead.
                notification_id: "bedroom_precool_night_fan_unsupported"
  
@@ -1429,9 +1454,11 @@ index aa508ce..99d6e10 100644
 +              title: "Bedroom Pre-Cool — Manual Override"
 +              message: >
 +                {% if manual_off %}
-+                {{ ac_climate }} was switched off inside the pre-cool window;
-+                the blueprint leaves it off tonight (no bedtime lock, no
-+                deep-night check). Switch it on by hand to resume the pre-cool.
++                {{ ac_climate }} went off inside the pre-cool window; the
++                blueprint treats that as a manual off and leaves it off tonight
++                (no bedtime lock, no deep-night check). If nobody switched it
++                off (a cloud outage that came back reads the same way), switch
++                it on by hand — a running unit resumes the pre-cool at once.
 +                {% elif phase == 'NIGHT_HOLD' %}
 +                {{ ac_climate }} holds a setpoint of {{ current_setpoint }}°C
 +                that the blueprint did not set. It is respected until the
@@ -1455,7 +1482,7 @@ index aa508ce..99d6e10 100644
    # =============================================
    # STEP 8: DEBUG NOTIFICATION (manual run only)
    # =============================================
-@@ -1236,12 +1435,15 @@ action:
+@@ -1236,12 +1442,15 @@ action:
                  **ΔT indoor:** {{ delta_in }}°C
                  | **ΔT outdoor:** {{ delta_out }}°C
                  | **forecast_max:** {{ forecast_max }}°C
@@ -1471,7 +1498,7 @@ index aa508ce..99d6e10 100644
  
                  **lead:** {{ lead }} min
                  | **turn_on:** {{ turn_on_ts | float | timestamp_custom('%H:%M') }}
-@@ -1257,6 +1459,9 @@ action:
+@@ -1257,6 +1466,9 @@ action:
  
                  **AC limits:** min={{ ac_min_temp }}°C, max={{ ac_max_temp }}°C
  
@@ -1521,7 +1548,7 @@ Expected: `269faa50c05f69e33c4c99d9fc30c12782afe85eafecc5eaad694fd90ed8c442  lg_
 - [ ] **Step 2: Full suite GREEN**
 
 Run: `PY=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python; $PY -m pytest tests -q`
-Expected: `311 passed` (282 baseline − 2 hand-rolled instance tests removed + 31 new).
+Expected: `312 passed` (282 baseline − 2 hand-rolled instance tests removed + 32 new).
 
 - [ ] **Step 3: Offline deploy validation**
 
@@ -1539,7 +1566,7 @@ git add lg_ac_climate.yaml
 git commit -m "feat(lg-ac-climate): v1.3.0 — presence setback (widened band while everyone is away; guest-mode/EV/flap-guard hold comfort; immediate resume)"
 ```
 
-Step 6: Report `suite: PASS=311 FAIL=0`, the hash line, the dry-run line, the validate_config line.
+Step 6: Report `suite: PASS=312 FAIL=0`, the hash line, the dry-run line, the validate_config line.
 
 ### Artifact for Task 3
 
@@ -1758,12 +1785,12 @@ sha256sum requirements_bedroom_precool.md requirements_lg_ac_climate.md README.m
 ```
 Expected:
 ```
-c02f0a4cc75d5f93db58c88472cef1617e0ba69bd2ea481326d56e245ac342d8  requirements_bedroom_precool.md
+6cfdd5b0122c70ccf1782532241332e793aed974ed8f5fc29003b8d390d48347  requirements_bedroom_precool.md
 52c3b9ecb13dc879b1c5b5a2b9c8d05dc336bb2057d616b8f226af3c878c2b42  requirements_lg_ac_climate.md
 bb6d7dcce1d3c5baf90b413dc5553c130771ce4fa10c84e4c2db9628c08f4b3c  README.md
 ```
 
-- [ ] **Step 2: Suite still green** — Run: `PY=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python; $PY -m pytest tests -q` → `311 passed`.
+- [ ] **Step 2: Suite still green** — Run: `PY=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python; $PY -m pytest tests -q` → `312 passed`.
 
 - [ ] **Step 3: Commit (docs pillar)**
 
@@ -1772,14 +1799,14 @@ git add requirements_bedroom_precool.md requirements_lg_ac_climate.md README.md
 git commit -m "docs(climate): pre-cool v1.1.0 (helper range, daily backstop, manual override) + LG v1.3.0 presence setback requirements; README bullets"
 ```
 
-Step 4: Report the three hash lines and `suite: PASS=311 FAIL=0`.
+Step 4: Report the three hash lines and `suite: PASS=312 FAIL=0`.
 
 ### Artifacts for Task 4
 
 <!-- patch:requirements_bedroom_precool.md -->
 ````diff
 diff --git a/requirements_bedroom_precool.md b/requirements_bedroom_precool.md
-index 65bb5f7..7c30c7c 100644
+index 65bb5f7..29113d5 100644
 --- a/requirements_bedroom_precool.md
 +++ b/requirements_bedroom_precool.md
 @@ -40,7 +40,11 @@ observed outcome.
@@ -1804,7 +1831,7 @@ index 65bb5f7..7c30c7c 100644
  | BEDTIME-LOCK | bedtime − 1 min -> bedtime | Lock mode, maintaining setpoint and the night fan (`night_fan`, default low) + auto-learn write | ≤ 3 (typically 1–2) |
  | NIGHT-HOLD | bedtime -> deep-night check | Holds; blueprint issues nothing | 0 |
  | DEEP-NIGHT-CHECK | deep-night check -> +10 min | At most one corrective command | 0 or 1 |
-@@ -64,17 +68,47 @@ onward; earlier on the day side (from wake) a running unit is a leftover
+@@ -64,17 +68,51 @@ onward; earlier on the day side (from wake) a running unit is a leftover
  night hold and DAY-OFF turns it off. Consequence: a unit switched on by hand
  between wake and `bedtime − lead_cap_minutes` is switched off again within a
  minute (one beep) — to use it manually during the day, disable the
@@ -1836,10 +1863,14 @@ index 65bb5f7..7c30c7c 100644
 +- One persistent notification per override episode, dismissed at the boundary.
 +- HA state contexts cannot distinguish this automation's own writes from the
 +  remote's (both carry no parent/user on a time-pattern run), so detection is
-+  by value, not authorship. Known limits: a manual change *to* one of the
-+  blueprint's own values is re-asserted within a minute; a setpoint command
-+  that fails on the turn-on tick can leave the unit at a remembered value that
-+  reads as manual for that night (the notification shows it).
++  by value, not authorship (the values as the device holds them — a
++  whole-degree unit stores 21 for a commanded 21.5). Known limits: a manual
++  change *to* one of the blueprint's own values is re-asserted within a
++  minute; a setpoint command that fails on the turn-on tick can leave the
++  unit at a remembered value that reads as manual for that night; a cloud
++  outage that ends inside the window re-stamps the `off` state and reads as
++  a manual off for that night (the notification says so; switching the unit
++  on by hand resumes the pre-cool at once).
 +
  ## Prediction Model
  
@@ -1854,7 +1885,7 @@ index 65bb5f7..7c30c7c 100644
  delta_out       = max(0, max(forecast_max, outdoor_now) − ideal_temp)
  solar_load      = 0..1 from sun elevation + azimuth
  lead_bias       = self-learned correction (minutes)
-@@ -102,7 +136,8 @@ The blueprint self-learns one scalar — the lead-time bias — persisted in an
+@@ -102,7 +140,8 @@ The blueprint self-learns one scalar — the lead-time bias — persisted in an
  ```
  # at BEDTIME-LOCK, only if the AC was running this night:
  bedtime_error = warmest_bedroom − ideal_temp
@@ -1864,7 +1895,7 @@ index 65bb5f7..7c30c7c 100644
  ```
  
  Room too warm at bedtime -> bias rises (start earlier tomorrow); overcooled ->
-@@ -140,8 +175,10 @@ the bias and subsequent nights wash the outlier out.
+@@ -140,8 +179,10 @@ the bias and subsequent nights wash the outlier out.
  ### Safety
  1. Bedroom sensor failure: holds state, fires a persistent notification.
  2. AC entity unavailable: skips the tick, retries next minute.
@@ -1987,7 +2018,7 @@ Expected per run: `backup: deploy/<id>.prev.json`, `blueprint/save: ok`, `instan
 
 - [ ] **Step 4: LG away/hold proof (criterion 4)** — deploy a temporary variant with `away_delay_minutes: 0` (a copy of the instance JSON with that one value, via the deploy script), inject `person.martin_levie` and `person.savannah_levie` = `not_home` (`POST /api/states/<id>` with the current attributes), turn `input_boolean.security_ev_car_home` off (`input_boolean.turn_off`; guest and `security_presence_unreliable` are off), trigger the automation (`automation.trigger`, `skip_condition=true`), read the newest trace: `away_active: True`, `temp_low: 19.0`, `temp_high: 25.5`. Turn `input_boolean.climate_guest_mode` on, trigger again: `away_active: False`, `temp_low: 21.0`, `temp_high: 23.5`. Restore: guest off, EV latch on, re-inject both persons `home` (their trackers overwrite on the next report anyway), redeploy the committed instance JSON (`away_delay_minutes: 10`), confirm `on`. Note on #19 that the simulation touched the persons (4 flips, below the security flap guard's 6/h) and the EV latch.
 
-- [ ] **Step 5: Evidence on #19** — post the deploy output lines, the debug-dump fields, the trace excerpts and the criteria table (criteria 1–5 pending → PASS as observed) via `gh issue comment 19 -R leviemartin/Blueprints_Home --body-file …` (secret-scanned). Keep `<!-- observe:open -->` until criteria 1–5 pass (or Martin waives), then `observe:closed` → `gh_finish_session` in [9]; epic #18 stays open until #24 closes.
+- [ ] **Step 5: Evidence on #19 (and a note on #22 / #24)** — sessions #22 and #24 are observing the live v1.0.3; post one comment on each that the live blueprint moved to v1.1.0 at the deploy timestamp (their remaining criteria are read against v1.1.0 or waived by Martin). Then post the deploy output lines, the debug-dump fields, the trace excerpts and the criteria table (criteria 1–5 pending → PASS as observed) via `gh issue comment 19 -R leviemartin/Blueprints_Home --body-file …` (secret-scanned). Keep `<!-- observe:open -->` until criteria 1–5 pass (or Martin waives), then `observe:closed` → `gh_finish_session` in [9]; epic #18 stays open until #24 closes.
 
 ## Chain notes
 
