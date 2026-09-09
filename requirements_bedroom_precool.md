@@ -288,6 +288,18 @@ untouched since the reference, so the cutoff's own resume (which touches
 `last_updated`) leaves that fan at whatever percentage the cutoff restored
 it to, not the night percentage (spec §2.5).
 
+**Accepted residual (operator decision, 2026-09-09 — code board
+20260909-151815, R2C2-01):** a `fan.turn_on` this blueprint issues reaches
+the Tuya cloud 10–60 s after the call, so if an interlock sensor trips
+inside that lag the fan can run at its night speed (1 %) for roughly one
+tick plus delivery latency before `fans_unsafe_on` cuts it on the next
+tick; that cut cannot restore a cutoff resume the late write already
+cancelled. The operator accepted this bounded exposure rather than removing
+the kids-room fan from the instance, because the interlock and its clear
+hold block every ordinary case and the exposure is at the lowest fan speed.
+Escape hatch: removing that fan from `bedroom_fans` in the instance
+disables every write to it while leaving the code path intact.
+
 ## Experiments (v1.2.0)
 
 `night_fans` and `fan_assist` each independently gate the Bedroom Fans by

@@ -395,3 +395,22 @@ logic was already correct, so no RED was reachable for those two):
 
 STEP order after G3's new STEP 6c: `4 < 5c < 5 < 5b < 6 < 6a < 6b < 6c <
 7a...7e < 8` (6c added between 6b and 7a; no other step renumbered).
+
+### Accepted residual — operator decision, 2026-09-09 (board finding R2C2-01)
+
+Codex raised, and Opus confirmed in shape, that no in-blueprint check can
+cancel a `fan.turn_on` already in flight to the Tuya cloud (10–60 s delivery):
+if an interlock sensor trips inside that lag, the fan can run at its night
+speed (1 %) for about one tick plus delivery latency before `fans_unsafe_on`
+switches it off on the next tick, and that cut cannot restore a cutoff resume
+the late write cancelled. Its recommendation was to stop writing the shared
+kids-room fan entirely until a cutoff-owned command path exists.
+
+The operator (Martin) adjudicated on 2026-09-09: **both fans stay in
+`bedroom_fans`; the residual is accepted.** Reasoning recorded with the
+decision — the interlock and its clear hold block every ordinary case, and
+the exposure is one tick at the lowest fan speed. The finding is kept in the
+board report at P1 (a safety finding is never killed by a vote); this is an
+accepted risk, not a refutation. The escape hatch is one instance key:
+removing `fan.ceiling_fan_light_v2` from `bedroom_fans` stops every write to
+that fan while the code path stays in place.
