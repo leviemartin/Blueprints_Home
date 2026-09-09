@@ -1269,7 +1269,7 @@ action:
                             data:
                               fan_mode: "{{ precool_fan }}"
 
-              # ---------- BEDTIME_LOCK: one locking command + auto-learn write ----------
+              # ---------- BEDTIME_LOCK: park (+ off in fan-only) + auto-learn write ----------
               - conditions:
                   - condition: template
                     value_template: "{{ phase == 'BEDTIME_LOCK' }}"
@@ -1318,6 +1318,21 @@ action:
                                       entity_id: "{{ ac_climate }}"
                                     data:
                                       fan_mode: "{{ night_fan_mode }}"
+                          # v1.1.0 fan-only: the unit is now PARKED on the maintaining
+                          # setpoint + night fan (the calls above ran only if needed), so a
+                          # later night-guard turn_on restores exactly this state in one
+                          # command. Switch it off and hand the night to the fans — unless
+                          # the warmest room is already over the guard band, in which case
+                          # the guard would only switch it back on next tick (board R1-07):
+                          # then the unit simply stays on, as in AC-hold mode.
+                          - choose:
+                              - conditions:
+                                  - condition: template
+                                    value_template: "{{ fan_only_mode and not ((warmest_bedroom | float) > (ideal_temp | float + tolerance | float)) }}"
+                                sequence:
+                                  - service: climate.turn_off
+                                    target:
+                                      entity_id: "{{ ac_climate }}"
                           # Auto-learn helper write — beep-free (an input_number,
                           # not the AC). Only on a cooling night (AC running).
                           - choose:
@@ -1326,7 +1341,7 @@ action:
                                     value_template: "{{ enable_auto_learn and lead_bias_configured }}"
                                 sequence:
                                   - variables:
-                                      bedtime_error: "{{ warmest_bedroom | float - ideal_temp | float }}"
+                                      bedtime_error: "{{ warmest_bedroom | float - bedtime_target | float }}"
                                       new_bias_raw: >-
                                         {{ (lead_bias | float)
                                            + (learn_gain | float)

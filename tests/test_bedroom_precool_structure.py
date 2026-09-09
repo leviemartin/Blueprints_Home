@@ -591,3 +591,36 @@ def test_config_validation_rejects_a_settle_window_across_midnight(bp):
     assert render() is False                                             # live config
     assert render(bedtime="23:30:00", fan_settle_minutes=45) is True     # 00:15 next day
     assert render(bedtime="23:00:00", fan_settle_minutes=45) is False    # 23:45, same day
+
+
+# --- v1.1.0 T2: BEDTIME_LOCK fan-only branch (park, then off unless already over the band) ---
+
+def _services_in_phase(bp, phase):
+    steps = _service_steps(bp.get("action") or bp.get("actions"), [])
+    return [(c, s) for c, s in steps if any(f"phase == '{phase}'" in t for t in c)]
+
+
+def test_learner_error_uses_bedtime_target(bp):
+    lock = [s for c, s in _services_in_phase(bp, "BEDTIME_LOCK")]
+    learner = [s for s in lock if (s.get("service") or s.get("action")) == "input_number.set_value"]
+    assert len(learner) == 1
+    assert 'bedtime_error: "{{ warmest_bedroom | float - bedtime_target | float }}"' in BP_PATH.read_text()
+
+
+def test_bedtime_lock_switches_the_unit_off_only_in_fan_only_mode_after_parking_it_and_not_when_over_band(bp):
+    calls = _services_in_phase(bp, "BEDTIME_LOCK")
+    names = [(s.get("service") or s.get("action")) for c, s in calls]
+    assert names == ["climate.set_hvac_mode", "climate.set_temperature", "climate.set_fan_mode",
+                     "climate.turn_off", "input_number.set_value"], names
+    off_conds = [c for c, s in calls if (s.get("service") or s.get("action")) == "climate.turn_off"][0]
+    off_tmpl = [t for t in off_conds if "fan_only_mode" in t][0]
+    assert "tolerance" in off_tmpl and "warmest_bedroom" in off_tmpl          # board R1-07
+    assert any("ac_is_running" in t for t in off_conds)                        # cool-day lock stays a no-op
+    now = datetime(2026, 9, 9, 19, 29, tzinfo=TZ)
+    render = lambda **kw: _reparse(_env(now).from_string(off_tmpl).render(**_v110_ctx(**kw)).strip())
+    assert render(fan_only_mode=True, warmest_bedroom=23.0) is True
+    assert render(fan_only_mode=True, warmest_bedroom=24.6) is False           # already over the band: stay on
+    assert render(fan_only_mode=False, warmest_bedroom=23.0) is False
+    # ac_hold regression pin: none of the three park calls is gated on fan_only_mode
+    for c, s in calls[:3]:
+        assert not any("fan_only_mode" in t for t in c)
