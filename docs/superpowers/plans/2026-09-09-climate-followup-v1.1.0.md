@@ -1,5 +1,7 @@
 # Climate blueprints follow-up — Bedroom Sleep Pre-Cool v1.1.0 + LG AC Climate Control v1.3.0 — Implementation Plan (epic #18, session #19)
 
+> **Status: Deployed 2026-09-09 13:17Z — observation open (issue #19 `<!-- observe:open -->`).** T1–T4 shipped as byte-identical applications of the pinned diffs (`eba0e51`, `ef50405`, `d253748`, `2c12291`) + the whole-branch-review fix wave (`dd37901`, `beae5c9`) + the code-board fix wave (`9a9a1b8`, `a2aa32e`, `a1930f6`); merged via PR #28 (`1b29202`, `Session: #19`); both instances deployed with `scripts/deploy-blueprint.sh` at 13:17Z and `on`. Design board 20260909-113000 PASS (cycle 2) · code board 20260909-122828 PASS. Task 5 evidence on #19: criteria 3 and 4 PASS, criterion 5's in-window part PASS; criteria 1, 2 and the 24-h log part pending (first bedtime lock 19:29 CEST, 24 h at 2026-09-10 13:17Z). The shipped files are authoritative over the inline blocks (see the execution record).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Every code artifact below is a **verbatim unified diff** that was scratch-built, run RED against the shipped files and GREEN on the result, validated by HA `validate_config`, and re-applied onto a clean checkout to the pinned sha256 — a task is done only when its file hashes match.
 
 **Goal:** Ship `bedroom_precool.yaml` v1.1.0 (auto-learn write clamped to the helper's live range + state-driven notice; real daily-forecast backstop replacing the dead `forecast` attribute read; manual setpoint / manual off respected until the next phase boundary) and `lg_ac_climate.yaml` v1.3.0 (presence setback: widened comfort band while everyone is away, guest-mode / EV / flap-guard hold comfort, immediate resume), with tests, both migrated instance configs, docs, and a live deploy of both instances.
@@ -68,7 +70,7 @@ Engineering constraints:
 - [x] Empirical probes: both climate states last written by their automations' time-pattern runs carry `context.parent_id null, user_id null` (context inspection rejected); `climate.bedrooms` last_changed 05:15Z / last_updated 07:59Z (attribute-only pushes do not move `last_changed`); HA stores 5 traces per automation; `this.last_changed` renders inside an automation's action `variables:` at runtime (throwaway automation created, triggered, verified `up_ts` = the entity's last_changed, deleted — board R1-02); live renders of `round(0, 'ceil') | int`, `as_datetime(x, none)`, `float(none)` on junk, `set` inside a single-lined `if`, the state-age expression and the indicator loop all match the harness.
 - [x] Baseline suite green: `282 passed` on `5c5a08b`.
 - [x] Scratch run of the inline artifacts in a throwaway repo copy: full suite **316 passed**; RED at the Task 1 state (tests + instance JSON patched, blueprints unchanged) **37 failed / 66 passed** in the two changed test files (every new blueprint pin red; only the pre-cool instance test — which needs nothing from the blueprint — is already green); `scripts/deploy-blueprint.sh --dry-run` green for both instances (observed output: `9 inputs` / `30 inputs`); HA `validate_config` on both input-substituted configs: `{"triggers":{"valid":true},"actions":{"valid":true}}`; live `/api/template` renders match the harness for `bitwise_and`, `as_local` date match, `states[entity]` item access (none when missing), `state_attr('', …)` → default, `expand(...)` last_changed max, the list literal, the string-form guard, the persons loop and the indicator `selectattr`; all nine diffs re-applied with `git apply` onto a clean checkout reproduce the pinned sha256s.
-- [ ] At T5 time only: confirm `git rev-parse HEAD` = `origin/main`, re-read both live instance configs (the deploy script backs them up to `deploy/<id>.prev.json`, gitignored), re-check the helper range live.
+- [x] At T5 time only: confirm `git rev-parse HEAD` = `origin/main`, re-read both live instance configs (the deploy script backs them up to `deploy/<id>.prev.json`, gitignored), re-check the helper range live.
 
 **Observation criteria ([8] applies — deploying session; issue #19 carries `<!-- observe:open -->`):**
 1. `automation.bedroom_sleep_pre_cool_v1_0_0` and `automation.lg_ac_climate_control_v1_0_0` (entity ids unchanged; aliases v1.1.0 / v1.3.0) are `on` immediately after deploy and still `on` 24 h later.
@@ -97,7 +99,7 @@ Engineering constraints:
 - Consumes: `bedroom_precool.yaml` v1.0.3 / `lg_ac_climate.yaml` v1.2.0 (RED now, GREEN after T2/T3); `tests/test_deploy_blueprint_script.py::run` (unchanged).
 - Produces: the variable names T2/T3 must emit — pre-cool STEP 2b `weather_daily_supported, forecast_daily_due, forecast_daily_list, forecast_daily_high, forecast_daily_ok` (and `forecast_max` rewritten); STEP 2c `bias_helper_min, bias_helper_max, bias_floor, bias_ceiling, bias_helper_range_ok, earliest_turn_on_ts, automation_up_since_ts, ac_off_since_ts, vacation_changed_ts, manual_off, known_setpoints, setpoint_is_known, manual_setpoint`; notification ids `bedroom_precool_bias_helper_range`, `bedroom_precool_manual_override`; LG top-level `temp_low_cfg, temp_high_cfg, presence_entities, home_indicators, away_delta, away_delay`, STEP 1 `presence_enabled, away_delay_sec, persons_all_away, home_indicator_on, away_active, temp_low, temp_high`, trigger ids `presence_return, indicator_on`. The two JSON files are what T5 deploys.
 
-- [ ] **Step 1: Extract and apply the four diffs**
+- [x] **Step 1: Extract and apply the four diffs**
 
 ```bash
 cd /home/martin/AI/projects/Blueprints_Home && git status --short   # expect only the untracked .stack-b marker + plan/spec/research docs
@@ -120,7 +122,7 @@ for p in /tmp/claude-1000/-home-martin/plan-patches/tests__test_bedroom_precool_
 done
 ```
 
-- [ ] **Step 2: Verify the pinned hashes**
+- [x] **Step 2: Verify the pinned hashes**
 
 ```bash
 sha256sum tests/test_bedroom_precool_structure.py tests/test_lg_ac_climate_structure.py deploy/bedroom_precool_1779553673971.json deploy/lg_ac_climate_1775578219942.json
@@ -134,12 +136,12 @@ fbb030f07891a019016ec6af4fc10ef90b811103e2fe5d89175754666a934f2d  tests/test_lg_
 ```
 A mismatch means the diff did not apply cleanly (stale base) — stop and report; never hand-edit toward the hash.
 
-- [ ] **Step 3: Run the two changed test files — expect RED**
+- [x] **Step 3: Run the two changed test files — expect RED**
 
 Run: `PY=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python; $PY -m pytest tests/test_bedroom_precool_structure.py tests/test_lg_ac_climate_structure.py -q`
 Expected: `37 failed, 66 passed` — the failing set is exactly: pre-cool `test_version_bumped, test_rendered_new_bias_is_clamped_to_the_helpers_live_range, test_bias_range_variables_are_defined_after_lead_bias_and_before_the_lock, test_bias_helper_range_notice_is_state_driven, test_auto_learn_write_is_clamped_and_skipped_on_an_override_night, test_dead_forecast_attribute_read_is_gone, test_rendered_weather_daily_supported_reads_feature_bit_1, test_rendered_forecast_daily_high_picks_todays_entry_by_local_date, test_rendered_hourly_window_skips_malformed_entries, test_rendered_forecast_max_prefers_hourly_then_daily_then_outdoor, test_rendered_forecast_daily_due_only_when_the_hourly_window_is_empty_on_the_day_side, test_daily_forecast_call_is_gated_and_error_tolerant, test_forecast_variables_are_defined_in_dependency_order, test_forecast_unavailable_notice_also_requires_the_daily_backstop_to_be_absent, test_rendered_manual_setpoint_is_any_value_the_blueprint_could_not_have_commanded, test_rendered_known_setpoints_are_the_values_the_device_holds, test_rendered_commanded_setpoints_are_quantised_at_the_source, test_rendered_setpoint_is_known_treats_a_non_list_as_known, test_rendered_manual_off_only_for_an_off_transition_inside_the_adoption_window, test_rendered_manual_off_survives_a_missing_climate_state, test_precool_commands_are_gated_on_the_override_flags_and_the_boundaries_are_not, test_manual_override_notice_is_state_driven_and_phase_gated, test_override_variables_are_defined_in_dependency_order` (23) and LG `test_version_bumped, test_trigger_roster, test_validation_gate_covers_margin, test_presence_inputs_are_additive_with_defaults, test_presence_variable_mappings_and_cfg_rename, test_presence_triggers, test_presence_variables_precede_every_band_consumer, test_rendered_persons_all_away_requires_everyone_away_for_the_delay, test_rendered_home_indicator_on, test_rendered_away_active_and_effective_band, test_rendered_presence_chain_reaches_target_mode, test_rendered_presence_chain_reaches_the_commanded_setpoint, test_description_documents_presence_setback, test_lg_instance_passes_the_deploy_dry_run_and_wires_presence` (14). `test_precool_instance_values` already passes (the pre-cool instance needs nothing new from the blueprint); the LG instance dry-run fails until Task 3 declares the presence inputs.
 
-- [ ] **Step 4: Commit (tests + instance pillar)**
+- [x] **Step 4: Commit (tests + instance pillar)**
 
 ```bash
 git add tests/test_bedroom_precool_structure.py tests/test_lg_ac_climate_structure.py deploy/bedroom_precool_1779553673971.json deploy/lg_ac_climate_1775578219942.json
@@ -1079,7 +1081,7 @@ index 8713f40..da51d60 100644
 - Consumes: the T1 test names/variables; `deploy/bedroom_precool_1779553673971.json`.
 - Produces: `bedroom_precool.yaml` v1.1.0 with every variable listed under T1 "Produces" (pre-cool half, plus `ac_temp_step` and `ac_state_age_sec` in STEP 2a and `bias_range_valid` in STEP 2c), the wrapped PRECOOL branch (`{{ not manual_setpoint and not manual_off }}`), the learn-write gate `{{ enable_auto_learn and lead_bias_configured and not manual_setpoint and bias_range_valid }}`, `new_bias` clamped to `bias_floor`/`bias_ceiling`, notices 7d/7e.
 
-- [ ] **Step 1: Extract and apply the diff**
+- [x] **Step 1: Extract and apply the diff**
 
 ```bash
 cd /home/martin/AI/projects/Blueprints_Home
@@ -1096,17 +1098,17 @@ sha256sum bedroom_precool.yaml
 ```
 Expected: `8d8feb6ba46f157232efc9a9debd4b65fb1381ee94c1899253a9849048af855f  bedroom_precool.yaml`
 
-- [ ] **Step 2: Pre-cool tests GREEN**
+- [x] **Step 2: Pre-cool tests GREEN**
 
 Run: `PY=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python; $PY -m pytest tests/test_bedroom_precool_structure.py -q`
 Expected: `44 passed` (every pre-cool pin: the 24 new ones plus the unchanged phase/boundary tests; the LG file is still RED until Task 3).
 
-- [ ] **Step 3: Offline deploy validation**
+- [x] **Step 3: Offline deploy validation**
 
 Run: `PYTHON=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python scripts/deploy-blueprint.sh --dry-run bedroom_precool.yaml leviemartin/bedroom_precool.yaml deploy/bedroom_precool_1779553673971.json`
 Expected: `blueprint: Bedroom Sleep Pre-Cool v1.1.0`, `instance deploy/bedroom_precool_1779553673971.json: ok (id 1779553673971, 9 inputs)`, `dry-run: validation passed, nothing deployed`.
 
-- [ ] **Step 4: HA schema validation of the input-substituted config (read-only WS call)**
+- [x] **Step 4: HA schema validation of the input-substituted config (read-only WS call)**
 
 ```bash
 source ~/.config/hass-cli/env
@@ -1132,7 +1134,7 @@ rm -f /tmp/claude-1000/-home-martin/precool_substituted.json
 ```
 Expected: `{"triggers":{"valid":true,"error":null},"actions":{"valid":true,"error":null}}`
 
-- [ ] **Step 5: Commit (code pillar)**
+- [x] **Step 5: Commit (code pillar)**
 
 ```bash
 git add bedroom_precool.yaml
@@ -1769,7 +1771,7 @@ index aa508ce..cd3f062 100644
 - Consumes: the T1 LG test names; `deploy/lg_ac_climate_1775578219942.json`.
 - Produces: `lg_ac_climate.yaml` v1.3.0 — inputs `presence_entities, home_indicators, away_setback_delta, away_delay_minutes`; triggers `presence_return`, `indicator_on`; top-level `temp_low_cfg`/`temp_high_cfg` + four presence variables; STEP 1 `presence_enabled … temp_high` before `outdoor_temp_raw`.
 
-- [ ] **Step 1: Extract and apply the diff**
+- [x] **Step 1: Extract and apply the diff**
 
 ```bash
 cd /home/martin/AI/projects/Blueprints_Home
@@ -1786,21 +1788,21 @@ sha256sum lg_ac_climate.yaml
 ```
 Expected: `5aac8bbd1486ec9a7dca620d8bb26cb392ecd9d174637a6a45af364a77e9ea31  lg_ac_climate.yaml`
 
-- [ ] **Step 2: Full suite GREEN**
+- [x] **Step 2: Full suite GREEN**
 
 Run: `PY=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python; $PY -m pytest tests -q`
 Expected: `316 passed` (282 baseline − 2 hand-rolled instance tests removed + 36 new).
 
-- [ ] **Step 3: Offline deploy validation**
+- [x] **Step 3: Offline deploy validation**
 
 Run: `PYTHON=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python scripts/deploy-blueprint.sh --dry-run lg_ac_climate.yaml leviemartin/lg_ac_climate.yaml deploy/lg_ac_climate_1775578219942.json`
 Expected (observed on the scratch build): `blueprint: LG AC Climate Control v1.3.0`, `instance deploy/lg_ac_climate_1775578219942.json: ok (id 1775578219942, 30 inputs)`, `dry-run: validation passed, nothing deployed`.
 
-- [ ] **Step 4: HA schema validation (same substitution script as Task 2 Step 4 with `lg_ac_climate.yaml deploy/lg_ac_climate_1775578219942.json`, output file `/tmp/claude-1000/-home-martin/lg_substituted.json`)**
+- [x] **Step 4: HA schema validation (same substitution script as Task 2 Step 4 with `lg_ac_climate.yaml deploy/lg_ac_climate_1775578219942.json`, output file `/tmp/claude-1000/-home-martin/lg_substituted.json`)**
 
 Expected: `{"triggers":{"valid":true,"error":null},"actions":{"valid":true,"error":null}}`
 
-- [ ] **Step 5: Commit (code pillar)**
+- [x] **Step 5: Commit (code pillar)**
 
 ```bash
 git add lg_ac_climate.yaml
@@ -2063,7 +2065,7 @@ index 8156cf1..eb50224 100644
 - Modify: `requirements_lg_ac_climate.md` (presence entities; Climate-7; Overrides-4; Safety-9)
 - Modify: `README.md` (two pre-cool feature bullets; the README has no LG AC Climate Control section — none is added)
 
-- [ ] **Step 1: Extract and apply the three diffs**
+- [x] **Step 1: Extract and apply the three diffs**
 
 ```bash
 cd /home/martin/AI/projects/Blueprints_Home
@@ -2087,9 +2089,9 @@ c165e6040c5bc6ff884bad9630f9652cadf345b6208672c8e4bc65fe6139ba28  requirements_b
 bb6d7dcce1d3c5baf90b413dc5553c130771ce4fa10c84e4c2db9628c08f4b3c  README.md
 ```
 
-- [ ] **Step 2: Suite still green** — Run: `PY=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python; $PY -m pytest tests -q` → `316 passed`.
+- [x] **Step 2: Suite still green** — Run: `PY=~/projects/ceiling-fan-hue-blueprint/.venv/bin/python; $PY -m pytest tests -q` → `316 passed`.
 
-- [ ] **Step 3: Commit (docs pillar)**
+- [x] **Step 3: Commit (docs pillar)**
 
 ```bash
 git add requirements_bedroom_precool.md requirements_lg_ac_climate.md README.md
@@ -2309,7 +2311,7 @@ index 02710af..fd6c298 100644
 
 **Shell invariants for this task:** no shell script is written or edited — `scripts/deploy-blueprint.sh` is the pinned TCB file and keeps its `set -euo pipefail` (a deploy must fail fast); every command below is run from the repo root with `source ~/.config/hass-cli/env` in the same shell; no output containing the token is pasted into an issue body (the deploy script never prints it). **No production security entity is written** (board R2-A-04): the presence simulation uses isolated test trackers; `person.*`, `input_boolean.security_ev_car_home` and `input_boolean.security_presence_unreliable` are read only — the EV-charger guard (`sec_ev_cutoff` / `sec_ev_absence`) is live and would cut the plug on a faked latch.
 
-- [ ] **Step 1: Pre-checks**
+- [x] **Step 1: Pre-checks**
 
 ```bash
 cd /home/martin/AI/projects/Blueprints_Home && git fetch origin && git rev-parse HEAD origin/main   # must be equal (merged)
@@ -2325,7 +2327,7 @@ sleep 2; hass-cli -o json state get input_boolean.climate_guest_mode | jq -c '(.
 Expected: `{"entity_id":"input_boolean.climate_guest_mode","state":"off"}`. If the entity id differs (device-derived-id lesson), rename it via `config/entity_registry/update` (`new_entity_id`) before deploying — the instance JSON names this exact id.
 Both dry-runs green (Task 2/3 Step 3 commands).
 
-- [ ] **Step 2: Immutable pre-deploy copies + pinned rollback (board R2-A-05)**
+- [x] **Step 2: Immutable pre-deploy copies + pinned rollback (board R2-A-05)**
 
 ```bash
 B=/home/martin/AI/reviews/deploy-19-live-before-$(date -u +%Y%m%dT%H%M%SZ); mkdir -p "$B"
@@ -2335,7 +2337,7 @@ sha256sum "$B"/*; chmod -w "$B"/*
 ```
 These copies are never overwritten by later deploys (the deploy script's `deploy/<id>.prev.json` is a rolling backup that Step 4's temporary deploy replaces). Rollback for either blueprint = `blueprint/save` of the copied YAML (same WS frame the deploy script uses) + `POST /api/config/automation/config/<id>` with the copied instance JSON + confirm `state=on` in `/api/states`; the pre-change git revision is `5c5a08b` (main before this session), not `main~1`.
 
-- [ ] **Step 3: Deploy both blueprints**
+- [x] **Step 3: Deploy both blueprints**
 
 ```bash
 scripts/deploy-blueprint.sh bedroom_precool.yaml leviemartin/bedroom_precool.yaml deploy/bedroom_precool_1779553673971.json
@@ -2343,11 +2345,11 @@ scripts/deploy-blueprint.sh lg_ac_climate.yaml leviemartin/lg_ac_climate.yaml de
 ```
 Expected per run: `backup: deploy/<id>.prev.json`, `blueprint/save: ok`, `instance <id>: config written`, `automation.… state=on …`, `deploy complete`.
 
-- [ ] **Step 4: Pre-cool read-path proof** — trigger a manual Run (`hass-cli service call automation.trigger --arguments entity_id=automation.bedroom_sleep_pre_cool_v1_0_0,skip_condition=true`), read `persistent_notification` `bedroom_precool_debug`: it lists `daily high`, `helper range … (ok=True)`, `manual: setpoint=False …, off=False` (the `off=False` here is only meaningful on a tick after 15:32 local — criterion 5 carries the real `manual_off` evidence). Then read the next tick's trace (`hass-cli -o json raw ws trace/list --json '{"domain":"automation","item_id":"1779553673971"}'` → newest run_id → `trace/get`): `script_execution: finished`; on a non-`/15` day-side tick `forecast_daily_high` numeric + `forecast_daily_ok: True`; `automation_up_since_ts` a non-zero float (the HA-start guard is live, board R1-02); no `bedroom_precool_bias_helper_range` notification exists.
+- [x] **Step 4: Pre-cool read-path proof** — trigger a manual Run (`hass-cli service call automation.trigger --arguments entity_id=automation.bedroom_sleep_pre_cool_v1_0_0,skip_condition=true`), read `persistent_notification` `bedroom_precool_debug`: it lists `daily high`, `helper range … (ok=True)`, `manual: setpoint=False …, off=False` (the `off=False` here is only meaningful on a tick after 15:32 local — criterion 5 carries the real `manual_off` evidence). Then read the next tick's trace (`hass-cli -o json raw ws trace/list --json '{"domain":"automation","item_id":"1779553673971"}'` → newest run_id → `trace/get`): `script_execution: finished`; on a non-`/15` day-side tick `forecast_daily_high` numeric + `forecast_daily_ok: True`; `automation_up_since_ts` a non-zero float (the HA-start guard is live, board R1-02); no `bedroom_precool_bias_helper_range` notification exists.
 
-- [ ] **Step 5: LG away / hold proof on ISOLATED entities (criterion 4; board R2-A-04, R2-A-08, R1D-01)** — the path below was probed live on 2026-09-09 12:13Z (create → `unknown`; REST-injected `not_home` persists and renders with its own `last_changed`; delete removes the entity). Create two throwaway persons with no trackers: `hass-cli -o json raw ws person/create --json '{"name":"climate_test_a","device_trackers":[],"user_id":null}'` (and `climate_test_b`) → entities `person.climate_test_a` / `person.climate_test_b`; a person without trackers keeps a REST-injected state until HA restarts. Inject `not_home` on both: `curl -X POST "$HASS_SERVER/api/states/person.climate_test_a" --data '{"state":"not_home","attributes":{"friendly_name":"climate_test_a","id":"climate_test_a"}}'` (same for b). Deploy a temporary variant of the instance JSON (a copy with `presence_entities: [person.climate_test_a, person.climate_test_b]`, `home_indicators: [input_boolean.climate_guest_mode]`, `away_delay_minutes: 10` unchanged) with the deploy script. After ≥ 10 min (the real debounce), read the newest `/10` trace: `persons_all_away: True`, `away_active: True`, `temp_low: 19.0`, `temp_high: 25.5`. Then turn `input_boolean.climate_guest_mode` on WITHOUT triggering by hand and read the trace the `indicator_on` trigger produced (trigger id in the trace header): `home_indicator_on: True`, `away_active: False`, `temp_low: 21.0`, `temp_high: 23.5`. Guest off; inject `home` on `person.climate_test_a` → read the `presence_return` trace: `persons_all_away: False`. Climate commands are not exercisable in this weather (the room sits inside both bands with the unit off) — record it as such, like the #15 fan-stage criterion. Cleanup (verified path): redeploy the committed instance JSON (real persons + three indicators), confirm `on`; `hass-cli -o json raw ws person/delete --json '{"person_id":"climate_test_a"}'` (and b) → `/api/states/person.climate_test_*` returns "Entity not found". Side effect while the throwaway persons exist: the security resolver's roster check (`states.person | count == security_expected_residents`) reads 3 persons, which only fails toward *not arming* — auto-Away is off anyway; no security entity is written. The real wiring is proven by the committed JSON's dry-run + a read-only `/api/template` render of the live `persons_all_away` / `home_indicator_on` expressions against `person.martin_levie` / `person.savannah_levie` and the three indicators.
+- [x] **Step 5: LG away / hold proof on ISOLATED entities (criterion 4; board R2-A-04, R2-A-08, R1D-01)** — the path below was probed live on 2026-09-09 12:13Z (create → `unknown`; REST-injected `not_home` persists and renders with its own `last_changed`; delete removes the entity). Create two throwaway persons with no trackers: `hass-cli -o json raw ws person/create --json '{"name":"climate_test_a","device_trackers":[],"user_id":null}'` (and `climate_test_b`) → entities `person.climate_test_a` / `person.climate_test_b`; a person without trackers keeps a REST-injected state until HA restarts. Inject `not_home` on both: `curl -X POST "$HASS_SERVER/api/states/person.climate_test_a" --data '{"state":"not_home","attributes":{"friendly_name":"climate_test_a","id":"climate_test_a"}}'` (same for b). Deploy a temporary variant of the instance JSON (a copy with `presence_entities: [person.climate_test_a, person.climate_test_b]`, `home_indicators: [input_boolean.climate_guest_mode]`, `away_delay_minutes: 10` unchanged) with the deploy script. After ≥ 10 min (the real debounce), read the newest `/10` trace: `persons_all_away: True`, `away_active: True`, `temp_low: 19.0`, `temp_high: 25.5`. Then turn `input_boolean.climate_guest_mode` on WITHOUT triggering by hand and read the trace the `indicator_on` trigger produced (trigger id in the trace header): `home_indicator_on: True`, `away_active: False`, `temp_low: 21.0`, `temp_high: 23.5`. Guest off; inject `home` on `person.climate_test_a` → read the `presence_return` trace: `persons_all_away: False`. Climate commands are not exercisable in this weather (the room sits inside both bands with the unit off) — record it as such, like the #15 fan-stage criterion. Cleanup (verified path): redeploy the committed instance JSON (real persons + three indicators), confirm `on`; `hass-cli -o json raw ws person/delete --json '{"person_id":"climate_test_a"}'` (and b) → `/api/states/person.climate_test_*` returns "Entity not found". Side effect while the throwaway persons exist: the security resolver's roster check (`states.person | count == security_expected_residents`) reads 3 persons, which only fails toward *not arming* — auto-Away is off anyway; no security entity is written. The real wiring is proven by the committed JSON's dry-run + a read-only `/api/template` render of the live `persons_all_away` / `home_indicator_on` expressions against `person.martin_levie` / `person.savannah_levie` and the three indicators.
 
-- [ ] **Step 6: Evidence on #19 (and a note on #22 / #24)** — sessions #22 and #24 are observing the live v1.0.3; post one comment on each that the live blueprint moved to v1.1.0 at the deploy timestamp (their remaining criteria are read against v1.1.0 or waived by Martin). Then post the deploy output lines, the debug-dump fields, the trace excerpts and the criteria table (criteria 1–5 pending → PASS as observed) on #19 via `gh issue comment 19 -R leviemartin/Blueprints_Home --body-file …` (secret-scanned). Keep `<!-- observe:open -->` until criteria 1–5 pass (or Martin waives), then `observe:closed` → `gh_finish_session` in [9]; epic #18 stays open until #24 closes.
+- [x] **Step 6: Evidence on #19 (and a note on #22 / #24)** — sessions #22 and #24 are observing the live v1.0.3; post one comment on each that the live blueprint moved to v1.1.0 at the deploy timestamp (their remaining criteria are read against v1.1.0 or waived by Martin). Then post the deploy output lines, the debug-dump fields, the trace excerpts and the criteria table (criteria 1–5 pending → PASS as observed) on #19 via `gh issue comment 19 -R leviemartin/Blueprints_Home --body-file …` (secret-scanned). Keep `<!-- observe:open -->` until criteria 1–5 pass (or Martin waives), then `observe:closed` → `gh_finish_session` in [9]; epic #18 stays open until #24 closes.
 
 ## Execution record — SDD Tasks 1–4 + final whole-branch review (2026-09-09)
 
