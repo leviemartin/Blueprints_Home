@@ -1,14 +1,19 @@
 blueprint:
   name: "Bedroom Sleep Pre-Cool v1.1.0"
   description: >
-    **Version: 1.1.0** — ceiling-fan coordination: night_mode fan_only (park,
-    off at the lock unless already over the band, one-beep night guard with
-    the running unit as latch and a 15-minute settle check), pre-chill offset
-    that the lead prediction and the learner aim at, bedroom fan list written
-    under one edge-triggered rule (last_updated touch detection, interlock
-    sensors with a clear hold, live re-check before every call), day-parity
-    switches for the fan-assist / night-fan experiments. History: v1.0.3
-    `night_fan` input (default low): the fan mode locked in at bedtime,
+    **Version: 1.1.0** — manual override: a setpoint changed on the unit during
+    the pre-cool is respected until the bedtime lock, and a unit switched off
+    inside the pre-cool window stays off; a real daily forecast backs the
+    prediction between hourly fetches; the auto-learn write is clamped to the
+    helper's own range, with a notice while that range is narrower than
+    −60…120. Also integrates ceiling-fan coordination: night_mode fan_only
+    (park, off at the lock unless already over the band, one-beep night guard
+    with the running unit as latch and a 15-minute settle check), pre-chill
+    offset that the lead prediction and the learner aim at, bedroom fan list
+    written under one edge-triggered rule (last_updated touch detection,
+    interlock sensors with a clear hold, live re-check before every call),
+    day-parity switches for the fan-assist / night-fan experiments. History:
+    v1.0.3 `night_fan` input (default low): the fan mode locked in at bedtime,
     matched case-insensitively against the unit's modes, with a notice when
     the unit lacks it. v1.0.2 wake-time turn-off works again (running-unit
     latch bounded to bedtime − lead cap; a manual daytime turn-on ends within
@@ -43,6 +48,11 @@ blueprint:
     - Night fan input (default low): the fan mode locked in at bedtime, matched
       by exact name (case-insensitive) to the unit's modes, with a notice if the
       unit lacks it
+    - Manual override (v1.1.0): a setpoint changed on the unit during the
+      pre-cool is left alone until the bedtime lock; a unit switched off inside
+      the pre-cool window stays off for the night; one notice per override
+    - Daily forecast backstop (v1.1.0): between hourly fetches the prediction
+      uses the day's forecast high, not the live outdoor reading alone
     - Opt-in humidity-aware dry mode (default off — cool is the proven path)
     - Idempotent service calls — a stray command is a stray beep
     - Vacation toggle, manual-run debug notification
@@ -65,6 +75,8 @@ blueprint:
     - A weather entity that provides an HOURLY forecast — Met.no or Open-Meteo
       (Buienradar has no hourly forecast and will not work)
     - An input_number helper to persist the self-learned lead-time bias
+      (min −60 or lower, max 120 or higher, step 1 — the write is clamped to
+      the helper's range and a notice is raised while it is narrower)
 
   domain: automation
   input:
@@ -127,8 +139,10 @@ blueprint:
       description: >
         An input_number helper the blueprint uses to persist its self-learned
         lead-time correction (minutes) across restarts. Create one via
-        Settings -> Devices & Services -> Helpers -> Number, range roughly
-        -60 to 120, step 1. Required when Enable Auto-Learn is on.
+        Settings -> Devices & Services -> Helpers -> Number with min -60 (or
+        lower), max 120 (or higher), step 1. The blueprint clamps its write
+        to the helper's range and warns while the range is narrower.
+        Required when Enable Auto-Learn is on.
       default: []
       selector:
         entity:
@@ -763,6 +777,10 @@ action:
       # --- AC capability discovery (never hard-code) ---
       ac_min_temp: "{{ state_attr(ac_climate, 'min_temp') | float(16) }}"
       ac_max_temp: "{{ state_attr(ac_climate, 'max_temp') | float(30) }}"
+      ac_temp_step: "{{ [state_attr(ac_climate, 'target_temp_step') | float(0.5), 0.1] | max }}"
+      # Seconds since the unit's last STATE (hvac-mode) change — the age of its
+      # current running or off spell. Attribute-only pushes do not move it.
+      ac_state_age_sec: "{{ (as_timestamp(now()) - (as_timestamp(states[ac_climate].last_changed) | float(0))) if states[ac_climate] is not none else 0 }}"
       ac_fan_modes: "{{ state_attr(ac_climate, 'fan_modes') | default([], true) }}"
       ac_hvac_modes: "{{ state_attr(ac_climate, 'hvac_modes') | default([], true) }}"
       # --- Vacation ---
@@ -804,28 +822,36 @@ action:
         {{ as_timestamp(s[0].last_changed) if s | length > 0 else 0 }}
 
   # =============================================
-  # STEP 2b: FORECAST FETCH (periodic, ~every 15 min during DAY-OFF)
+  # STEP 2b: FORECAST FETCH
   # weather.get_forecasts is the PLURAL current action — the singular
-  # weather.get_forecast was deprecated. Fetched into a response
-  # variable, then forecast_max is templated from it.
+  # weather.get_forecast was deprecated. Both calls read HA's cached forecast
+  # (Met.no refreshes upstream every 55-65 min), so they are cheap. The HOURLY
+  # window (now -> bedtime) is fetched near a 15-minute boundary; a DAILY
+  # forecast backs every other day-side tick, and any tick whose hourly
+  # window comes back empty. Fetched into response variables, then
+  # forecast_max is templated from them.
   # =============================================
   - variables:
       # Fetch only near a 15-minute boundary (minute mod 15 == 0) AND only
       # during the daytime wake -> bedtime window — the forecast result is
       # consumed by DAY_OFF alone, so fetching it overnight is pure waste.
-      # Between fetches the live outdoor sensor carries the prediction.
       forecast_fetch_due: >-
         {{ (now().minute | int) % 15 == 0
            and now().strftime('%H:%M:%S') >= wake_time
            and now().strftime('%H:%M:%S') < bedtime }}
+      # FORECAST_DAILY is bit 1 of the weather entity's supported_features
+      # (FORECAST_HOURLY = 2, FORECAST_TWICE_DAILY = 4). get_forecasts RAISES
+      # for a type the entity lacks, so the daily call is gated on the bit.
+      weather_daily_supported: >-
+        {{ (state_attr(weather_entity, 'supported_features') | int(0)) | bitwise_and(1) > 0 }}
   - choose:
       - conditions:
           - condition: template
             value_template: "{{ forecast_fetch_due }}"
         sequence:
           # continue_on_error: a weather-entity failure must not abort the
-          # whole action run — the forecast_daily_fallback -> outdoor_now
-          # chain below handles a missing/empty response.
+          # whole action run — the daily backstop -> outdoor_now chain below
+          # handles a missing/empty response.
           - service: weather.get_forecasts
             continue_on_error: true
             target:
@@ -840,12 +866,18 @@ action:
       # branch never ran, so hourly_forecast_resp is simply undefined; the
       # `is defined` guard then yields the empty-list path. Filter forecast
       # entries to the window now -> bedtime, take the max temperature.
+      # A response whose forecast is null / a scalar / a string / a mapping
+      # yields [] — a template that iterates it would otherwise abort the run.
       forecast_list_safe: >-
         {{ hourly_forecast_resp[weather_entity].forecast
            if hourly_forecast_resp is defined
               and hourly_forecast_resp is mapping
               and weather_entity in hourly_forecast_resp
+              and hourly_forecast_resp[weather_entity] is mapping
               and hourly_forecast_resp[weather_entity].forecast is defined
+              and hourly_forecast_resp[weather_entity].forecast is iterable
+              and hourly_forecast_resp[weather_entity].forecast is not string
+              and hourly_forecast_resp[weather_entity].forecast is not mapping
            else [] }}
       # Variables are re-parsed between steps: a datetime becomes a plain
       # string and any later .strftime()/comparison on it raises. Carry
@@ -858,26 +890,78 @@ action:
         {% for f in forecast_list_safe %}
           {% set ts = f.datetime | default(none) %}
           {% set tp = f.temperature | default(none) %}
-          {% if ts is not none and tp is not none %}
-            {% set fdt = as_datetime(ts) %}
+          {% if ts is not none and tp | float(none) is not none %}
+            {% set fdt = as_datetime(ts, none) %}
             {% if fdt is not none and fdt >= now() and as_timestamp(fdt) <= bedtime_ts | float %}
               {% set ns.vals = ns.vals + [tp | float] %}
             {% endif %}
           {% endif %}
         {% endfor %}
         {{ ns.vals }}
-      forecast_daily_fallback: >-
-        {% set d = state_attr(weather_entity, 'forecast') %}
-        {% if d is iterable and d is not string and d | length > 0 %}
-          {{ d[0].temperature | float(outdoor_now | float) }}
-        {% else %}
-          {{ outdoor_now | float }}
-        {% endif %}
+      # The daily backstop is due on every day-side tick whose hourly window
+      # is empty: the 14 of 15 ticks without a fetch, and a fetch tick whose
+      # window has no entry left before bedtime.
+      forecast_daily_due: >-
+        {{ forecast_window_temps | length == 0
+           and weather_daily_supported
+           and now().strftime('%H:%M:%S') >= wake_time
+           and now().strftime('%H:%M:%S') < bedtime }}
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ forecast_daily_due }}"
+        sequence:
+          - service: weather.get_forecasts
+            continue_on_error: true
+            target:
+              entity_id: "{{ weather_entity }}"
+            data:
+              type: daily
+            response_variable: daily_forecast_resp
+  - variables:
+      forecast_daily_list: >-
+        {{ daily_forecast_resp[weather_entity].forecast
+           if daily_forecast_resp is defined
+              and daily_forecast_resp is mapping
+              and weather_entity in daily_forecast_resp
+              and daily_forecast_resp[weather_entity] is mapping
+              and daily_forecast_resp[weather_entity].forecast is defined
+              and daily_forecast_resp[weather_entity].forecast is iterable
+              and daily_forecast_resp[weather_entity].forecast is not string
+              and daily_forecast_resp[weather_entity].forecast is not mapping
+           else [] }}
+      # A daily entry's `temperature` is the day's HIGH (Met.no: the max of
+      # that day's hourly readings; `templow` is the low) stamped at local
+      # noon. Take today's entry by LOCAL date, else the first entry, else
+      # none (the `None` literal re-parses to none on the far side). Entries
+      # without a parsable datetime or a numeric temperature are skipped —
+      # continue_on_error on the fetch does not protect these templates.
+      forecast_daily_high: >-
+        {% set ns = namespace(today=none, first=none) %}
+        {% for f in forecast_daily_list %}
+          {% set ts = f.datetime | default(none) %}
+          {% set tp = f.temperature | default(none) %}
+          {% if ts is not none and tp | float(none) is not none %}
+            {% set fdt = as_datetime(ts, none) %}
+            {% if fdt is not none %}
+              {% if ns.first is none %}{% set ns.first = tp | float %}{% endif %}
+              {% if ns.today is none and (fdt | as_local).date() == now().date() %}
+                {% set ns.today = tp | float %}
+              {% endif %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.today if ns.today is not none else ns.first }}
+      forecast_daily_ok: "{{ forecast_daily_high is not none and forecast_daily_high | float(none) is not none }}"
+      # Precedence: hourly window max -> the day's forecast high (never below
+      # the live outdoor reading) -> the live outdoor reading alone.
       forecast_max: >-
         {% if forecast_window_temps | length > 0 %}
           {{ forecast_window_temps | max }}
+        {% elif forecast_daily_ok %}
+          {{ [forecast_daily_high | float, outdoor_now | float] | max }}
         {% else %}
-          {{ [forecast_daily_fallback | float, outdoor_now | float] | max }}
+          {{ outdoor_now | float }}
         {% endif %}
 
   # =============================================
@@ -920,6 +1004,19 @@ action:
         {% else %}
           0
         {% endif %}
+      # The helper's own range, intersected with the blueprint's -60..120
+      # clamp (v1.1.0): a helper created narrower — the live one had min 60
+      # until 2026-09-09 — rejected the write and aborted the lock run.
+      # state_attr of an unconfigured ('') helper is none -> the defaults.
+      bias_helper_min: "{{ state_attr(lead_bias_entity, 'min') | float(-60) }}"
+      bias_helper_max: "{{ state_attr(lead_bias_entity, 'max') | float(120) }}"
+      # Whole-number bounds INSIDE the intersection (the helper has step 1):
+      # a fractional helper bound is rounded inward, and a helper that does
+      # not overlap -60..120 at all (floor > ceiling) disables the write.
+      bias_floor: "{{ ([bias_helper_min | float, -60] | max) | round(0, 'ceil') | int }}"
+      bias_ceiling: "{{ ([bias_helper_max | float, 120] | min) | round(0, 'floor') | int }}"
+      bias_range_valid: "{{ bias_floor | float <= bias_ceiling | float }}"
+      bias_helper_range_ok: "{{ bias_helper_min | float <= -60 and bias_helper_max | float >= 120 }}"
       # --- Lead-time formula (transparent linear blend), then clamp ---
       lead_raw: >-
         {{ (base_minutes | float)
@@ -968,6 +1065,42 @@ action:
       # ABOVE wake_time and slip past a string compare.
       earliest_turn_on_tod: >-
         {{ (today_at(bedtime) - timedelta(minutes=lead_cap_minutes | int)).strftime('%H:%M:%S') }}
+      # Before wake time the night still belongs to YESTERDAY's window (the
+      # bedtime_ts pattern, mirrored), so a manual off stays visible until the
+      # deep-night check instead of vanishing at local midnight.
+      earliest_turn_on_ts: "{{ as_timestamp(today_at(bedtime) - timedelta(days=(1 if now().strftime('%H:%M:%S') < wake_time else 0), minutes=lead_cap_minutes | int)) }}"
+      # --- Manual OFF inside the adoption window (v1.1.0) ---
+      # The blueprint never switches the unit off between earliest_turn_on and
+      # the lock (DAY_OFF cannot see a running unit there; only the vacation
+      # branch can), so an `off` transition stamped inside that window came
+      # from a person (remote, app, the unit's own timer). It is respected:
+      # PRECOOL does not restart the unit and the night is a cool-day no-op.
+      # Guards (all coordinator-lag tolerant): the window start carries a
+      # 120 s margin (≈ 3 min after the last pre-window tick) so a DAY_OFF
+      # turn_off issued on that tick whose confirmation lands after the window
+      # opens is not a person's;
+      # the state re-created at HA start / automation reload carries a fresh
+      # last_changed (this.last_changed moves at the same moment — a cloud
+      # integration may publish its first state up to minutes later, hence
+      # 600 s); the vacation branch's turn_off is recognised by the toggle's
+      # own last_changed within 120 s. A reload AFTER a manual off ends that
+      # hold (the reload stamp is newer). Instants compared as timestamps.
+      automation_up_since_ts: "{{ (this.last_changed | as_timestamp(0)) if (this is defined and this is not none) else 0 }}"
+      ac_off_since_ts: "{{ as_timestamp(states[ac_climate].last_changed) | float(0) if states[ac_climate] is not none else 0 }}"
+      vacation_changed_ts: >-
+        {% set ns = namespace(ts=0) %}
+        {% if vacation_toggle is iterable and vacation_toggle is not string %}
+          {% for v in expand(vacation_toggle) %}
+            {% set t = as_timestamp(v.last_changed) | float(0) %}
+            {% if t > ns.ts %}{% set ns.ts = t %}{% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ ns.ts }}
+      manual_off: >-
+        {{ (not ac_is_running) and (not ac_unavailable)
+           and ac_off_since_ts | float >= earliest_turn_on_ts | float + 120
+           and ac_off_since_ts | float > automation_up_since_ts | float + 600
+           and vacation_changed_ts | float < ac_off_since_ts | float - 120 }}
       # --- Phase derivation (all time-of-day string comparisons) ---
       # The "day side" of the schedule runs wake -> bedtime_lock.
       on_day_side: "{{ wake_tod <= now_tod and now_tod < lock_tod }}"
@@ -990,13 +1123,42 @@ action:
       # --- PRECOOL sub-state ---
       precool_substate: >-
         {% if warmest_bedroom | float > bedtime_target | float %}DRIVE{% else %}HOLD{% endif %}
-      # --- Setpoints, all clamped to the AC's discovered min/max ---
+      # --- Setpoints, all clamped to the AC's discovered min/max, and held
+      # the way the DEVICE holds them: the LG ThinQ integration sends
+      # int(value) to a unit whose target_temp_step is a whole degree (core
+      # lg_thinq/climate.py), so the blueprint quantises the same way and
+      # every compare (idempotency guards, override detection) uses the
+      # device-held value. On a 0.5-step unit every input is already on the
+      # grid (all temperature selectors step 0.5). ---
       effective_drive: >-
-        {{ [[drive_setpoint | float, ac_min_temp | float] | max,
-            ac_max_temp | float] | min }}
+        {% set v = [[drive_setpoint | float, ac_min_temp | float] | max, ac_max_temp | float] | min %}
+        {{ (v | int) if ac_temp_step | float >= 1 else v }}
       maintaining_setpoint: >-
-        {{ [[ideal_temp | float - hall_offset | float, ac_min_temp | float] | max,
-            ac_max_temp | float] | min }}
+        {% set v = [[ideal_temp | float - hall_offset | float, ac_min_temp | float] | max, ac_max_temp | float] | min %}
+        {{ (v | int) if ac_temp_step | float >= 1 else v }}
+      # --- Manual SETPOINT override (v1.1.0) ---
+      # The blueprint can only ever have commanded four setpoints: drive,
+      # maintaining, and the two deep-night corrections. A running unit whose
+      # setpoint is none of them was set by a person; PRECOOL then leaves the
+      # unit alone until the bedtime lock (the next phase boundary) and the
+      # lock skips that night's auto-learn write. HA state contexts cannot
+      # tell this automation's writes from the remote's (both carry no
+      # parent/user on a time-pattern run — verified live 2026-09-09), so the
+      # comparison is against values, not authorship — the values as the
+      # DEVICE holds them (see the quantisation note above). Single-lined: the
+      # list crosses the variables boundary and is re-parsed as a list; a
+      # value that arrives in any other shape counts as known (v1.0.x
+      # behaviour).
+      # Two-tick grace (board R1-01): the unit's own coordinator publishes a
+      # commanded setpoint seconds AFTER the call, and a lost command was
+      # self-healed by the next tick's idempotency guard in v1.0.x. A value
+      # that does not match is therefore treated as a person's only once the
+      # unit has been running for two ticks (>= 120 s since its off->on
+      # change); the first tick after turn-on re-sends as before. A person's
+      # change inside those first two minutes is re-asserted once (documented).
+      known_setpoints: "{% set ns = namespace(vals=[]) %}{% for v in [effective_drive | float, maintaining_setpoint | float, [[maintaining_setpoint | float - correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min, [[maintaining_setpoint | float + correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min] %}{% set ns.vals = ns.vals + [(v | int) if ac_temp_step | float >= 1 else v] %}{% endfor %}{{ ns.vals }}"
+      setpoint_is_known: "{% set ns = namespace(ok=false) %}{% if known_setpoints is string or known_setpoints is not iterable %}{% set ns.ok = true %}{% else %}{% for k in known_setpoints %}{% if (current_setpoint | float - k | float) | abs <= 0.1 %}{% set ns.ok = true %}{% endif %}{% endfor %}{% endif %}{{ ns.ok }}"
+      manual_setpoint: "{{ ac_is_running and current_setpoint_known and not setpoint_is_known and ac_state_age_sec | float >= 120 }}"
       # --- Cool vs dry mode (only chosen while beeps are free) ---
       # Single-lined: this value feeds == comparisons and hvac_mode:; a
       # folded scalar would leave trailing whitespace on the rendered token.
@@ -1372,63 +1534,71 @@ action:
                         {% else %}
                           {{ fan_normal }}
                         {% endif %}
-                  # 1. Ensure the unit is running and in the desired mode.
-                  #    set_hvac_mode fails on a powered-off LG unit, so turn_on
-                  #    first when off, then set the mode while it is running.
+                  # v1.1.0: a person's setpoint, or a manual off inside the
+                  # window, wins until the bedtime lock — no command at all
+                  # while either flag is set (STEP 7e says so).
                   - choose:
                       - conditions:
                           - condition: template
-                            value_template: "{{ not ac_is_running }}"
+                            value_template: "{{ not manual_setpoint and not manual_off }}"
                         sequence:
-                          - service: climate.turn_on
-                            target:
-                              entity_id: "{{ ac_climate }}"
-                  # Mode guard intentionally omits the `ac_is_running` precondition:
-                  # ac_is_running was captured in STEP 2 before this branch's
-                  # climate.turn_on ran, so on a first-tick-from-off it is stale
-                  # `false`. climate.turn_on always precedes this call when the unit
-                  # was off, so the unit IS on by now; the stale current_hvac_mode
-                  # ('off') still differs from desired_mode ('cool'), so the mode is
-                  # set the same tick instead of waiting for the next minute.
-                  - choose:
-                      - conditions:
-                          - condition: template
-                            value_template: >-
-                              {{ current_hvac_mode != desired_mode }}
-                        sequence:
-                          - service: climate.set_hvac_mode
-                            target:
-                              entity_id: "{{ ac_climate }}"
-                            data:
-                              hvac_mode: "{{ desired_mode }}"
-                  # 2. Then set the temperature (separate, sequenced call).
-                  - choose:
-                      - conditions:
-                          - condition: template
-                            value_template: >-
-                              {{ (not current_setpoint_known)
-                                 or (current_setpoint | float - precool_setpoint | float)
-                                    | abs > 0.1 }}
-                        sequence:
-                          - service: climate.set_temperature
-                            target:
-                              entity_id: "{{ ac_climate }}"
-                            data:
-                              temperature: "{{ precool_setpoint | float }}"
-                  # 3. Fan, only if fan control is enabled and there is a delta.
-                  - choose:
-                      - conditions:
-                          - condition: template
-                            value_template: >-
-                              {{ enable_fan_control
-                                 and ac_fan_modes | length > 0
-                                 and current_fan != precool_fan }}
-                        sequence:
-                          - service: climate.set_fan_mode
-                            target:
-                              entity_id: "{{ ac_climate }}"
-                            data:
-                              fan_mode: "{{ precool_fan }}"
+                            # 1. Ensure the unit is running and in the desired mode.
+                            #    set_hvac_mode fails on a powered-off LG unit, so turn_on
+                            #    first when off, then set the mode while it is running.
+                            - choose:
+                                - conditions:
+                                    - condition: template
+                                      value_template: "{{ not ac_is_running }}"
+                                  sequence:
+                                    - service: climate.turn_on
+                                      target:
+                                        entity_id: "{{ ac_climate }}"
+                            # Mode guard intentionally omits the `ac_is_running` precondition:
+                            # ac_is_running was captured in STEP 2 before this branch's
+                            # climate.turn_on ran, so on a first-tick-from-off it is stale
+                            # `false`. climate.turn_on always precedes this call when the unit
+                            # was off, so the unit IS on by now; the stale current_hvac_mode
+                            # ('off') still differs from desired_mode ('cool'), so the mode is
+                            # set the same tick instead of waiting for the next minute.
+                            - choose:
+                                - conditions:
+                                    - condition: template
+                                      value_template: >-
+                                        {{ current_hvac_mode != desired_mode }}
+                                  sequence:
+                                    - service: climate.set_hvac_mode
+                                      target:
+                                        entity_id: "{{ ac_climate }}"
+                                      data:
+                                        hvac_mode: "{{ desired_mode }}"
+                            # 2. Then set the temperature (separate, sequenced call).
+                            - choose:
+                                - conditions:
+                                    - condition: template
+                                      value_template: >-
+                                        {{ (not current_setpoint_known)
+                                           or (current_setpoint | float - precool_setpoint | float)
+                                              | abs > 0.1 }}
+                                  sequence:
+                                    - service: climate.set_temperature
+                                      target:
+                                        entity_id: "{{ ac_climate }}"
+                                      data:
+                                        temperature: "{{ precool_setpoint | float }}"
+                            # 3. Fan, only if fan control is enabled and there is a delta.
+                            - choose:
+                                - conditions:
+                                    - condition: template
+                                      value_template: >-
+                                        {{ enable_fan_control
+                                           and ac_fan_modes | length > 0
+                                           and current_fan != precool_fan }}
+                                  sequence:
+                                    - service: climate.set_fan_mode
+                                      target:
+                                        entity_id: "{{ ac_climate }}"
+                                      data:
+                                        fan_mode: "{{ precool_fan }}"
 
               # ---------- BEDTIME_LOCK: park (+ off in fan-only) + auto-learn write ----------
               - conditions:
@@ -1495,11 +1665,15 @@ action:
                                     target:
                                       entity_id: "{{ ac_climate }}"
                           # Auto-learn helper write — beep-free (an input_number,
-                          # not the AC). Only on a cooling night (AC running).
+                          # not the AC). Only on a cooling night (AC running) and
+                          # never while a manual setpoint is active at the lock:
+                          # that night's outcome does not reflect the predictor.
+                          # A configured helper that no longer exists skips the
+                          # write (STEP 7a notice) instead of aborting the run.
                           - choose:
                               - conditions:
                                   - condition: template
-                                    value_template: "{{ enable_auto_learn and lead_bias_configured }}"
+                                    value_template: "{{ enable_auto_learn and lead_bias_configured and states[lead_bias_entity] is not none and not manual_setpoint and bias_range_valid }}"
                                 sequence:
                                   - variables:
                                       bedtime_error: "{{ warmest_bedroom | float - bedtime_target | float }}"
@@ -1508,10 +1682,12 @@ action:
                                            + (learn_gain | float)
                                              * (bedtime_error | float)
                                              * (k_indoor | float) }}
-                                      # round(0) | int — the lead_bias_helper input_number
-                                      # is created with step 1, so the written value must be
-                                      # a whole number to match the helper's step.
-                                      new_bias: "{{ [[new_bias_raw | float, -60] | max, 120] | min | round(0) | int }}"
+                                      # Rounded to a whole number first (the helper has
+                                      # step 1), then clamped to the whole-number bounds
+                                      # inside the helper's range ∩ -60..120, so the write
+                                      # can never be rejected (the branch is skipped when
+                                      # the ranges do not overlap — bias_range_valid).
+                                      new_bias: "{{ [[new_bias_raw | float | round(0), bias_floor | float] | max, bias_ceiling | float] | min | int }}"
                                   - service: input_number.set_value
                                     target:
                                       entity_id: "{{ lead_bias_entity }}"
@@ -1538,7 +1714,7 @@ action:
                               # idempotency guard genuinely caps the correction at exactly
                               # one climate.set_temperature call. Single-lined to avoid a
                               # folded-scalar trailing-whitespace artifact.
-                              deep_target_setpoint: "{% if deep_drift | float > tolerance | float %}{{ [[maintaining_setpoint | float - correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min }}{% elif deep_drift | float < (0 - tolerance | float) %}{{ [[maintaining_setpoint | float + correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min }}{% else %}{{ maintaining_setpoint | float }}{% endif %}"
+                              deep_target_setpoint: "{% if deep_drift | float > tolerance | float %}{% set t = [[maintaining_setpoint | float - correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min %}{% elif deep_drift | float < (0 - tolerance | float) %}{% set t = [[maintaining_setpoint | float + correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min %}{% else %}{% set t = maintaining_setpoint | float %}{% endif %}{{ (t | int) if ac_temp_step | float >= 1 else t }}"
                           - choose:
                               - conditions:
                                   - condition: template
@@ -1639,23 +1815,25 @@ action:
               fan_mode: "{{ night_fan_mode }}"
 
   # =============================================
-  # STEP 7a: LEAD-BIAS-HELPER NOT CONFIGURED — one-time notice
+  # STEP 7a: LEAD-BIAS-HELPER NOT CONFIGURED / MISSING — one-time notice
   # =============================================
   - choose:
       - conditions:
           - condition: template
             value_template: >-
               {{ enable_notifications and enable_auto_learn
-                 and not lead_bias_configured }}
+                 and (not lead_bias_configured or states[lead_bias_entity] is none) }}
         sequence:
           - service: persistent_notification.create
             data:
               title: "Bedroom Pre-Cool — Auto-Learn Helper Missing"
               message: >
-                Auto-Learn is enabled but no Lead-Time Bias Helper is
-                configured. The blueprint still runs with a zero bias.
-                Create an input_number helper and select it to enable
-                self-learning.
+                {% if lead_bias_configured %}Auto-Learn is enabled but the
+                configured Lead-Time Bias Helper ({{ lead_bias_entity }}) does
+                not exist.{% else %}Auto-Learn is enabled but no Lead-Time
+                Bias Helper is configured.{% endif %} The blueprint still
+                runs with a zero bias. Create an input_number helper and
+                select it to enable self-learning.
               notification_id: "bedroom_precool_no_bias_helper"
 
   # =============================================
@@ -1667,13 +1845,15 @@ action:
             value_template: >-
               {{ enable_notifications and phase == 'DAY_OFF'
                  and forecast_window_temps | length == 0
+                 and not forecast_daily_ok
                  and not outdoor_now_ok }}
         sequence:
           - service: persistent_notification.create
             data:
               title: "Bedroom Pre-Cool — Forecast & Outdoor Unavailable"
               message: >
-                Neither an hourly forecast nor the outdoor sensor is available.
+                Neither an hourly nor a daily forecast nor the outdoor sensor
+                is available.
                 The prediction is leaning on the indoor gap and solar term only
                 until one recovers.
               notification_id: "bedroom_precool_forecast_warning"
@@ -1699,7 +1879,92 @@ action:
               notification_id: "bedroom_precool_night_fan_unsupported"
 
   # =============================================
-  # STEP 7d: NIGHT FAN NOT APPLIED — informational notice (last settle tick only)
+  # STEP 7d: AUTO-LEARN HELPER RANGE — state-driven notice (v1.1.0)
+  # Created while the helper's range does not cover -60..120 (the write is
+  # clamped to the helper's range meanwhile), dismissed once it does.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ enable_notifications and enable_auto_learn
+                 and lead_bias_configured and not bias_helper_range_ok }}
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Bedroom Pre-Cool — Auto-Learn Helper Range Too Narrow"
+              message: >
+                {{ lead_bias_entity }} allows {{ bias_helper_min }} to
+                {{ bias_helper_max }}, but the lead-time bias needs -60 to 120.
+                {% if bias_range_valid %}
+                Until the helper is widened the learned bias is clamped to
+                {{ bias_floor }}…{{ bias_ceiling }} (a bias floored at
+                {{ bias_floor }} min starts the pre-cool that much early every
+                night).
+                {% else %}
+                The ranges do not overlap at all, so no bias is written until
+                the helper is fixed.
+                {% endif %}
+                Edit the helper's min/max under Settings -> Devices & Services
+                -> Helpers.
+              notification_id: "bedroom_precool_bias_helper_range"
+            continue_on_error: true
+    default:
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: "bedroom_precool_bias_helper_range"
+        continue_on_error: true
+
+  # =============================================
+  # STEP 7e: MANUAL OVERRIDE — state-driven notice (v1.1.0)
+  # One notice per override episode: created while a manual setpoint or a
+  # manual off is being respected, dismissed at the next phase boundary.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ enable_notifications
+                 and phase in ['PRECOOL', 'BEDTIME_LOCK', 'NIGHT_HOLD']
+                 and (manual_setpoint or manual_off) }}
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Bedroom Pre-Cool — Manual Override"
+              message: >
+                {% if manual_off %}
+                {{ ac_climate }} went off inside the pre-cool window; the
+                blueprint treats that as a manual off and leaves it off tonight
+                (no bedtime lock, no deep-night check). If nobody switched it
+                off (a cloud outage that came back reads the same way), switch
+                it on by hand — a running unit resumes the pre-cool at once.
+                {% elif phase == 'NIGHT_HOLD' %}
+                {{ ac_climate }} holds a setpoint of {{ current_setpoint }}°C
+                that the blueprint did not set. It is respected until the
+                deep-night check at {{ deep_tod }}, which may correct drift.
+                {% elif phase == 'BEDTIME_LOCK' %}
+                {{ ac_climate }} holds a setpoint of {{ current_setpoint }}°C
+                that the blueprint did not set; the bedtime lock is re-applying
+                {{ maintaining_setpoint }}°C now and tonight's auto-learn update
+                is skipped.
+                {% else %}
+                {{ ac_climate }} holds a setpoint of {{ current_setpoint }}°C
+                that the blueprint did not set (its own values are
+                {{ known_setpoints }}). It is respected until the bedtime lock
+                at {{ lock_tod }}, which re-applies {{ maintaining_setpoint }}°C;
+                tonight's auto-learn update is skipped while the override is
+                active at the lock.
+                {% endif %}
+              notification_id: "bedroom_precool_manual_override"
+            continue_on_error: true
+    default:
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: "bedroom_precool_manual_override"
+        continue_on_error: true
+
+  # =============================================
+  # STEP 7f: NIGHT FAN NOT APPLIED — informational notice (last settle tick only)
   # =============================================
   - choose:
       - conditions:
@@ -1741,12 +2006,15 @@ action:
                 **ΔT indoor:** {{ delta_in }}°C
                 | **ΔT outdoor:** {{ delta_out }}°C
                 | **forecast_max:** {{ forecast_max }}°C
+                | **daily high:** {{ forecast_daily_high }}°C (ok={{ forecast_daily_ok }})
 
                 **Solar load:** {{ solar_load }}
                 (elev {{ sun_elevation }}°, azim {{ sun_azimuth }}°)
 
                 **lead_bias:** {{ lead_bias }} min
                 (configured={{ lead_bias_configured }})
+                | **helper range:** {{ bias_helper_min }}…{{ bias_helper_max }}
+                (ok={{ bias_helper_range_ok }})
 
                 **lead:** {{ lead }} min
                 | **turn_on:** {{ turn_on_ts | float | timestamp_custom('%H:%M') }}
@@ -1761,6 +2029,9 @@ action:
                 fan={{ current_fan }}
 
                 **AC limits:** min={{ ac_min_temp }}°C, max={{ ac_max_temp }}°C
+
+                **manual:** setpoint={{ manual_setpoint }}
+                (known {{ known_setpoints }}), off={{ manual_off }}
 
                 **maintaining_setpoint:** {{ maintaining_setpoint }}°C
                 | **effective_drive:** {{ effective_drive }}°C
