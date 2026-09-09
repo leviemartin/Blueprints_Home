@@ -146,7 +146,7 @@ git add tests/test_bedroom_precool_structure.py tests/test_lg_ac_climate_structu
 git commit -m "test(climate): v1.1.0 pre-cool + v1.3.0 LG pins (RED) — helper-range clamp, daily backstop, manual override, presence setback; instances migrated (aliases, presence inputs, stored_traces)"
 ```
 
-Step 5: Report `RED: 32 failed / 66 passed` and the four hash lines.
+Step 5: Report the two changed files' counts as `precool+lg (RED): PASS=66 FAIL=32` and the four hash lines.
 
 ### Artifacts for Task 1
 
@@ -950,7 +950,7 @@ git add bedroom_precool.yaml
 git commit -m "feat(bedroom-precool): v1.1.0 — auto-learn clamped to the helper's range (+notice), daily forecast backstop, manual setpoint/off respected until the next phase boundary"
 ```
 
-Step 6: Report `precool: 50 passed`, the hash line, the dry-run line, the validate_config line.
+Step 6: Report `precool: PASS=41 FAIL=0`, the hash line, the dry-run line, the validate_config line.
 
 ### Artifact for Task 2
 
@@ -1539,7 +1539,7 @@ git add lg_ac_climate.yaml
 git commit -m "feat(lg-ac-climate): v1.3.0 — presence setback (widened band while everyone is away; guest-mode/EV/flap-guard hold comfort; immediate resume)"
 ```
 
-Step 6: Report `suite: 311 passed`, the hash line, the dry-run line, the validate_config line.
+Step 6: Report `suite: PASS=311 FAIL=0`, the hash line, the dry-run line, the validate_config line.
 
 ### Artifact for Task 3
 
@@ -1772,7 +1772,7 @@ git add requirements_bedroom_precool.md requirements_lg_ac_climate.md README.md
 git commit -m "docs(climate): pre-cool v1.1.0 (helper range, daily backstop, manual override) + LG v1.3.0 presence setback requirements; README bullets"
 ```
 
-Step 4: Report the three hash lines and `311 passed`.
+Step 4: Report the three hash lines and `suite: PASS=311 FAIL=0`.
 
 ### Artifacts for Task 4
 
@@ -1956,6 +1956,8 @@ index 02710af..fd6c298 100644
 **Model tier:** Fable (main loop). **Effort:** xhigh at the gate, high otherwise.
 
 **Context budget:** ~30k tokens · 0 repo files edited (the deploy script writes gitignored `deploy/<id>.prev.json`).
+
+**Shell invariants for this task:** no shell script is written or edited — `scripts/deploy-blueprint.sh` is the pinned TCB file and keeps its `set -euo pipefail` (a deploy must fail fast); every command below is run from the repo root with `source ~/.config/hass-cli/env` in the same shell; no output containing the token is pasted into an issue body (the deploy script never prints it).
 
 - [ ] **Step 1: Pre-checks**
 
