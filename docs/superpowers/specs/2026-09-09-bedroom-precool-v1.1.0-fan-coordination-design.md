@@ -137,20 +137,18 @@ night guard / settle now honour main's override semantics. Resolution rulings:
 4. **Settle respects a manual setpoint.** `guard_settle_due` gained `and not
    manual_setpoint` — `manual_setpoint` already requires `ac_state_age_sec >=
    120`, so the first two ticks after a start are always ours.
-5. **`since_ac_start_min` NOT reused from main's `ac_state_age_sec`.** Both
-   key off `states[ac_climate].last_changed`, so the brief's reuse condition
-   is nominally met — but `ac_state_age_sec` is captured in STEP 2a, BEFORE
-   the STEP 2b forecast fetch (a real service call), so it can be stale by
-   the fetch's latency by the time STEP 2c needs a fresh age for the
-   15-minute settle window. Kept ours (re-derives from `now()` post-fetch),
-   documented with a one-line comment. Separately, the render-chain test
-   harness treats `ac_started_ts` as a literal fed through a template that
-   recomputes against each call's own `now()`, while `ac_state_age_sec` would
-   be a static per-call literal — reusing it would have silently broken the
-   time-varying assertions in `test_rendered_fan_windows` and
-   `test_rendered_guard_settle_asserts_the_parked_state_only_after_a_night_start`
-   without a broader test rewrite. `ac_started_ts` stays for the due lists
-   and the assist window.
+5. **`since_ac_start_min` reused from main's `ac_state_age_sec`.** Both key
+   off `states[ac_climate].last_changed` — the same quantity — and
+   `ac_state_age_sec` is defined in STEP 2a, before our STEP 2c block, so the
+   brief's reuse condition is met: `since_ac_start_min: "{{ ((ac_state_age_sec
+   | float) / 60) | round(1) }}"`, one age computation instead of two. (Fix
+   round 1 corrected an initial over-caution here: the render-chain test
+   harness needed `_windows()`/`_guard()` to derive `ac_state_age_sec` from
+   each call's own `now` and `ac_started_ts` — `ac_state_age_sec = now.timestamp()
+   - float(ac_started_ts)` — rather than skipping the reuse; done, with the
+   existing `ac_started_ts`-keyed fixtures unchanged.) `ac_started_ts` stays
+   for the due lists and the assist window, which need the timestamp itself,
+   not the age.
 6. **Main's lock-services test updated.** `test_precool_commands_are_gated_on_the_override_flags_and_the_boundaries_are_not`'s
    BEDTIME_LOCK sorted service list now includes `climate.turn_off`
    (fan-only's own park-off call, gated on `fan_only_mode` / `warmest_bedroom`
@@ -161,8 +159,9 @@ night guard / settle now honour main's override semantics. Resolution rulings:
    unchanged); `guard_due` false under `manual_off=True`; `guard_settle_due`
    false under `manual_setpoint=True`. `_v110_ctx` gained `manual_off=False,
    manual_setpoint=False` (read as already-resolved upstream facts, same
-   pattern as `ac_is_running`); `ac_state_age_sec` was NOT added given item 5.
-   `MANUAL_OFF_CHAIN` gained `lock_ts` and `fan_only_mode` (both renderable
+   pattern as `ac_is_running`) and `ac_state_age_sec=0.0` (a placeholder that
+   `_windows()`/`_guard()` overwrite from `ac_started_ts` + their own `now`,
+   per item 5). `MANUAL_OFF_CHAIN` gained `lock_ts` and `fan_only_mode` (both renderable
    from ctx already present in the existing `_manual_off` fixtures) so the
    new clause has what it needs without touching the fixtures' assertions.
 

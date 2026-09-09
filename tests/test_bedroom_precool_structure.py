@@ -983,7 +983,10 @@ def _v110_ctx(**over):
                # v1.2.0: guard_due / guard_settle_due read these as already-resolved facts
                # (computed upstream, out of scope for these narrower chains) — same pattern
                # as ac_is_running / warmest_bedroom above.
-               manual_off=False, manual_setpoint=False)
+               manual_off=False, manual_setpoint=False,
+               # since_ac_start_min derives from this (STEP 2a); default is a huge age (no
+               # recent start). _windows()/_guard() overwrite it from ac_started_ts + now.
+               ac_state_age_sec=0.0)
     ctx.update(over)
     return ctx
 
@@ -1033,7 +1036,11 @@ WINDOW_CHAIN = ["lock_ts", "settle_end_tod", "settle_last_tod", "since_ac_start_
 
 def _windows(bp, hh, mm, **over):
     now = datetime(2026, 9, 9, hh, mm, tzinfo=TZ)
-    return _render_chain(bp, WINDOW_CHAIN, now, _v110_ctx(now_tod=now.strftime("%H:%M:%S"), **over))
+    ctx = _v110_ctx(now_tod=now.strftime("%H:%M:%S"), **over)
+    # since_ac_start_min now derives from ac_state_age_sec (STEP 2a) — mirror the
+    # blueprint's own now() - last_changed so ac_started_ts-based fixtures still work.
+    ctx["ac_state_age_sec"] = now.timestamp() - float(ctx["ac_started_ts"])
+    return _render_chain(bp, WINDOW_CHAIN, now, ctx)
 
 
 def test_rendered_fan_windows(bp):
@@ -1061,7 +1068,11 @@ GUARD_CHAIN = ["fan_only_mode", "night_phase", "since_ac_start_min", "guard_due"
 
 
 def _guard(bp, now, **over):
-    return _render_chain(bp, GUARD_CHAIN, now, _v110_ctx(now_tod=now.strftime("%H:%M:%S"), **over))
+    ctx = _v110_ctx(now_tod=now.strftime("%H:%M:%S"), **over)
+    # since_ac_start_min now derives from ac_state_age_sec (STEP 2a) — mirror the
+    # blueprint's own now() - last_changed so ac_started_ts-based fixtures still work.
+    ctx["ac_state_age_sec"] = now.timestamp() - float(ctx["ac_started_ts"])
+    return _render_chain(bp, GUARD_CHAIN, now, ctx)
 
 
 def test_rendered_guard_due_only_in_night_phases_with_fan_only_ac_off_over_band_on_a_5_minute_tick(bp):

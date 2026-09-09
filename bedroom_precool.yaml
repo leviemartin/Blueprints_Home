@@ -1207,12 +1207,9 @@ action:
       night_fans_tonight: "{{ night_fans == 'all' or night_fans == night_parity }}"
       settle_end_tod: "{{ (today_at(bedtime) + timedelta(minutes=fan_settle_minutes | int)).strftime('%H:%M:%S') }}"
       settle_last_tod: "{{ (today_at(bedtime) + timedelta(minutes=(fan_settle_minutes | int) - 1)).strftime('%H:%M:%S') }}"
-      # v1.2.0: NOT reused from main's ac_state_age_sec (STEP 2a) — that value is
-      # captured before the STEP 2b forecast fetch (a real service call), so by the
-      # time this renders it may be stale by the fetch's latency; re-deriving from
-      # now() here (post-fetch) keeps the 15-minute settle window accurate. Same
-      # underlying source (states[ac_climate].last_changed) either way.
-      since_ac_start_min: "{{ ((as_timestamp(now()) - (ac_started_ts | float)) / 60) | round(1) }}"
+      # v1.2.0: derived from main's ac_state_age_sec (STEP 2a) — same quantity
+      # (seconds since the climate entity's last_changed), one computation.
+      since_ac_start_min: "{{ ((ac_state_age_sec | float) / 60) | round(1) }}"
       in_wake_window: "{{ wake_tod <= now_tod and now_tod < (today_at(wake_time) + timedelta(minutes=1)).strftime('%H:%M:%S') }}"
       in_fan_settle: "{{ lock_tod <= now_tod and now_tod < settle_end_tod }}"
       in_settle_last_tick: "{{ settle_last_tod <= now_tod and now_tod < settle_end_tod }}"

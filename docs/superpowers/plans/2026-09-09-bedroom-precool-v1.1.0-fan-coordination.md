@@ -1182,19 +1182,23 @@ full ruling on each item; summary:
    fan-only night (the lock's own park-off, not a person's).
 3. `guard_due` gained `and not manual_off`.
 4. `guard_settle_due` gained `and not manual_setpoint`.
-5. `since_ac_start_min` kept re-deriving from `now()` rather than reusing
-   main's `ac_state_age_sec` — that value is captured before the STEP 2b
-   forecast fetch (stale by the fetch's latency) and reusing it would have
-   broken the render-chain test harness's per-call `now()`-relative fixtures
-   (`test_rendered_fan_windows`, the guard-settle window test) without a
-   broader rewrite. Documented in-line; `ac_started_ts` stays for the due
-   lists.
+5. `since_ac_start_min` reused from main's `ac_state_age_sec` (STEP 2a,
+   defined before our STEP 2c block, same quantity — seconds since the
+   climate entity's `last_changed`): `"{{ ((ac_state_age_sec | float) / 60)
+   | round(1) }}"`, one age computation instead of two. Fix round 1 (board
+   finding) corrected an initial over-caution that kept ours instead; the
+   render-chain test harness now derives `ac_state_age_sec` inside
+   `_windows()`/`_guard()` from each call's own `now` and `ac_started_ts`
+   (`now.timestamp() - float(ac_started_ts)`) so the existing
+   `ac_started_ts`-keyed fixtures (`test_rendered_fan_windows`, the
+   guard-settle window test) keep passing unchanged. `ac_started_ts` stays
+   for the due lists and the assist window, which need the timestamp itself.
 6. `test_precool_commands_are_gated_on_the_override_flags_and_the_boundaries_are_not`'s
    BEDTIME_LOCK service list updated to include `climate.turn_off`.
 7. New tests: the `manual_off` lock-window exemption (fan_only vs. ac_hold),
    `guard_due`/`guard_settle_due` under a manual override; `_v110_ctx` gained
-   `manual_off=False, manual_setpoint=False`; `MANUAL_OFF_CHAIN` gained
-   `lock_ts`, `fan_only_mode`.
+   `manual_off=False, manual_setpoint=False, ac_state_age_sec=0.0`;
+   `MANUAL_OFF_CHAIN` gained `lock_ts`, `fan_only_mode`.
 8. Docs (Step 2 addendum, Task 5 review finding): NIGHT-HOLD/DEEP-HOLD rows,
    Beep Budget requirements, and the README beep bullet no longer claim
    unqualified "zero commands" in fan_only mode.
