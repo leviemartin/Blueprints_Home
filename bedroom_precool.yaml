@@ -1039,6 +1039,81 @@ action:
       settle_mode_due: "{{ guard_settle_due and current_hvac_mode not in ['cool', 'dry'] }}"
       settle_setpoint_due: "{{ guard_settle_due and current_setpoint_known and ((current_setpoint | float - maintaining_setpoint | float) | abs) > (correction_step | float + 0.1) }}"
       settle_fan_due: "{{ guard_settle_due and enable_fan_control and ac_fan_modes | length > 0 and current_fan != 'unknown' and current_fan != night_fan_mode }}"
+      # --- v1.1.0 fan write rule → per-window lists of fans DUE for one command ---
+      # A fan is due when: configured, present and available, not already at the target
+      # (state_attr | int(-1): a missing attribute is None, never an Undefined that
+      # would abort this whole variables step), not an interlocked fan while the
+      # interlock is blocked, and untouched since the reference instant (last_updated
+      # older than it — a percentage change bumps last_updated, not last_changed). Our
+      # own command bumps last_updated, so a fan is written at most once per reference;
+      # a fan the safety cutoff or a person changed is left alone. The action step
+      # (STEP 5c) re-checks the same rule live before each call. Lists cross the
+      # variables boundary intact.
+      fans_due_night: >-
+        {% set ns = namespace(out=[]) %}
+        {% if night_fans_tonight and in_fan_settle %}
+          {% for f in bedroom_fans %}
+            {% set st = expand(f) | list %}
+            {% if st | length > 0 %}
+              {% set s = st[0] %}
+              {% set at_target = s.state == 'on' and (state_attr(f, 'percentage') | int(-1)) == (night_fan_percentage | int) %}
+              {% set blocked = (f in interlocked_fans) and interlock_blocked %}
+              {% if s.state not in ['unavailable', 'unknown'] and not at_target and not blocked
+                    and as_timestamp(s.last_updated) < (lock_ts | float) %}
+                {% set ns.out = ns.out + [f] %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ ns.out }}
+      fans_due_precool: >-
+        {% set ns = namespace(out=[]) %}
+        {% if fan_assist_tonight and in_fan_assist_window %}
+          {% for f in bedroom_fans %}
+            {% set st = expand(f) | list %}
+            {% if st | length > 0 %}
+              {% set s = st[0] %}
+              {% set at_target = s.state == 'on' and (state_attr(f, 'percentage') | int(-1)) == (precool_fan_percentage | int) %}
+              {% set blocked = (f in interlocked_fans) and interlock_blocked %}
+              {% if s.state not in ['unavailable', 'unknown'] and not at_target and not blocked
+                    and as_timestamp(s.last_updated) < (ac_started_ts | float) %}
+                {% set ns.out = ns.out + [f] %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ ns.out }}
+      # Fans that COULD NOT be written this tick (blocked or unavailable), untouched and
+      # not at target — disjoint from fans_due_night by construction; reported once on
+      # the last settle tick, never retried.
+      fans_unset_night: >-
+        {% set ns = namespace(out=[]) %}
+        {% if night_fans_tonight and in_fan_settle %}
+          {% for f in bedroom_fans %}
+            {% set st = expand(f) | list %}
+            {% if st | length > 0 %}
+              {% set s = st[0] %}
+              {% set at_target = s.state == 'on' and (state_attr(f, 'percentage') | int(-1)) == (night_fan_percentage | int) %}
+              {% set blocked = (f in interlocked_fans) and interlock_blocked %}
+              {% if (s.state in ['unavailable', 'unknown'] or blocked) and not at_target
+                    and as_timestamp(s.last_updated) < (lock_ts | float) %}
+                {% set ns.out = ns.out + [f] %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ ns.out }}
+      fans_on_at_wake: >-
+        {% set ns = namespace(out=[]) %}
+        {% if fans_at_wake == 'off' and in_wake_window %}
+          {% for f in bedroom_fans %}
+            {% set st = expand(f) | list %}
+            {% if st | length > 0 and st[0].state == 'on' %}
+              {% set ns.out = ns.out + [f] %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ ns.out }}
 
   # =============================================
   # STEP 3: RUNTIME (CONFIG) VALIDATION

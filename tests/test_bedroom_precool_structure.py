@@ -657,3 +657,77 @@ def test_night_guard_is_one_bare_turn_on_plus_notice_and_the_settle_step_correct
     # the two night branches of STEP 6 stay free of climate calls (guard lives outside)
     for ph in ("NIGHT_HOLD", "DEEP_HOLD"):
         assert _services_in_phase(bp, ph) == []
+
+
+# --- v1.1.0 T4: fan due-lists (the fan write rule as rendered variables) ------------
+
+KIDS, MASTER = "fan.ceiling_fan_light_v2", "fan.ceiling_fan_light_v2_2"
+LOCK = datetime(2026, 9, 9, 19, 29, tzinfo=TZ)
+BEFORE, AFTER = LOCK - timedelta(hours=2), LOCK + timedelta(seconds=20)
+
+
+def _due(bp, name, now, states, **ctx):
+    base = dict(bedroom_fans=[MASTER, KIDS], interlocked_fans=[KIDS], interlock_blocked=False,
+                night_fans_tonight=True, in_fan_settle=True, night_fan_percentage=1, lock_ts=LOCK.timestamp(),
+                fan_assist_tonight=True, in_fan_assist_window=True, precool_fan_percentage=21,
+                ac_started_ts=(LOCK - timedelta(hours=2, minutes=30)).timestamp(),
+                fans_at_wake="off", in_wake_window=True)
+    base.update(ctx)
+    return _reparse(_fan_env(now, states).from_string(_var_template(bp, name)).render(**base).strip())
+
+
+def test_rendered_fans_due_night_applies_the_fan_write_rule(bp):
+    now = LOCK + timedelta(minutes=5)
+    untouched = [_S(MASTER, "on", 1, BEFORE), _S(KIDS, "off", 21, BEFORE)]
+    assert _due(bp, "fans_due_night", now, untouched) == [KIDS]                         # master already at 1 %
+    assert _due(bp, "fans_due_night", now, [_S(MASTER, "on", 21, BEFORE), _S(KIDS, "off", 21, BEFORE)]) == [MASTER, KIDS]
+    assert _due(bp, "fans_due_night", now, untouched, interlock_blocked=True) == []       # kids fan blocked, master at target
+    assert _due(bp, "fans_due_night", now, [_S(MASTER, "on", 21, BEFORE), _S(KIDS, "off", 21, BEFORE)],
+                interlock_blocked=True) == [MASTER]                                     # interlock only guards the kids fan
+    assert _due(bp, "fans_due_night", now, [_S(MASTER, "on", 21, BEFORE), _S(KIDS, "off", 21, AFTER)]) == [MASTER]   # touched since the lock
+    # a percentage change bumps last_updated only; it still counts as touched (board R2-05)
+    assert _due(bp, "fans_due_night", now, [_S(MASTER, "on", 21, BEFORE), _S(KIDS, "on", 21, last_updated=AFTER, last_changed=BEFORE)]) == [MASTER]
+    assert _due(bp, "fans_due_night", now, [_S(MASTER, "unavailable", None, BEFORE), _S(KIDS, "off", 21, BEFORE)]) == [KIDS]
+    assert _due(bp, "fans_due_night", now, [_S(KIDS, "off", 21, BEFORE)]) == [KIDS]      # master absent from the state machine
+    assert _due(bp, "fans_due_night", now, [_S(MASTER, "on", None, BEFORE), _S(KIDS, "off", 21, BEFORE)]) == [MASTER, KIDS]   # no percentage attribute: renders, not at target (board R1-04)
+    assert _due(bp, "fans_due_night", now, untouched, night_fans_tonight=False) == []
+    assert _due(bp, "fans_due_night", now, untouched, in_fan_settle=False) == []
+    assert _due(bp, "fans_due_night", now, untouched, bedroom_fans=[]) == []
+
+
+def test_rendered_fans_due_precool_uses_the_ac_start_as_reference(bp):
+    now = LOCK - timedelta(hours=2)
+    started = LOCK - timedelta(hours=2, minutes=30)
+    fans = [_S(MASTER, "on", 1, started - timedelta(hours=3)), _S(KIDS, "on", 21, started - timedelta(hours=3))]
+    assert _due(bp, "fans_due_precool", now, fans) == [MASTER]                            # kids already at 21 %
+    assert _due(bp, "fans_due_precool", now, [_S(MASTER, "on", 1, started + timedelta(minutes=1))]) == []   # touched after the start
+    assert _due(bp, "fans_due_precool", now, fans, fan_assist_tonight=False) == []
+    assert _due(bp, "fans_due_precool", now, fans, in_fan_assist_window=False) == []
+
+
+def test_rendered_fans_unset_night_is_disjoint_from_due_and_fans_on_at_wake(bp):
+    now = LOCK + timedelta(minutes=44)
+    fixtures = [
+        (dict(interlock_blocked=True), [_S(MASTER, "on", 1, BEFORE), _S(KIDS, "off", 21, BEFORE)]),
+        (dict(), [_S(MASTER, "on", 1, BEFORE), _S(KIDS, "off", 21, BEFORE)]),               # due on the last tick → commanded, not reported (board R1-06)
+        (dict(), [_S(MASTER, "unavailable", None, BEFORE), _S(KIDS, "off", 21, AFTER)]),
+        (dict(interlock_blocked=True), [_S(MASTER, "on", 21, BEFORE), _S(KIDS, "off", 21, BEFORE)]),
+    ]
+    for ctx, states in fixtures:
+        due, unset = _due(bp, "fans_due_night", now, states, **ctx), _due(bp, "fans_unset_night", now, states, **ctx)
+        assert not (set(due) & set(unset)), (due, unset)
+    assert _due(bp, "fans_unset_night", now, fixtures[0][1], interlock_blocked=True) == [KIDS]
+    assert _due(bp, "fans_unset_night", now, fixtures[1][1]) == []
+    assert _due(bp, "fans_unset_night", now, fixtures[2][1]) == [MASTER]                 # unavailable, untouched
+    morning = datetime(2026, 9, 10, 7, 15, tzinfo=TZ)
+    fans = [_S(MASTER, "on", 1, BEFORE), _S(KIDS, "off", 21, BEFORE)]
+    assert _due(bp, "fans_on_at_wake", morning, fans) == [MASTER]
+    assert _due(bp, "fans_on_at_wake", morning, fans, fans_at_wake="leave") == []
+    assert _due(bp, "fans_on_at_wake", morning, fans, in_wake_window=False) == []
+
+
+def test_fan_due_lists_are_defined_after_their_inputs_and_use_state_attr(text):
+    for name in ("fans_due_precool", "fans_due_night", "fans_unset_night", "fans_on_at_wake"):
+        assert _def_index(text, "settle_fan_due") < _def_index(text, name)
+        assert _def_index(text, "in_fan_settle") < _def_index(text, name)
+    assert "s.attributes.percentage" not in text          # Undefined would kill the variables step (board R1-04)
