@@ -1,12 +1,19 @@
 blueprint:
-  name: "Bedroom Sleep Pre-Cool v1.0.3"
+  name: "Bedroom Sleep Pre-Cool v1.1.0"
   description: >
-    **Version: 1.0.3** — `night_fan` input (default low): the fan mode locked
-    in at bedtime, matched case-insensitively against the unit's modes, with a
-    notice when the unit lacks it. History: v1.0.2 wake-time turn-off works
-    again (running-unit latch bounded to bedtime − lead cap; a manual daytime
-    turn-on ends within a minute) · v1.0.1 instants carried as timestamps
-    across the variables boundary · v1.0.0 initial.
+    **Version: 1.1.0** — ceiling-fan coordination: night_mode fan_only (park,
+    off at the lock unless already over the band, one-beep night guard with
+    the running unit as latch and a 15-minute settle check), pre-chill offset
+    that the lead prediction and the learner aim at, bedroom fan list written
+    under one edge-triggered rule (last_updated touch detection, interlock
+    sensors with a clear hold, live re-check before every call), day-parity
+    switches for the fan-assist / night-fan experiments. History: v1.0.3
+    `night_fan` input (default low): the fan mode locked in at bedtime,
+    matched case-insensitively against the unit's modes, with a notice when
+    the unit lacks it. v1.0.2 wake-time turn-off works again (running-unit
+    latch bounded to bedtime − lead cap; a manual daytime turn-on ends within
+    a minute) · v1.0.1 instants carried as timestamps across the variables
+    boundary · v1.0.0 initial.
 
     Predictive pre-cooling of bedrooms via a single hall LG air conditioner.
     Reaches an ideal sleep temperature by a fixed bedtime, then holds the room
@@ -39,6 +46,16 @@ blueprint:
     - Opt-in humidity-aware dry mode (default off — cool is the proven path)
     - Idempotent service calls — a stray command is a stray beep
     - Vacation toggle, manual-run debug notification
+    - Night Mode: AC-hold (v1.0.x, unit runs all night) or fan-only, which
+      parks the unit at the lock, switches it off, and hands the night to the
+      Bedroom Fans unless the warmest room is already over the guard band
+    - Bedroom Fans, written under one edge-triggered rule (configured,
+      available, not already at target, interlock clear including its clear
+      hold, untouched since the reference), with day-parity fan-assist /
+      night-fan experiments and a live re-check before every command
+    - Night Guard: a single bare turn_on restores the parked AC state if a
+      fan-only bedroom drifts over ideal + tolerance, with a 15-minute
+      settle check that corrects mode, setpoint or fan from live reads
 
     **Requirements:**
     - Home Assistant Core 2025.7+ (LG ThinQ set_temperature fix, PR #147008)
@@ -1238,6 +1255,75 @@ action:
               notification_id: "bedroom_precool_overcool_fault"
 
   # =============================================
+  # STEP 5c: BEDROOM FANS (v1.1.0) — the ONLY place fan services are called, and
+  # deliberately BEFORE the AC dispatch: no climate call sits between the STEP 2c
+  # snapshot and the fan command. Each list holds the fans DUE under the fan write
+  # rule; every iteration re-checks the rule on LIVE state (availability, target,
+  # interlock incl. the clear hold, untouched since the reference) so an adult who
+  # entered or a cutoff that fired since the snapshot cancels the command. Empty lists
+  # iterate nothing. Direction is never written. continue_on_error: one cloud failure
+  # never aborts the other fans or the rest of the tick.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_real_trigger }}"
+        sequence:
+          - repeat:
+              for_each: "{{ fans_due_precool }}"
+              sequence:
+                - choose:
+                    - conditions:
+                        - condition: template
+                          value_template: >-
+                            {{ states(repeat.item) not in ['unavailable', 'unknown']
+                               and not (is_state(repeat.item, 'on')
+                                        and (state_attr(repeat.item, 'percentage') | int(-1)) == (precool_fan_percentage | int))
+                               and not ((repeat.item in interlocked_fans) and fan_interlocks | length > 0
+                                        and (expand(fan_interlocks) | list | length < fan_interlocks | length
+                                             or expand(fan_interlocks) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0
+                                             or expand(fan_interlocks) | map(attribute='last_changed') | map('as_timestamp')
+                                                | select('gt', as_timestamp(now()) - (interlock_clear_minutes | float) * 60) | list | length > 0))
+                               and as_timestamp((expand(repeat.item) | first).last_updated) < (ac_started_ts | float) }}
+                      sequence:
+                        - service: fan.turn_on
+                          continue_on_error: true
+                          target:
+                            entity_id: "{{ repeat.item }}"
+                          data:
+                            percentage: "{{ precool_fan_percentage | int }}"
+          - repeat:
+              for_each: "{{ fans_due_night }}"
+              sequence:
+                - choose:
+                    - conditions:
+                        - condition: template
+                          value_template: >-
+                            {{ states(repeat.item) not in ['unavailable', 'unknown']
+                               and not (is_state(repeat.item, 'on')
+                                        and (state_attr(repeat.item, 'percentage') | int(-1)) == (night_fan_percentage | int))
+                               and not ((repeat.item in interlocked_fans) and fan_interlocks | length > 0
+                                        and (expand(fan_interlocks) | list | length < fan_interlocks | length
+                                             or expand(fan_interlocks) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0
+                                             or expand(fan_interlocks) | map(attribute='last_changed') | map('as_timestamp')
+                                                | select('gt', as_timestamp(now()) - (interlock_clear_minutes | float) * 60) | list | length > 0))
+                               and as_timestamp((expand(repeat.item) | first).last_updated) < (lock_ts | float) }}
+                      sequence:
+                        - service: fan.turn_on
+                          continue_on_error: true
+                          target:
+                            entity_id: "{{ repeat.item }}"
+                          data:
+                            percentage: "{{ night_fan_percentage | int }}"
+          - repeat:
+              for_each: "{{ fans_on_at_wake }}"
+              sequence:
+                - service: fan.turn_off
+                  continue_on_error: true
+                  target:
+                    entity_id: "{{ repeat.item }}"
+
+  # =============================================
   # STEP 6: PHASE DISPATCH — exactly one phase acts.
   # Each acting branch resolves desired setpoint/mode/fan, then issues
   # only idempotent service calls (a stray call is a stray beep).
@@ -1613,6 +1699,24 @@ action:
               notification_id: "bedroom_precool_night_fan_unsupported"
 
   # =============================================
+  # STEP 7d: NIGHT FAN NOT APPLIED — informational notice (last settle tick only)
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ enable_notifications and in_settle_last_tick and fans_unset_night | length > 0 }}"
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Bedroom Pre-Cool — Night Fan Not Applied"
+              message: >
+                {{ fans_unset_night | join(', ') }} did not get the night fan setting
+                ({{ night_fan_percentage }}%) within {{ fan_settle_minutes }} min of the
+                lock — an interlock stayed on or the fan was unavailable. Nothing will
+                retry; set it by hand if you want it on.
+              notification_id: "bedroom_precool_fan_skipped"
+
+  # =============================================
   # STEP 8: DEBUG NOTIFICATION (manual run only)
   # =============================================
   - choose:
@@ -1664,4 +1768,15 @@ action:
                 **desired_mode:** {{ desired_mode }}
                 | **night fan:** {{ night_fan_mode }}
                 | **vacation:** {{ vacation_active }}
+
+                **night_mode:** {{ night_mode }} (fan_only={{ fan_only_mode }})
+                | **bedtime_target:** {{ bedtime_target }}°C
+                | **guard_due:** {{ guard_due }} · settle={{ guard_settle_due }}
+
+                **night_parity:** {{ night_parity }}
+                | fan_assist tonight={{ fan_assist_tonight }} · night fans tonight={{ night_fans_tonight }}
+                | interlock blocked={{ interlock_blocked }}
+
+                **fans due:** precool={{ fans_due_precool }} · night={{ fans_due_night }}
+                · unset={{ fans_unset_night }} · wake-off={{ fans_on_at_wake }}
               notification_id: "bedroom_precool_debug"

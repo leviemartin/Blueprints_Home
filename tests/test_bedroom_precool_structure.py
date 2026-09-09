@@ -72,8 +72,8 @@ def test_instants_are_carried_as_timestamps_not_datetimes(text):
 
 
 def test_version_bumped(bp):
-    assert bp["blueprint"]["name"].endswith("v1.0.3")
-    assert "**Version: 1.0.3**" in bp["blueprint"]["description"]
+    assert bp["blueprint"]["name"].endswith("v1.1.0")
+    assert "**Version: 1.1.0**" in bp["blueprint"]["description"]
 
 
 # --- deployed instance configs ---------------------------------------------------------
@@ -87,7 +87,7 @@ def test_precool_instance_keys_exist_and_weather_supports_hourly_forecasts():
     # weather.openweathermap reports supported_features None in this HA (no forecast
     # service); weather.home_sm (Met.no) supports hourly forecasts (features 3).
     assert inst["use_blueprint"]["input"]["weather_entity"] == "weather.home_sm"
-    assert inst["alias"].endswith("v1.0.3")
+    assert inst["alias"].endswith("v1.1.0")
 
 
 def test_lg_ac_instance_escalation_stages_are_ordered_and_in_range():
@@ -346,6 +346,9 @@ def _service_steps(node, found, conds=()):
                 own = tuple(c.get("value_template", "") for c in br.get("conditions", []) if isinstance(c, dict))
                 _service_steps(br.get("sequence", []), found, conds + own)
             _service_steps(node.get("default", []), found, conds)
+        elif "repeat" in node:
+            rep = node["repeat"]
+            _service_steps(rep.get("sequence", []), found, conds + (f"for_each={rep.get('for_each', '')}",))
         elif "service" in node or "action" in node:
             found.append((conds, node))
     return found
@@ -731,3 +734,65 @@ def test_fan_due_lists_are_defined_after_their_inputs_and_use_state_attr(text):
         assert _def_index(text, "settle_fan_due") < _def_index(text, name)
         assert _def_index(text, "in_fan_settle") < _def_index(text, name)
     assert "s.attributes.percentage" not in text          # Undefined would kill the variables step (board R1-04)
+
+
+# --- v1.1.0 T5: fan step (before the AC dispatch), skipped notice, docs, instance, version ---
+
+def _fan_service_calls(bp):
+    steps = _service_steps(bp.get("action") or bp.get("actions"), [])
+    return [(c, s) for c, s in steps if str(s.get("service") or s.get("action")).startswith("fan.")]
+
+
+def test_fan_step_runs_before_the_ac_dispatch_and_rechecks_live_state_per_call(bp, text):
+    calls = _fan_service_calls(bp)
+    by_list = {}
+    for conds, step in calls:
+        src = [t for t in conds if t.startswith("for_each=")]
+        assert len(src) == 1, "every fan call iterates one due list"
+        by_list[src[0]] = (conds, step)
+        assert any(t.strip() == "{{ is_real_trigger }}" for t in conds), "manual Run never actuates a fan"
+        assert step["target"]["entity_id"] == "{{ repeat.item }}"
+        assert step.get("continue_on_error") is True                                 # board R2-07
+    assert set(by_list) == {"for_each={{ fans_due_precool }}", "for_each={{ fans_due_night }}", "for_each={{ fans_on_at_wake }}"}
+    pre_c, pre = by_list["for_each={{ fans_due_precool }}"]
+    assert pre["service"] == "fan.turn_on" and pre["data"]["percentage"] == "{{ precool_fan_percentage | int }}"
+    night_c, night = by_list["for_each={{ fans_due_night }}"]
+    assert night["service"] == "fan.turn_on" and night["data"]["percentage"] == "{{ night_fan_percentage | int }}"
+    for conds, ref in ((pre_c, "ac_started_ts"), (night_c, "lock_ts")):                 # live re-check (board R2-01)
+        live = [t for t in conds if "states(repeat.item)" in t]
+        assert len(live) == 1 and "last_updated" in live[0] and ref in live[0] and "interlock" in live[0]
+    wake = by_list["for_each={{ fans_on_at_wake }}"][1]
+    assert wake["service"] == "fan.turn_off" and "data" not in wake
+    assert len(calls) == 3
+    assert "fan.set_direction" not in text
+    assert text.index("STEP 5c") < text.index("STEP 6: PHASE DISPATCH")               # before any climate call or wait
+
+
+def test_fan_skipped_notice_fires_once_on_the_last_settle_tick(bp):
+    steps = _service_steps(bp.get("action") or bp.get("actions"), [])
+    notices = [(c, s) for c, s in steps
+               if (s.get("service") or s.get("action")) == "persistent_notification.create"
+               and (s.get("data") or {}).get("notification_id") == "bedroom_precool_fan_skipped"]
+    assert len(notices) == 1
+    conds = notices[0][0]
+    assert any("in_settle_last_tick" in t and "fans_unset_night | length > 0" in t and "enable_notifications" in t for t in conds)
+
+
+def test_v110_version_docs_and_instance():
+    inst = json.loads(PRECOOL_INSTANCE.read_text())
+    i = inst["use_blueprint"]["input"]
+    assert inst["alias"].endswith("v1.1.0")
+    assert i["night_mode"] == "fan_only" and i["prechill_offset"] == 0.5
+    assert i["bedroom_fans"] == ["fan.ceiling_fan_light_v2_2", "fan.ceiling_fan_light_v2"]
+    assert i["interlocked_fans"] == ["fan.ceiling_fan_light_v2"]
+    assert i["fan_interlocks"] == ["binary_sensor.samuel_samuel_matthew_fanprotection"]
+    assert i["interlock_clear_minutes"] == 5                # cutoff hold 3 + 2 (spec §2.1)
+    assert i["night_fans"] == "all" and i["fan_assist"] == "off" and i["fans_at_wake"] == "leave"
+    assert i["night_fan_percentage"] == 1 and i["precool_fan_percentage"] == 21 and i["fan_settle_minutes"] == 45
+    text = BP_PATH.read_text()
+    assert "**Version: 1.1.0**" in text
+    req = (ROOT / "requirements_bedroom_precool.md").read_text()
+    for token in ("fan_only", "Night guard", "settle window", "last_updated", "odd/even", "interlock_clear_minutes"):
+        assert token in req, token
+    readme = (ROOT / "README.md").read_text()
+    assert "Fan-Only Night Hold (v1.1.0)" in readme
