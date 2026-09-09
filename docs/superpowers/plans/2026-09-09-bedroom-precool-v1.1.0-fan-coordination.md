@@ -1208,3 +1208,48 @@ Merge commit resolved the five conflicting files (`bedroom_precool.yaml`,
 README) keeping both sides everywhere, per the task-6i brief's Step 1 rules
 (target-keyed variables ours, quantised setpoints main's, our notice renamed
 STEP 7d → STEP 7f after main's 7d/7e, main's test section kept first).
+
+## Code board 20260909-151815 fixes (Task 7, cycle 1)
+
+Task 7 actioned the code-time board's 10 findings against the integrated
+v1.2.0 above; see the design spec's own "Code board 20260909-151815 fixes"
+section for the full per-finding fix + evidence. Summary of what changed:
+
+1. `lock_ts` anchors to the night's start date (F1, P0) — same day-offset
+   idiom as `earliest_turn_on_ts` — fixing the guard going dead after
+   midnight on every fan-only lock night, and the false Manual Override
+   notice that came with it.
+2. STEP 6a's night guard now sends `climate.turn_on` +
+   `climate.set_hvac_mode` unconditionally (F2, P1) — 2 beeps, so a
+   guard-restored unit is never left in whatever mode it last held.
+3. New `fans_unsafe_on` list + STEP 5c repeat (F3, P1) cuts an interlocked
+   fan that turns on inside the Tuya command lag while the interlock is
+   active — placed first among the repeats.
+4. `in_fan_assist_window` gained the 600 s restart-grace guard (F4, P2) —
+   same convention as `manual_off`'s `automation_up_since_ts` check.
+5. New `test_rendered_live_recheck_blocks_unsafe_commands` (F5, P2) renders
+   the live re-check condition instead of token-matching it; the fan-step
+   position pin is now a parsed top-level-action-index check, not a string
+   offset.
+6. F6 (P2) accepted as a documented limitation — no code change.
+7. New `night_hold_setpoints` / `setpoint_is_night_hold` (F7, P1) stop the
+   guard settle from fighting a quantised deep-night nudge (int(21-1.5)=19,
+   not 19.5, on a >= 1-degree-step unit) — the alternating set_temperature
+   loop this caused whenever the settle window overlapped 01:00 is gone.
+8. `test_override_variables_are_defined_in_dependency_order` extended (F8,
+   P2) with the `lock_ts`/`fan_only_mode`/`night_hold_setpoints` order pins.
+9. `requirements_bedroom_precool.md`'s Prediction Model / Auto-Learn blocks
+   now read `bedtime_target`, not `ideal_temp` (F9, P3).
+10. STEP 5c (fan step + folded skipped-fan notice) moved before STEP 5's
+    AC/sensor validation (F10, P3) — fan writes and the notice now survive
+    an AC-unavailable tick; STEP 7f deleted as a standalone block. New STEP
+    order: `4 < 5c < 5 < 5b < 6 < 6a < 6b < 7a...7e < 8`.
+
+Beep numbers reconciled everywhere (blueprint description, requirements
+phase table + Beep Budget, README, spec addendum): fan_only lock `<= 4`
+(typically 1, unchanged); guard nights `turn_on 1 + set_hvac_mode 1 +
+settle <= 2 (setpoint, fan) + nudge <= 1` → typical 2, worst 5 (same
+worst-case ceiling as before F2 — the composition changed, the cap didn't);
+`ac_hold` unchanged. One commit for the whole wave: full suite 345/345,
+dry-run green, greps green (`fan.` = 4, `wait_template` = 0, `set_direction`
+= 0, STEP order confirmed above).

@@ -64,14 +64,15 @@ acts. Phase boundaries span midnight (bedtime -> wake is an overnight window).
 | PRECOOL | turn_on -> bedtime − 1 min | Cooling; closed-loop DRIVE / HOLD; stands down while a manual setpoint or a manual off is active (v1.1.0) | many (allowed) |
 | BEDTIME-LOCK | bedtime − 1 min -> bedtime | Lock mode, maintaining setpoint and the night fan (`night_fan`, default low) + auto-learn write; `fan_only`: park then off unless already over the band (≤ 4 commands: mode, setpoint, fan, off — typically 1) | ≤ 3 (typically 1–2); `fan_only` ≤ 4 (typically 1) |
 | FAN SETTLE (lock -> bedtime + settle) | lock -> bedtime + `fan_settle_minutes` | Bedroom Fans to the night percentage under the fan write rule, at most one command per fan, live re-check before each call | — |
-| NIGHT-HOLD | bedtime -> deep-night check | Holds; blueprint issues nothing (ac_hold). fan_only: the night guard may switch the unit back on once (a 5-minute tick, warmest > ideal + tolerance, not during a respected manual off), then the guard settle asserts the parked state for 15 min | 0 (ac_hold) · fan_only: ≤ 1 guard + ≤ 3 settle (normally 0) |
-| NIGHT GUARD (any 5-minute tick after bedtime, `fan_only`) | any night phase | One bare `turn_on` restoring the parked state; the running unit is the latch. GUARD SETTLE, for 15 min after any night start, asserts mode / setpoint (outside ± `correction_step`) / fan from live reads — normally 0 commands | turn_on 1 + settle ≤ 3 (typical 1–2, worst 5) |
+| NIGHT-HOLD | bedtime -> deep-night check | Holds; blueprint issues nothing (ac_hold). fan_only: the night guard may switch the unit back on once (a 5-minute tick, warmest > ideal + tolerance, not during a respected manual off), then the guard settle asserts the parked state for 15 min | 0 (ac_hold) · fan_only: ≤ 1 guard turn_on + 1 guard mode + ≤ 2 settle (normally 0) |
+| NIGHT GUARD (any 5-minute tick after bedtime, `fan_only`) | any night phase | `turn_on` + an unconditional `set_hvac_mode` restoring the parked state in cooling mode; the running unit is the latch. GUARD SETTLE, for 15 min after any night start, asserts setpoint (outside every quantised night-hold value) / fan from live reads — normally 0 commands (`settle_mode_due` only matters after a manual night start) | turn_on 1 + set_hvac_mode 1 + settle ≤ 2 (setpoint, fan) + nudge ≤ 1 (typical 2, worst 5) |
 | DEEP-NIGHT-CHECK | deep-night check -> +10 min | At most one corrective command | 0 or 1 |
-| DEEP-HOLD | deep-night check + 10 min -> wake | Holds; blueprint issues nothing (ac_hold). fan_only: the night guard may switch the unit back on once (a 5-minute tick, warmest > ideal + tolerance, not during a respected manual off), then the guard settle asserts the parked state for 15 min | 0 (ac_hold) · fan_only: ≤ 1 guard + ≤ 3 settle (normally 0) |
+| DEEP-HOLD | deep-night check + 10 min -> wake | Holds; blueprint issues nothing (ac_hold). fan_only: the night guard may switch the unit back on once (a 5-minute tick, warmest > ideal + tolerance, not during a respected manual off), then the guard settle asserts the parked state for 15 min | 0 (ac_hold) · fan_only: ≤ 1 guard turn_on + 1 guard mode + ≤ 2 settle (normally 0) |
 
 Beep budget after bedtime: `ac_hold` — lock ≤ 3 (typically 1–2) + deep-night
 check ≤ 1 (unchanged). `fan_only` — lock ≤ 4 (typically 1) + guard nights
-turn_on 1 + settle ≤ 3 + deep-night nudge ≤ 1 (typical 1–2, worst 5). Turn-on
+turn_on 1 + set_hvac_mode 1 + settle ≤ 2 (setpoint, fan) + nudge ≤ 1
+(typical 2, worst 5). Turn-on
 is a one-way latch — once PRECOOL begins it never reverts to DAY-OFF that
 day. The latch is bounded: a running AC counts as "PRECOOL has started" only
 from `bedtime − lead_cap_minutes` onward; earlier on the day side (from
@@ -126,8 +127,9 @@ phase boundary:
 ## Prediction Model
 
 ```
+bedtime_target  = ideal_temp − prechill_offset (fan_only) | ideal_temp (ac_hold)
 warmest_bedroom = aggregate(bedroom sensors, strategy)        # default: max
-delta_in        = max(0, warmest_bedroom − ideal_temp)
+delta_in        = max(0, warmest_bedroom − bedtime_target)
 forecast_max    = max hourly forecast temp over [now -> bedtime]
                   # hourly fetched every 15 min; other ticks use the day's
                   # forecast high (never below the live outdoor reading);
@@ -149,7 +151,7 @@ turn_on = bedtime − lead          # enter PRECOOL when now >= turn_on
 ```
 
 The AC starts only when `cooling_needed` is true:
-`warmest_bedroom > ideal_temp  OR  forecast_max > skip_threshold`.
+`warmest_bedroom > bedtime_target  OR  forecast_max > skip_threshold`.
 
 ## Auto-Learn
 
@@ -158,7 +160,7 @@ The blueprint self-learns one scalar — the lead-time bias — persisted in an
 
 ```
 # at BEDTIME-LOCK, only if the AC was running this night:
-bedtime_error = warmest_bedroom − ideal_temp
+bedtime_error = warmest_bedroom − bedtime_target
 raw           = lead_bias + learn_gain * bedtime_error * k_indoor
 floor         = ceil(max(helper.min, -60))      # whole numbers inside helper ∩ [-60, 120]
 ceiling       = floor(min(helper.max, 120))
@@ -206,12 +208,25 @@ any night start (guard or otherwise), GUARD SETTLE re-asserts mode / setpoint
 correction) / fan from live reads, each only if it differs from the parked
 state — normally 0 commands, and never while a manual setpoint is active.
 
+**Accepted limitation (code board 20260909-151815 F6):** on a night when the
+lock does not itself switch the unit off (the warmest room is already over
+`ideal_temp + tolerance`, so the unit stays on), a person's off stamped
+inside `[lock_ts, lock_ts + 180)` is indistinguishable from the lock's own
+off and is misread as ours; the next 5-minute guard tick may switch the unit
+back on once, after which a second manual off is respected as usual. Bounded
+(one beep, self-healing) — a stateless blueprint has no persisted ownership
+bit to disambiguate the two within that 180 s window.
+
 ## Bedroom Fans — The Fan Write Rule (v1.2.0)
 
 A configured bedroom fan gets a command only when ALL of the following hold,
 evaluated first as a per-tick due list and then re-checked live immediately
 before the call:
 
+0. An interlocked fan that just turned `on` (within the last 120 s) while an
+   interlock sensor actively reads `on` is switched off unconditionally —
+   the live re-check below cannot cancel a cloud command already in flight
+   (code board 20260909-151815 F3).
 1. Configured (listed in `bedroom_fans`) and available — not `unavailable`
    or `unknown`.
 2. Not already at the target percentage (the night or pre-cool percentage).
@@ -220,7 +235,19 @@ before the call:
    changed state within `interlock_clear_minutes` — the clear hold.
 4. Untouched since the reference instant: `last_updated` (not
    `last_changed` — a percentage change bumps the former, not the latter)
-   older than the lock (night list) or the AC start (pre-cool list).
+   older than the lock (night list) or the AC start (pre-cool list). The
+   pre-cool assist window additionally requires the automation to have been
+   up for at least 600 s (code board 20260909-151815 F4) — the AC start
+   reference also moves on a cool<->dry mode transition and at an HA
+   restart, and without the guard either would re-open assist against a fan
+   a person switched off after the ORIGINAL start. A bare mode transition
+   inside a long-up automation is a documented residual case: `dry` mode
+   and `fan_assist` are both off by default.
+
+The fan step runs before STEP 5's AC/sensor validation (code board
+20260909-151815 F10), so fan writes and the skipped-fan notice fire on
+every real tick even while the AC entity is unavailable; they are skipped
+only during vacation (STEP 4, ahead of the fan step).
 
 The night list is only evaluated inside the fan settle window
 (`fan_settle_minutes` after the lock); anything still unmet when the settle
@@ -264,7 +291,7 @@ comparison of whether a fan in the room speeds the measured pre-cool
 ### Beep Budget
 1. Unlimited commands before bedtime; after bedtime the lock issues ≤ 3 in ac_hold (mode, setpoint, night fan — typically 1–2) and ≤ 4 in fan_only (… + off — typically 1); the deep-night check ≤ 1.
 2. Every climate service call guarded by a current-vs-desired comparison.
-3. NIGHT-HOLD and DEEP-HOLD issue zero service calls in ac_hold mode; in fan_only mode only the night guard (one bare turn_on) and its settle corrections may fire, and the fan step writes each configured fan at most once per transition.
+3. NIGHT-HOLD and DEEP-HOLD issue zero service calls in ac_hold mode; in fan_only mode only the night guard (`turn_on` + unconditional `set_hvac_mode`, restoring the parked state in cooling mode regardless of what the stale read shows) and its settle corrections (setpoint, fan — normally 0) may fire, and the fan step writes each configured fan at most once per transition.
 
 ### Mode Selection
 1. `cool` is the proven default path.

@@ -170,3 +170,118 @@ NIGHT-HOLD / DEEP-HOLD phase-table rows, the Beep Budget functional
 requirements, and the README beep bullet no longer claim unqualified "zero
 commands" — fan_only nights may issue one guard `turn_on` plus up to three
 settle corrections.
+
+## Code board 20260909-151815 fixes (2026-09-09, cycle 1)
+
+Task 7 actioned the code-time board's cycle-1 findings (F1-F10) against v1.2.0
+(the integrated onto-main state above). Each finding, its fix, and the RED
+test that reproduced it before the change:
+
+1. **F1 (P0, R2-04) — `lock_ts` re-anchors to tonight after midnight, killing
+   the guard.** `lock_ts` gained the same night-start day offset as
+   `earliest_turn_on_ts`: `as_timestamp(today_at(bedtime) -
+   timedelta(days=(1 if now().strftime('%H:%M:%S') < wake_time else 0),
+   minutes=1))` — the inline `now()`/`wake_time` idiom `earliest_turn_on_ts`
+   already uses, not the brief's literal `now_tod`/`wake_tod` snippet (both
+   are defined earlier in the file and would work too, but the inline form
+   needed no new keys in the pre-existing `_manual_off` test fixtures that
+   build their own raw context dict without those two variables). Without
+   the offset, at 01:00 `lock_ts` rendered TONIGHT's future 19:29, the lock's
+   own 19:29:30 off fell outside `manual_off`'s exemption window, and
+   `guard_due` stayed False for the rest of the night — reproduced exactly
+   in `test_rendered_guard_is_alive_after_midnight_on_a_fan_only_lock_night`
+   (RED before the fix) — and the same bug fired a false STEP 7e "Manual
+   Override" notice 00:00-01:00 on every fan-only night, now also asserted
+   False in `test_rendered_manual_off_exempts_only_the_lock_s_own_off_in_fan_only`.
+2. **F2 (P1, R2-02) — the guard must start the unit in the cooling mode.**
+   STEP 6a now issues `climate.set_hvac_mode` with `hvac_mode: "{{
+   desired_mode }}"` UNCONDITIONALLY right after `climate.turn_on` (2 beeps
+   per trip) — a bare `turn_on` alone restores whatever mode the unit last
+   held, and the STEP 2 mode read is stale on the guard tick anyway, so the
+   call can't be conditioned on a mismatch. `settle_mode_due` (STEP 6b)
+   stays for the one case it still covers: a manual night start that never
+   went through the guard.
+3. **F3 (P1, R2-01) — an interlocked fan that comes on under an active
+   interlock is switched off.** New STEP 2c list `fans_unsafe_on`: every fan
+   in `interlocked_fans` whose state is `on`, whose `last_updated` is within
+   the last 120 s, and while at least one interlock sensor actively reads
+   `on` (only `on` — not unavailable/unknown/the clear hold). STEP 5c
+   iterates it with `fan.turn_off` FIRST, before any due-list write — the
+   live re-check inside the due-list repeats cannot cancel a Tuya command
+   already 10-60 s in flight.
+4. **F4 (P2, R2-05) — a mode transition or restart must not reopen fan
+   assist against a manual off.** `in_fan_assist_window` gained `and
+   (as_timestamp(now()) - (automation_up_since_ts | float)) > 600` — the
+   same 600 s restart-grace convention `manual_off` already uses.
+   `automation_up_since_ts` is defined in STEP 2c before this clause.
+   Residual, documented: a bare cool<->dry transition inside a long-up
+   automation still moves `ac_started_ts`; both `dry` mode and `fan_assist`
+   default off.
+5. **F5 (P2, R2-06) — pin the live re-check by rendering it; pin the fan-step
+   position by parsed order.** New
+   `test_rendered_live_recheck_blocks_unsafe_commands` renders each
+   `fan.turn_on` call's live condition (fetched from the walker output, not
+   duplicated) against `_fan_env` fakes for PIR-on, PIR-cleared-inside-the-
+   hold, touched-after-the-reference, already-at-target, and missing cases
+   (all False) and a clean case (True), for both the night and pre-cool
+   templates. The old `text.index("STEP 5c") < text.index(...)` string check
+   is replaced by a parsed-order check over `bp["action"]`: the top-level
+   step containing a `repeat.for_each` (the fan step), the step containing
+   `stop: "Vacation active"`, the step containing `stop: "AC entity
+   unavailable"`, and the step containing a nested `phase == 'DAY_OFF'`
+   condition (the dispatch), asserting `vacation < fan < validation <
+   dispatch`.
+6. **F6 (P2, R2-03) — ACCEPTED, documented only.** A person's off inside
+   `[lock_ts, lock_ts + 180)` on a fan-only night where the lock did not
+   itself switch the unit off (already over band) is misread as the
+   blueprint's off; the next guard tick may switch it back on once, after
+   which a second manual off is respected. Bounded, self-healing; a
+   stateless blueprint has no ownership bit to disambiguate the two within
+   that window. Documented in the requirements' Night Mode & Pre-Chill
+   section and the README beep bullet — no code change.
+7. **F7 (P1, R1-02/R1-03) — the settle must not fight the QUANTISED
+   deep-night nudge.** New STEP 2c variables `night_hold_setpoints` (the
+   list `[maintaining, down-nudge, up-nudge]`, quantised EXACTLY like
+   `known_setpoints` — `(v | int) if ac_temp_step | float >= 1 else v`, each
+   clamped to `ac_min_temp`/`ac_max_temp`) and `setpoint_is_night_hold`
+   (true when `current_setpoint` is within 0.1 of any of them, with the same
+   "non-list arrives -> treat as known" guard as `setpoint_is_known`).
+   `settle_setpoint_due` is now `guard_settle_due and current_setpoint_known
+   and not setpoint_is_night_hold` — a stale DRIVE park (18 on this unit)
+   isn't in that list and is still corrected. On a >= 1-degree-step unit the
+   old `> correction_step + 0.1` band compared against the unquantised
+   19.5, so it fired on the device's actual 19 and STEP 6b re-sent 21 the
+   tick after DEEP_NIGHT_CHECK set 19 — an alternating loop whenever the
+   settle window overlapped 01:00. The pre-existing guard-settle test now
+   derives its nudge fixture from the rendered `night_hold_setpoints` (R1-03)
+   instead of a hand-written 19.5.
+8. **F8 (P2, R1-05) — extend the dependency-order pin.**
+   `test_override_variables_are_defined_in_dependency_order` now also
+   asserts `lock_ts < earliest_turn_on_ts`, `fan_only_mode < manual_off`,
+   and `night_hold_setpoints < settle_setpoint_due` — HA's chainable
+   Undefined would turn an unordered reference into a silent `0.0` rather
+   than an error.
+9. **F9 (P3, R1-06) — requirements formula blocks.** The Prediction Model
+   and Auto-Learn code blocks in `requirements_bedroom_precool.md` now read
+   `bedtime_target` (not `ideal_temp`) in `delta_in`, the `cooling_needed`
+   gate, and `bedtime_error`, with a `bedtime_target = ideal_temp -
+   prechill_offset (fan_only) | ideal_temp (ac_hold)` definition line added
+   above the block; `delta_out`'s `ideal_temp` is untouched (by design —
+   the outdoor lead term is not pre-chill-relative).
+10. **F10 (P3, R1-07) — the fan step and its notice must survive an
+    AC-unavailable tick.** STEP 5c (the whole `is_real_trigger`-gated block,
+    all four repeats as one unit) moved to sit AFTER STEP 4 (vacation) and
+    BEFORE STEP 5 (AC/sensor validation) — a cloud outage or a missing
+    bedroom sensor no longer silently skips every fan write and the
+    "reported once" notice for the whole settle window. The former STEP 7f
+    notice is folded into the end of STEP 5c's sequence (same condition,
+    same `notification_id`) and the standalone STEP 7f block is deleted; no
+    other step renumbered. New STEP order: `4 < 5c < 5 < 5b < 6 < 6a < 6b <
+    7a...7e < 8`.
+
+Beep numbers reconciled everywhere (blueprint description, requirements
+phase table + Beep Budget, README, this addendum): fan_only lock stays
+`<= 4` (typically 1); guard nights are `turn_on 1 + set_hvac_mode 1 +
+settle <= 2 (setpoint, fan) + nudge <= 1` -> typical 2, worst 5 (same
+worst-case ceiling as before F2, different composition); `ac_hold`
+unchanged.
