@@ -148,8 +148,10 @@ The blueprint self-learns one scalar — the lead-time bias — persisted in an
 ```
 # at BEDTIME-LOCK, only if the AC was running this night:
 bedtime_error = warmest_bedroom − ideal_temp
-new_bias      = clamp(lead_bias + learn_gain * bedtime_error * k_indoor,
-                      max(helper.min, -60), min(helper.max, 120))
+raw           = lead_bias + learn_gain * bedtime_error * k_indoor
+floor         = ceil(max(helper.min, -60))      # whole numbers inside helper ∩ [-60, 120]
+ceiling       = floor(min(helper.max, 120))
+new_bias      = clamp(round(raw), floor, ceiling)   # written only if floor <= ceiling
 ```
 
 Room too warm at bedtime -> bias rises (start earlier tomorrow); overcooled ->

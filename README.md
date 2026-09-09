@@ -141,7 +141,8 @@ Predictive pre-cooling of bedrooms via a single LG air conditioner in the upstai
 *   **🔇 Strict Beep Budget:** Unlimited commands before bedtime; after bedtime the lock issues at most 3 (mode, setpoint, night fan — typically 1–2) and the deep-night check at most 1. NIGHT-HOLD and DEEP-HOLD issue zero commands; every climate call is idempotency-guarded.
 *   **🌙 Night Fan (v1.0.3):** The fan mode locked in at bedtime is an input (default low), matched case-insensitively to the unit's modes, with a notice if the unit lacks it.
 *   **✋ Manual Override (v1.1.0):** A setpoint changed on the unit during the pre-cool is left alone until the bedtime lock; a unit switched off inside the pre-cool window stays off for the night; one notice per override.
-*   **📅 Daily Forecast Backstop (v1.1.0):** Between hourly fetches the prediction uses the day's forecast high; the auto-learn write is clamped to the helper's own range, with a notice while that range is narrower than −60…120.
+*   **📅 Daily Forecast Backstop (v1.1.0):** Between hourly fetches the prediction uses the day's forecast high instead of the live outdoor reading alone.
+*   **🎚️ Auto-Learn Helper Range (v1.1.0):** The auto-learn write is clamped to the whole numbers inside the helper's own range, skipped when that range does not overlap −60…120, with a notice while the range is narrower.
 *   **🌡️ Closed-Loop Pre-Cool:** DRIVE / HOLD sub-states cool the hall as hard as the AC allows until the warmest bedroom reaches ideal.
 *   **💧 Opt-In Dry Mode:** Humidity-aware `dry` mode, default off — `cool` is the proven path; enable `dry` only after verifying it on the unit.
 *   **🛡️ Child-Safe:** `ideal_temp` is bounded ≥ 16 °C; a sub-16 °C bedroom reading raises an overcooling fault. Every setpoint is clamped to the AC's discovered limits.
