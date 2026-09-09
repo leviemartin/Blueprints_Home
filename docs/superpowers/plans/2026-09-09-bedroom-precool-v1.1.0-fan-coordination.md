@@ -1253,3 +1253,39 @@ worst-case ceiling as before F2 — the composition changed, the cap didn't);
 `ac_hold` unchanged. One commit for the whole wave: full suite 345/345,
 dry-run green, greps green (`fan.` = 4, `wait_template` = 0, `set_direction`
 = 0, STEP order confirmed above).
+
+## Code board 20260909-151815 fixes (Task 8, cycle 2)
+
+Task 8 actioned the code-time board's cycle-2 findings, with R1's cycle-2
+leg amendments overriding the pre-amendment brief on G1 and G2; see the
+design spec's own "Code board 20260909-151815 fixes (Task 8, cycle 2)"
+section for the full per-item fix + evidence. Summary of what changed:
+
+1. `fans_unsafe_on` (G1, now P1) rewritten so the cut can only cancel a
+   write this blueprint's own STEP 5c could have issued in the current
+   fan-settle/fan-assist window — the cycle-1 version fired on every real
+   tick while an interlock read `on`, defeating the safety cutoff's own
+   "manual override wins" contract.
+2. `in_fan_assist_window` (G2) now requires `automation_up_since_ts <
+   earliest_turn_on_ts` instead of a 600 s restart grace — a restart
+   anywhere inside today's adoption window disables fan assist for the
+   rest of that night. The `ac_started_ts`-flap residual (cool<->dry, HA
+   restart) is documented, not closed.
+3. New STEP 2c `heat_backstop_due` + top-level STEP 6c (G3, P1 residual
+   mitigation): an unconditional `climate.turn_off` whenever the unit is
+   found running in `heat` mode on a fan-only night — a heater is never
+   the fallback in a child's bedroom. New STEP order:
+   `4 < 5c < 5 < 5b < 6 < 6a < 6b < 6c < 7a...7e < 8`.
+4. Honest lock-window wording (G4) replaces the "one beep, self-healing"
+   claim in requirements, README, and the spec addendum — docs only.
+5. `night_hold_setpoints` pinned against the rendered `deep_target_setpoint`
+   (G6, tests only — no behavioural change, closes a test-methodology gap).
+6. Two leftover "one-beep guard" sentences removed and the settle sentence
+   rewritten to the night-hold-list wording (G7, docs only).
+7. The fan-skipped notice's `is_real_trigger` gating and same-top-level-index
+   position pinned by test (G8, tests only — no behavioural change).
+
+One commit for the whole wave: full suite 348/348 (345 baseline + 3 new
+test functions: G1's rewrite kept the count flat, G3 added 2, G6 added 1),
+dry-run green, greps green (`fan.` = 4, `wait_template` = 0, `set_direction`
+= 0, STEP order confirmed above with the new 6c inserted).

@@ -1222,15 +1222,35 @@ action:
       in_wake_window: "{{ wake_tod <= now_tod and now_tod < (today_at(wake_time) + timedelta(minutes=1)).strftime('%H:%M:%S') }}"
       in_fan_settle: "{{ lock_tod <= now_tod and now_tod < settle_end_tod }}"
       in_settle_last_tick: "{{ settle_last_tod <= now_tod and now_tod < settle_end_tod }}"
-      # Board 20260909-151815 F4: ac_started_ts is the climate's last_changed, which also
-      # moves on a cool<->dry mode transition and at an HA restart — either would
-      # re-open the 45-min assist window with a NEW reference, so a fan switched off
-      # after the ORIGINAL start would count as untouched again. Guarded by the same
-      # 600 s restart-grace convention as manual_off/automation_up_since_ts. A bare
-      # mode transition inside a long-up automation is not further distinguished
-      # (dry mode and fan_assist are both off by default — documented residual case).
-      in_fan_assist_window: "{{ phase == 'PRECOOL' and ac_is_running and (since_ac_start_min | float) < (fan_settle_minutes | float) and (as_timestamp(now()) - (automation_up_since_ts | float)) > 600 }}"
+      # Board 20260909-151815 F4 (cycle 1): ac_started_ts is the climate's last_changed,
+      # which also moves on a cool<->dry mode transition and at an HA restart — either
+      # would re-open the 45-min assist window with a NEW reference, so a fan switched
+      # off after the ORIGINAL start would count as untouched again.
+      # Cycle 2 G2 (P2, R2C2-02 + R1C2-04): the cycle-1 600 s grace only DELAYED the
+      # reopen — a restart later in the same adoption window still re-opened assist
+      # against a manual off. The rule is now: the automation must already have been
+      # running when TODAY's adoption window opened (automation_up_since_ts <
+      # earliest_turn_on_ts, main's variable, defined earlier in this same step) — a
+      # restart at any point inside today's window disables fan assist for the rest of
+      # that night. Accepted residual (R1C2-04): ac_started_ts is the climate entity's
+      # last_changed, which ALSO moves on an unavailable->cool cloud flap or a cool<->dry
+      # mode transition — either can re-open the 45-minute assist window ONCE with the
+      # new reference and re-command a fan a person switched off after the ORIGINAL
+      # start (one 21% command, interlock still honoured). Not further distinguished:
+      # fan_assist and dry mode both default off, and the experiment runs on chosen
+      # nights only.
+      in_fan_assist_window: "{{ phase == 'PRECOOL' and ac_is_running and (since_ac_start_min | float) < (fan_settle_minutes | float) and (automation_up_since_ts | float) < (earliest_turn_on_ts | float) }}"
       night_phase: "{{ phase in ['NIGHT_HOLD', 'DEEP_NIGHT_CHECK', 'DEEP_HOLD'] }}"
+      # Board 20260909-151815 cycle 2 G3 (P1 residual R2C2-03 -> mitigation): a heater is
+      # never an acceptable fallback in a child's bedroom. A stale cloud read that
+      # reports 'off' while the unit is actually still running heat (LG ThinQ mode drift,
+      # or a guard/settle set_hvac_mode call whose cloud application silently failed)
+      # would otherwise sit uncorrected until the next real state change. heat_backstop_due
+      # catches it on every real tick: fan-only, a night phase, the unit ostensibly
+      # running, and its LAST-READ mode is 'heat'. This does NOT close the finding — a
+      # stale cloud 'off' WHILE actually heating is unobservable from this automation;
+      # the residual is recorded in the board report for the operator.
+      heat_backstop_due: "{{ fan_only_mode and night_phase and ac_is_running and current_hvac_mode == 'heat' }}"
       # Night guard: fan-only, a night phase, unit off, warmest room over the band, on a
       # 5-minute tick (bounds a stuck cloud 'off' to ≤ 12 attempts/h, board R2-02). The
       # running unit is the latch — once on, guard_due is false until DAY_OFF turns it
@@ -1337,24 +1357,44 @@ action:
           {% endfor %}
         {% endif %}
         {{ ns.out }}
-      # Board 20260909-151815 F3 (P1, R2-01): an interlocked fan that comes ON under an
-      # ACTIVE interlock is switched off — the live re-check in STEP 5c cannot cancel a
-      # Tuya command already in flight (applied 10-60 s later): if the PIR trips inside
-      # that lag and the fan was still off, the cutoff's `to: on` trigger has already
-      # passed and nothing else cuts it. Only a fan that turned on in the LAST 120 s
-      # counts (older than that is the cutoff's own restore, or a person's deliberate on
-      # respected after two minutes — the cutoff's own "manual override wins"); only an
-      # interlock sensor actively reading `on` counts (not unavailable/unknown/the clear
-      # hold — those already block new writes, not this one).
+      # Board 20260909-151815 F3 (P1, R2-01, cycle 1): an interlocked fan that comes ON
+      # under an ACTIVE interlock is switched off — the live re-check in STEP 5c cannot
+      # cancel a Tuya command already in flight (applied 10-60 s later): if the PIR trips
+      # inside that lag and the fan was still off, the cutoff's `to: on` trigger has
+      # already passed and nothing else cuts it.
+      # Cycle 2 G1 (P1, R2C2-05 ≡ R1C2-01 cross-family, + R1C2-02, R1C2-08): the cycle-1
+      # cut as shipped fired on EVERY real tick, 24/7, while an interlock read `on` — and
+      # a person's deliberate `on` restarts the 120 s window each time, so the fan was cut
+      # every minute for as long as the interlock stayed on, defeating the cutoff's own
+      # documented "manual override wins" contract. Rewritten so it can ONLY cancel a
+      # write THIS blueprint's own STEP 5c could have issued in the CURRENT window:
+      # gated on (in_fan_settle or in_fan_assist_window) — outside those windows this
+      # blueprint has no command in flight and the list is always []; iterates
+      # bedroom_fans filtered to interlocked_fans (the "blocked" idiom) so a fan listed
+      # only in interlocked_fans, never commanded by this blueprint, is never touched
+      # (R1C2-08); keys on the fan's ON-TRANSITION (last_changed, NOT last_updated —
+      # R1C2-02, a speed change on a fan a person re-enabled hours ago must never be cut)
+      # being newer than the active window's own reference (lock_ts while settling,
+      # ac_started_ts while assisting) AND within the last 120 s; requires at least one
+      # interlock sensor actively reading `on` (not unavailable/unknown/the clear hold —
+      # those already block new writes, not this one). Cancels only a write this
+      # blueprint could have issued in the current window (the Tuya cloud applies a
+      # turn_on 10-60 s late); a person's start outside the settle/assist windows, or
+      # older than two minutes, is never touched.
       fans_unsafe_on: >-
         {% set ns = namespace(out=[]) %}
-        {% if expand(fan_interlocks) | selectattr('state', 'eq', 'on') | list | length > 0 %}
-          {% for f in interlocked_fans %}
-            {% set st = expand(f) | list %}
-            {% if st | length > 0 %}
-              {% set s = st[0] %}
-              {% if s.state == 'on' and as_timestamp(now()) - as_timestamp(s.last_updated) < 120 %}
-                {% set ns.out = ns.out + [f] %}
+        {% if (in_fan_settle or in_fan_assist_window)
+              and expand(fan_interlocks) | selectattr('state', 'eq', 'on') | list | length > 0 %}
+          {% set ref_ts = lock_ts if in_fan_settle else ac_started_ts %}
+          {% for f in bedroom_fans %}
+            {% if f in interlocked_fans %}
+              {% set st = expand(f) | list %}
+              {% if st | length > 0 %}
+                {% set s = st[0] %}
+                {% if s.state == 'on' and as_timestamp(s.last_changed) > (ref_ts | float)
+                      and as_timestamp(now()) - as_timestamp(s.last_changed) < 120 %}
+                  {% set ns.out = ns.out + [f] %}
+                {% endif %}
               {% endif %}
             {% endif %}
           {% endfor %}
@@ -1922,6 +1962,27 @@ action:
               entity_id: "{{ ac_climate }}"
             data:
               fan_mode: "{{ night_fan_mode }}"
+
+  # =============================================
+  # STEP 6c: HEAT BACKSTOP (v1.2.0, fan-only nights, board 20260909-151815 cycle 2 G3,
+  # P1 residual R2C2-03 -> mitigation) — a heater is never the fallback in a child's
+  # bedroom. Unconditional climate.turn_off whenever the unit is found running in
+  # 'heat' mode; the guard's own turn_on + set_hvac_mode at its next 5-minute tick
+  # brings it back on in cooling mode (guard_due only trips once the unit reads off).
+  # Bound: worst case under a cloud that lets set_hvac_mode fail is <= 1 minute of heat
+  # per 5-minute guard cycle, 3 commands per cycle (this turn_off + the guard's turn_on
+  # + set_hvac_mode) — visible in the trace. Does not close R2C2-03: a stale cloud
+  # 'off' while actually heating is unobservable from this automation (documented
+  # residual for the operator).
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_real_trigger and heat_backstop_due }}"
+        sequence:
+          - service: climate.turn_off
+            target:
+              entity_id: "{{ ac_climate }}"
 
   # =============================================
   # STEP 7a: LEAD-BIAS-HELPER NOT CONFIGURED / MISSING — one-time notice

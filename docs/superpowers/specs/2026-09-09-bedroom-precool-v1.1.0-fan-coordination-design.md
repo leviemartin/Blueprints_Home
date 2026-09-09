@@ -235,10 +235,13 @@ test that reproduced it before the change:
    `[lock_ts, lock_ts + 180)` on a fan-only night where the lock did not
    itself switch the unit off (already over band) is misread as the
    blueprint's off; the next guard tick may switch it back on once, after
-   which a second manual off is respected. Bounded, self-healing; a
-   stateless blueprint has no ownership bit to disambiguate the two within
-   that window. Documented in the requirements' Night Mode & Pre-Chill
-   section and the README beep bullet — no code change.
+   which a second manual off is respected. Bounded: a manual off stamped
+   AFTER `lock_ts + 180` is respected until wake; a stateless blueprint has
+   no ownership bit to disambiguate the two within that first 180 s window
+   (superseded wording — see cycle 2 G4 below, which replaces the earlier
+   "self-healing" characterisation with the honest one-line workaround).
+   Documented in the requirements' Night Mode & Pre-Chill section and the
+   README beep bullet — no code change.
 7. **F7 (P1, R1-02/R1-03) — the settle must not fight the QUANTISED
    deep-night nudge.** New STEP 2c variables `night_hold_setpoints` (the
    list `[maintaining, down-nudge, up-nudge]`, quantised EXACTLY like
@@ -285,3 +288,110 @@ phase table + Beep Budget, README, this addendum): fan_only lock stays
 settle <= 2 (setpoint, fan) + nudge <= 1` -> typical 2, worst 5 (same
 worst-case ceiling as before F2, different composition); `ac_hold`
 unchanged.
+
+## Code board 20260909-151815 fixes (Task 8, cycle 2)
+
+Task 8 actioned the code-time board's cycle-2 findings against the cycle-1
+state above, with R1's cycle-2 leg amendments overriding the pre-amendment
+brief where they overlap (G1, G2). G5 was void (the placeholder the
+amendments filled). Each item, its fix, and the RED test that reproduced it
+before the change (G6/G8 are test-only additions — the underlying render
+logic was already correct, so no RED was reachable for those two):
+
+1. **G1 (now P1 — R2C2-05 ≡ R1C2-01 cross-family, + R1C2-02, R1C2-08).**
+   The cycle-1 `fans_unsafe_on` cut fired on EVERY real tick, 24/7, while an
+   interlock sensor read `on`, and a person's deliberate `on` restarted its
+   120 s window each time — so a deliberate fan start was cut every minute
+   for as long as the interlock stayed on, defeating the safety cutoff's
+   own documented "manual override wins" contract
+   (`~/projects/ceiling-fan-hue-blueprint/fan_safety_motion_cutoff.yaml`).
+   Rewritten so the cut can ONLY cancel a write THIS blueprint's own STEP 5c
+   could have issued in the CURRENT window: gated on `(in_fan_settle or
+   in_fan_assist_window)` (outside those windows the list is always `[]`);
+   iterates `bedroom_fans` filtered to `interlocked_fans` (the "blocked"
+   idiom, R1C2-08) so a fan listed only in `interlocked_fans` is never
+   touched; keys on the fan's ON-TRANSITION (`last_changed`, NOT
+   `last_updated` — R1C2-02) being newer than the active window's own
+   reference (`lock_ts` while settling, `ac_started_ts` while assisting)
+   AND within the last 120 s. Reproduced in
+   `test_rendered_fans_unsafe_on_cuts_only_this_blueprints_own_in_flight_write`
+   (RED before the fix, cases (a)-(h) from the amendment).
+2. **G2 (R2C2-02 + R1C2-04) — implement the restart rule AND document the
+   flap residual honestly.** `in_fan_assist_window`'s cycle-1 600 s
+   restart-grace only DELAYED the reopen — a restart later in the same
+   adoption window still re-opened assist against a manual off. Replaced
+   with: the automation must already have been running when TODAY's
+   adoption window opened — `(automation_up_since_ts | float) <
+   (earliest_turn_on_ts | float)` (main's variable, already defined earlier
+   in the same STEP 2c block). Reproduced in `test_rendered_fan_windows`
+   (RED before the fix: a restart at 16:00, more than 600 s before the
+   17:30 check but still inside the adoption window that opened at 15:30,
+   used to leave assist open). Documented residual (requirements
+   Experiments section, this addendum, the `in_fan_assist_window`
+   comment): `ac_started_ts` is the climate entity's `last_changed`, which
+   ALSO moves on an `unavailable -> cool` cloud flap or a `cool <-> dry`
+   transition — either can re-open the 45-minute window ONCE with the new
+   reference and re-command a fan a person switched off after the ORIGINAL
+   start (one 21 % command, interlock still honoured). Accepted: `fan_assist`
+   and `dry` mode both default off; the experiment runs on chosen nights
+   only.
+3. **G3 (P1 residual R2C2-03 -> mitigation) — heat backstop for fan-only
+   nights.** New STEP 2c variable `heat_backstop_due = fan_only_mode and
+   night_phase and ac_is_running and current_hvac_mode == 'heat'`
+   (single-lined) and a new top-level STEP 6c right after STEP 6b: when
+   `is_real_trigger and heat_backstop_due`, an unconditional
+   `climate.turn_off` — a heater is never the fallback in a child's
+   bedroom; the guard's own `turn_on` + `set_hvac_mode` at its next
+   5-minute tick restores cooling. Bound: worst case under a cloud that
+   lets `set_hvac_mode` fail is <= 1 minute of heat per 5-minute cycle, 3
+   commands per cycle (backstop `turn_off` + guard `turn_on` + guard
+   `set_hvac_mode`), visible in the trace. Does NOT close R2C2-03: a stale
+   cloud `off` while actually heating is unobservable from this automation
+   — the residual stays recorded for the operator. Reproduced in
+   `test_rendered_heat_backstop_due_only_for_heat_at_night_in_fan_only_while_running`
+   and `test_heat_backstop_is_exactly_one_turn_off_gated_on_heat_backstop_due`
+   (both RED before the fix — `heat_backstop_due` did not exist).
+4. **G4 (R2C2-04) — honest wording for the accepted lock-window misread
+   (was cycle-1 F6).** Requirements "Night Mode & Pre-Chill", the README
+   beep bullet, and this addendum's F6 entry above no longer claim "one
+   beep, self-healing". Replaced with: a person's off stamped inside
+   `[lock_ts, lock_ts + 180)` on a fan-only night is treated as the
+   blueprint's own off; the guard may switch the unit back on at its next
+   5-minute tick (two commands: `turn_on` + cooling mode). A manual off
+   stamped AFTER `lock_ts + 180` is respected until wake. To keep the unit
+   off in that first three minutes, switch it off again after 19:33 (three
+   minutes past the default 19:30 bedtime's 19:29 lock). Docs only, no
+   code change.
+5. **G6 (R1C2-03, tests) — pin `night_hold_setpoints` against the rendered
+   `deep_target_setpoint`.** New
+   `test_rendered_night_hold_setpoints_match_the_rendered_deep_target_setpoint`
+   mirrors `test_rendered_known_setpoints_are_the_values_the_device_holds`'s
+   method: for each drift direction and both `ac_temp_step` 1 and 0.5, it
+   renders the REAL production `deep_target_setpoint` template (not a
+   hand-written expected list) and asserts the result is in the rendered
+   `night_hold_setpoints`, plus the non-list guard case for
+   `setpoint_is_night_hold` (mirroring
+   `test_rendered_setpoint_is_known_treats_a_non_list_as_known`). No code
+   change — the two templates already used identical clamp/quantise
+   formulas; this closes a test-methodology gap (hand-written expected
+   values vs. a realized-output assertion), not a behavioural bug.
+6. **G7 (R1C2-05, R1C2-06, docs) — remove the two leftover "one-beep guard"
+   sentences** (README's beep bullet, requirements' Night Mode & Pre-Chill
+   Night-guard sentence — both were stale after F2 made the guard two
+   commands, `turn_on` + `set_hvac_mode`) **and rewrite the requirements
+   settle sentence** to the night-hold-list wording: the setpoint check
+   "leaves every night-hold setpoint — maintaining and the two quantised
+   nudges — alone"; the mode check "matters only after a manual night
+   start" (a guard-triggered start already forces cooling mode). Docs only,
+   no code change.
+7. **G8 (R1C2-07, tests) — pin the fan-skipped notice's position and
+   gate.** `test_fan_skipped_notice_fires_once_on_the_last_settle_tick`
+   extended to assert the notice's condition path includes `{{
+   is_real_trigger }}` and that its top-level action-list index equals the
+   fan step's own index (the step containing the `for_each` repeats),
+   strictly before the STEP 5 "AC entity unavailable" validation stop. No
+   code change — the notice was already folded inside STEP 5c by cycle-1
+   F10; this closes a coverage gap in the F10 regression pin.
+
+STEP order after G3's new STEP 6c: `4 < 5c < 5 < 5b < 6 < 6a < 6b < 6c <
+7a...7e < 8` (6c added between 6b and 7a; no other step renumbered).

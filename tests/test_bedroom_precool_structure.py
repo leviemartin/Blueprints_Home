@@ -424,6 +424,10 @@ def _has_condition_text(step, text_):
     return _step_contains(step, lambda n: isinstance(n, dict) and text_ in (n.get("value_template") or ""))
 
 
+def _has_notification_id(step, nid):
+    return _step_contains(step, lambda n: isinstance(n, dict) and (n.get("data") or {}).get("notification_id") == nid)
+
+
 def _fan_calls_in_phase(bp, phase):
     steps = _service_steps(bp.get("action") or bp.get("actions"), [])
     return [(c, s) for c, s in steps
@@ -1070,11 +1074,17 @@ def _v110_ctx(**over):
                # since_ac_start_min derives from this (STEP 2a); default is a huge age (no
                # recent start). _windows()/_guard() overwrite it from ac_started_ts + now.
                ac_state_age_sec=0.0,
-               # F4 (board 20260909-151815): the automation's own restart-grace reference —
-               # default epoch (a long-up automation) so in_fan_assist_window's existing
-               # True assertions are unaffected; overridden to a recent value to test the
-               # 600 s restart guard.
+               # F4 (board 20260909-151815, cycle 1): the automation's own restart-grace
+               # reference — default epoch (a long-up automation) so in_fan_assist_window's
+               # existing True assertions are unaffected. Cycle 2 G2: the rule is now
+               # automation_up_since_ts < earliest_turn_on_ts (below), not a fixed 600 s
+               # grace past the restart.
                automation_up_since_ts=0.0,
+               # G2 (board 20260909-151815 cycle 2, R2C2-02): today's adoption-window-open
+               # reference fan assist compares the restart timestamp against. Default well
+               # after the epoch default above so in_fan_assist_window's existing True
+               # assertions are unaffected; overridden to test the restart rule itself.
+               earliest_turn_on_ts=datetime(2026, 9, 9, 15, 30, tzinfo=TZ).timestamp(),
                # F7 (board 20260909-151815): night_hold_setpoints' quantisation inputs.
                ac_temp_step=0.5, ac_min_temp=16, ac_max_temp=30)
     ctx.update(over)
@@ -1151,18 +1161,26 @@ def test_rendered_fan_windows(bp):
     assert _windows(bp, 17, 46, **on)["in_fan_assist_window"] is False   # 46 > 45
     assert _windows(bp, 17, 30, **dict(on, ac_is_running=False))["in_fan_assist_window"] is False
     assert _windows(bp, 17, 30, **dict(on, phase="DAY_OFF"))["in_fan_assist_window"] is False
-    # F4 (P2, board 20260909-151815 R2-05): a mode transition (last_changed moves on
-    # cool->dry too) or an HA restart must not reopen fan assist against a manual off —
-    # guarded by the same 600 s restart-grace convention as manual_off.
-    recent_restart = datetime(2026, 9, 9, 17, 25, tzinfo=TZ).timestamp()   # 300s before 17:30 < 600
-    assert _windows(bp, 17, 30, **dict(on, automation_up_since_ts=recent_restart))["in_fan_assist_window"] is False
-    old_restart = datetime(2026, 9, 9, 6, 0, tzinfo=TZ).timestamp()
-    assert _windows(bp, 17, 30, **dict(on, automation_up_since_ts=old_restart))["in_fan_assist_window"] is True
+    # F4 (P2, board 20260909-151815 R2-05, cycle 1): a mode transition (last_changed
+    # moves on cool->dry too) or an HA restart must not reopen fan assist against a
+    # manual off. G2 (cycle 2, R2C2-02 + R1C2-04): the cycle-1 600 s grace only DELAYED
+    # the reopen — a restart later in the same adoption window still re-opened assist.
+    # The rule is now: the automation must already have been running when TODAY's
+    # adoption window opened (automation_up_since_ts < earliest_turn_on_ts) — a restart
+    # ANY time inside today's window disables fan assist for the rest of that night, not
+    # just for 600 s past the restart.
+    adopted = datetime(2026, 9, 9, 15, 30, tzinfo=TZ).timestamp()
+    restart_after_open = datetime(2026, 9, 9, 16, 0, tzinfo=TZ).timestamp()   # inside today's window
+    assert _windows(bp, 17, 30, **dict(on, earliest_turn_on_ts=adopted,
+                                        automation_up_since_ts=restart_after_open))["in_fan_assist_window"] is False
+    restart_before_open = datetime(2026, 9, 9, 6, 0, tzinfo=TZ).timestamp()   # before today's window opened
+    assert _windows(bp, 17, 30, **dict(on, earliest_turn_on_ts=adopted,
+                                        automation_up_since_ts=restart_before_open))["in_fan_assist_window"] is True
 
 
-GUARD_CHAIN = ["fan_only_mode", "night_phase", "since_ac_start_min", "guard_due", "guard_settle_due",
-               "settle_mode_due", "night_hold_setpoints", "setpoint_is_night_hold", "settle_setpoint_due",
-               "settle_fan_due"]
+GUARD_CHAIN = ["fan_only_mode", "night_phase", "heat_backstop_due", "since_ac_start_min", "guard_due",
+               "guard_settle_due", "settle_mode_due", "night_hold_setpoints", "setpoint_is_night_hold",
+               "settle_setpoint_due", "settle_fan_due"]
 
 
 def _guard(bp, now, **over):
@@ -1215,6 +1233,28 @@ def test_rendered_settle_setpoint_due_leaves_every_quantised_night_hold_value_al
     assert _night_hold(bp, 19.5, ac_temp_step=0.5)["night_hold_setpoints"] == [21.0, 19.5, 22.5]
 
 
+def test_rendered_night_hold_setpoints_match_the_rendered_deep_target_setpoint(bp):
+    """G6 (R1C2-03, board 20260909-151815 cycle 2): pin night_hold_setpoints against the
+    REAL production deep_target_setpoint template — mirrors
+    test_rendered_known_setpoints_are_the_values_the_device_holds's method (render, don't
+    hand-write) instead of the hard-coded expected lists above. For both drift directions
+    and no drift, on a 1-degree-step and a 0.5-degree-step unit, the value
+    deep_target_setpoint would actually command is IN the rendered night_hold_setpoints."""
+    now = datetime(2026, 9, 9, 23, 0, tzinfo=TZ)
+    deep = _env(now).from_string(_var_template_deep(bp, "deep_target_setpoint"))
+    for ac_temp_step in (1, 0.5):
+        ctx = _night_hold(bp, 21.0, ac_temp_step=ac_temp_step)
+        for drift in (2.0, -2.0, 0.0):
+            target = _reparse(deep.render(**ctx, deep_drift=drift, tolerance=1.5).strip())
+            assert target in ctx["night_hold_setpoints"], (ac_temp_step, drift, target)
+    # Non-list guard (mirrors test_rendered_setpoint_is_known_treats_a_non_list_as_known):
+    # a string-form list crossing the variables boundary is treated as night-hold/known.
+    r = lambda ks: _reparse(_render(bp, "setpoint_is_night_hold", now, night_hold_setpoints=ks, current_setpoint=99.0))
+    assert r("[21, 19, 22]") is True     # a string-form list must not iterate characters
+    assert r("") is True
+    assert r([21, 19, 22]) is False
+
+
 def test_rendered_guard_settle_asserts_the_parked_state_only_after_a_night_start(bp):
     t = datetime(2026, 9, 9, 23, 7, tzinfo=TZ)
     started = (t - timedelta(minutes=2)).timestamp()
@@ -1251,6 +1291,36 @@ def test_rendered_guard_due_and_settle_respect_a_manual_override(bp):
     settling = dict(night_mode="fan_only", phase="NIGHT_HOLD", ac_is_running=True, ac_started_ts=started)
     assert _guard(bp, t, **settling)["guard_settle_due"] is True
     assert _guard(bp, t, manual_setpoint=True, **settling)["guard_settle_due"] is False   # a person's setpoint
+
+
+# --- G3 (P1 residual R2C2-03 -> mitigation, board 20260909-151815 cycle 2): heat backstop ---
+
+def test_rendered_heat_backstop_due_only_for_heat_at_night_in_fan_only_while_running(bp):
+    """A heater is never an acceptable fallback in a child's bedroom. heat_backstop_due
+    catches a unit whose LAST-READ mode is 'heat' on any real tick in a night phase,
+    fan-only, while ostensibly running — a stale cloud read that reports 'off' while the
+    unit is actually still heating is a separate, unobservable residual (documented, not
+    closed by this predicate)."""
+    t = datetime(2026, 9, 9, 23, 0, tzinfo=TZ)
+    hot = dict(night_mode="fan_only", phase="NIGHT_HOLD", ac_is_running=True, current_hvac_mode="heat")
+    assert _guard(bp, t, **hot)["heat_backstop_due"] is True
+    assert _guard(bp, t, **dict(hot, current_hvac_mode="cool"))["heat_backstop_due"] is False
+    assert _guard(bp, t, **dict(hot, current_hvac_mode="fan_only"))["heat_backstop_due"] is False
+    assert _guard(bp, t, **dict(hot, night_mode="ac_hold"))["heat_backstop_due"] is False
+    assert _guard(bp, t, **dict(hot, ac_is_running=False))["heat_backstop_due"] is False
+    for ph in ("PRECOOL", "BEDTIME_LOCK", "DAY_OFF"):
+        assert _guard(bp, t, **dict(hot, phase=ph))["heat_backstop_due"] is False, ph
+    for ph in ("NIGHT_HOLD", "DEEP_NIGHT_CHECK", "DEEP_HOLD"):
+        assert _guard(bp, t, **dict(hot, phase=ph))["heat_backstop_due"] is True, ph
+
+
+def test_heat_backstop_is_exactly_one_turn_off_gated_on_heat_backstop_due(bp):
+    calls = _calls_with(bp, "heat_backstop_due")
+    assert len(calls) == 1
+    conds, step = calls[0]
+    assert step["service"] == "climate.turn_off"
+    assert step["target"]["entity_id"] == "{{ ac_climate }}"
+    assert any(t.strip() == "{{ is_real_trigger and heat_backstop_due }}" for t in conds)
 
 
 def test_rendered_interlock_blocked_fails_safe_and_honours_the_clear_hold(bp):
@@ -1425,24 +1495,63 @@ def test_rendered_fans_unset_night_is_disjoint_from_due_and_fans_on_at_wake(bp):
 PIR = "binary_sensor.samuel_samuel_matthew_fanprotection"
 
 
-def test_rendered_fans_unsafe_on_cuts_a_fan_that_just_turned_on_under_an_active_interlock(bp):
-    """F3 (P1, board 20260909-151815 R2-01): the live re-check in STEP 5c cannot cancel a
-    Tuya command already in flight (10-60 s lag) — if the PIR trips inside that window and
-    the fan was still off, the cutoff's `to: on` trigger has already passed and nothing
-    cuts it. fans_unsafe_on picks up that case: an interlocked fan that turned ON in the
-    last 120 s while an interlock sensor actively reads `on`."""
+def test_rendered_fans_unsafe_on_cuts_only_this_blueprints_own_in_flight_write(bp):
+    """G1 (P1, board 20260909-151815 R2C2-05 ≡ R1C2-01 cross-family, + R1C2-02, R1C2-08):
+    the cycle-1 cut (F3) fired on EVERY real tick while an interlock read `on`, and a
+    person's deliberate `on` restarts the 120 s window each time it is cut — so a
+    deliberate fan start was cut every minute for as long as the interlock stayed on,
+    defeating the safety cutoff's own documented "manual override wins" contract
+    (~/projects/ceiling-fan-hue-blueprint/fan_safety_motion_cutoff.yaml). The cut may now
+    ONLY cancel a write THIS blueprint could have issued in the CURRENT window: gated on
+    (in_fan_settle or in_fan_assist_window) — outside those windows the list is always
+    [] — and keyed on the fan's ON-TRANSITION (last_changed, NOT last_updated — a speed
+    change must never be cut) being newer than the active window's own reference
+    (lock_ts while settling, ac_started_ts while assisting) AND within the last 120 s.
+    Iterates bedroom_fans filtered to interlocked_fans (the "blocked" idiom) so a fan
+    listed only in interlocked_fans, never commanded by this blueprint, is never
+    touched (R1C2-08)."""
     now = datetime(2026, 9, 9, 21, 0, tzinfo=TZ)
-    render = lambda states, interlocked=(KIDS,), sensors=(PIR,): _reparse(_fan_env(now, states).from_string(
-        _var_template(bp, "fans_unsafe_on")).render(interlocked_fans=list(interlocked), fan_interlocks=list(sensors)).strip())
-    assert render([_S(KIDS, "on", last_updated=now - timedelta(seconds=30)), _S(PIR, "on")]) == [KIDS]
-    assert render([_S(KIDS, "on", last_updated=now - timedelta(minutes=5)), _S(PIR, "on")]) == []      # on too long — the cutoff's own case
-    assert render([_S(KIDS, "on", last_updated=now - timedelta(seconds=30)), _S(PIR, "off")]) == []    # interlock clear
-    assert render([_S(KIDS, "on", last_updated=now - timedelta(seconds=30)), _S(PIR, "unavailable")]) == []  # only an active `on` counts
-    both = [_S(MASTER, "on", last_updated=now - timedelta(seconds=30)),
-            _S(KIDS, "on", last_updated=now - timedelta(seconds=30)), _S(PIR, "on")]
+    lock_ts = (now - timedelta(seconds=90)).timestamp()
+    ac_started_ts = (now - timedelta(seconds=50)).timestamp()
+
+    def render(states, bedroom_fans=(MASTER, KIDS), interlocked=(KIDS,), sensors=(PIR,),
+               in_fan_settle=True, in_fan_assist_window=False):
+        ctx = dict(bedroom_fans=list(bedroom_fans), interlocked_fans=list(interlocked),
+                   fan_interlocks=list(sensors), in_fan_settle=in_fan_settle,
+                   in_fan_assist_window=in_fan_assist_window, lock_ts=lock_ts,
+                   ac_started_ts=ac_started_ts)
+        return _reparse(_fan_env(now, states).from_string(_var_template(bp, "fans_unsafe_on")).render(**ctx).strip())
+
+    # (a) settle window, fan came on 30 s ago (last_changed) after lock_ts, PIR on -> listed
+    assert render([_S(KIDS, "on", last_changed=now - timedelta(seconds=30)), _S(PIR, "on")]) == [KIDS]
+    # (b) same but 5 min ago -> not (older than 120 s)
+    assert render([_S(KIDS, "on", last_changed=now - timedelta(minutes=5)), _S(PIR, "on")]) == []
+    # (c) last_changed BEFORE lock_ts (a fan already on at the lock), still < 120 s old -> not
+    before_lock = now - timedelta(seconds=95)
+    assert render([_S(KIDS, "on", last_changed=before_lock), _S(PIR, "on")]) == []
+    # (d) last_updated 30 s ago but last_changed 2 h ago (a speed change) -> not
+    assert render([_S(KIDS, "on", last_updated=now - timedelta(seconds=30),
+                       last_changed=now - timedelta(hours=2)), _S(PIR, "on")]) == []
+    # (e) outside both windows -> [] even with a fresh on + PIR on
+    assert render([_S(KIDS, "on", last_changed=now - timedelta(seconds=30)), _S(PIR, "on")],
+                  in_fan_settle=False, in_fan_assist_window=False) == []
+    # (f) assist window uses ac_started_ts as its own reference, not lock_ts
+    assert render([_S(KIDS, "on", last_changed=now - timedelta(seconds=30)), _S(PIR, "on")],
+                  in_fan_settle=False, in_fan_assist_window=True) == [KIDS]
+    before_start = now - timedelta(seconds=55)
+    assert render([_S(KIDS, "on", last_changed=before_start), _S(PIR, "on")],
+                  in_fan_settle=False, in_fan_assist_window=True) == []
+    # (g) a fan in interlocked_fans but not in bedroom_fans -> never (R1C2-08)
+    assert render([_S(KIDS, "on", last_changed=now - timedelta(seconds=30)), _S(PIR, "on")],
+                  bedroom_fans=(MASTER,)) == []
+    # (h) PIR unavailable -> not (only an active `on` counts)
+    assert render([_S(KIDS, "on", last_changed=now - timedelta(seconds=30)), _S(PIR, "unavailable")]) == []
+    assert render([_S(KIDS, "on", last_changed=now - timedelta(seconds=30)), _S(PIR, "off")]) == []    # interlock clear
+    both = [_S(MASTER, "on", last_changed=now - timedelta(seconds=30)),
+            _S(KIDS, "on", last_changed=now - timedelta(seconds=30)), _S(PIR, "on")]
     assert render(both, interlocked=(KIDS,)) == [KIDS]        # MASTER isn't interlocked — never cut here
-    assert render([_S(KIDS, "off", last_updated=now - timedelta(seconds=30)), _S(PIR, "on")]) == []    # fan not on
-    assert render([_S(KIDS, "on", last_updated=now - timedelta(seconds=30))], sensors=()) == []        # no interlock configured
+    assert render([_S(KIDS, "off", last_changed=now - timedelta(seconds=30)), _S(PIR, "on")]) == []    # fan not on
+    assert render([_S(KIDS, "on", last_changed=now - timedelta(seconds=30))], sensors=()) == []        # no interlock configured
 
 
 def test_fan_due_lists_are_defined_after_their_inputs_and_use_state_attr(text):
@@ -1546,6 +1655,16 @@ def test_fan_skipped_notice_fires_once_on_the_last_settle_tick(bp):
     assert len(notices) == 1
     conds = notices[0][0]
     assert any("in_settle_last_tick" in t and "fans_unset_night | length > 0" in t and "enable_notifications" in t for t in conds)
+    # G8 (R1C2-07, board 20260909-151815 cycle 2): the notice lives INSIDE the fan step
+    # (same top-level index as the fan repeats), gated on is_real_trigger like every fan
+    # write, and sits before STEP 5's AC/sensor validation stop — never a separate STEP
+    # 7f that STEP 5 could pre-empt.
+    assert any(t.strip() == "{{ is_real_trigger }}" for t in conds)
+    steps_top = _top_level_steps(bp)
+    fan_idx = next(i for i, s in enumerate(steps_top) if _has_for_each(s))
+    notice_idx = next(i for i, s in enumerate(steps_top) if _has_notification_id(s, "bedroom_precool_fan_skipped"))
+    validation_idx = next(i for i, s in enumerate(steps_top) if _has_stop_text(s, "AC entity unavailable"))
+    assert notice_idx == fan_idx < validation_idx
 
 
 def test_v110_version_docs_and_instance():
