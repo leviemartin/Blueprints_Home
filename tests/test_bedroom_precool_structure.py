@@ -528,6 +528,17 @@ def test_auto_learn_write_is_clamped_and_skipped_on_an_override_night(bp):
     assert nb.index("round(0)") < nb.index("bias_floor")
 
 
+def test_auto_learn_write_and_notice_cover_a_missing_helper_entity(bp):
+    """Final review #4: a configured helper that was deleted/renamed returns no state — the write
+    is skipped (it would raise and abort the lock run) and the STEP 7a notice names it."""
+    steps = _service_steps(bp.get("action") or bp.get("actions"), [])
+    writes = [(c, s) for c, s in steps if (s.get("service") or s.get("action")) == "input_number.set_value"]
+    assert any("states[lead_bias_entity] is not none" in t for t in writes[0][0])
+    n = _notices(bp, "bedroom_precool_no_bias_helper")
+    assert len(n) == 1
+    assert any("states[lead_bias_entity] is none" in t and "not lead_bias_configured" in t for t in n[0][0])
+
+
 # ---- R1-07: a real daily forecast backs the non-fetch ticks --------------------------
 
 def test_dead_forecast_attribute_read_is_gone(text):
@@ -786,6 +797,11 @@ def test_precool_commands_are_gated_on_the_override_flags_and_the_boundaries_are
     deep = _climate_calls_in_phase(bp, "DEEP_NIGHT_CHECK")
     assert [s["service"] for _, s in deep] == ["climate.set_temperature"]
     assert not any("manual" in t for c, _ in deep for t in c)
+    # the gate wraps exactly the four climate calls and nothing else (final review #9)
+    steps = _service_steps(bp.get("action") or bp.get("actions"), [])
+    gated = [s for c, s in steps if any("not manual_setpoint and not manual_off" in t for t in c)]
+    assert sorted((s.get("service") or s.get("action")) for s in gated) == \
+        ["climate.set_fan_mode", "climate.set_hvac_mode", "climate.set_temperature", "climate.turn_on"]
 
 
 def test_manual_override_notice_is_state_driven_and_phase_gated(bp):

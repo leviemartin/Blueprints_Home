@@ -838,8 +838,9 @@ action:
       # from a person (remote, app, the unit's own timer). It is respected:
       # PRECOOL does not restart the unit and the night is a cool-day no-op.
       # Guards (all coordinator-lag tolerant): the window start carries a
-      # 120 s margin so a DAY_OFF turn_off issued on the last pre-window tick
-      # whose confirmation lands after the window opens is not a person's;
+      # 120 s margin (≈ 3 min after the last pre-window tick) so a DAY_OFF
+      # turn_off issued on that tick whose confirmation lands after the window
+      # opens is not a person's;
       # the state re-created at HA start / automation reload carries a fresh
       # last_changed (this.last_changed moves at the same moment — a cloud
       # integration may publish its first state up to minutes later, hence
@@ -1236,10 +1237,12 @@ action:
                           # not the AC). Only on a cooling night (AC running) and
                           # never while a manual setpoint is active at the lock:
                           # that night's outcome does not reflect the predictor.
+                          # A configured helper that no longer exists skips the
+                          # write (STEP 7a notice) instead of aborting the run.
                           - choose:
                               - conditions:
                                   - condition: template
-                                    value_template: "{{ enable_auto_learn and lead_bias_configured and not manual_setpoint and bias_range_valid }}"
+                                    value_template: "{{ enable_auto_learn and lead_bias_configured and states[lead_bias_entity] is not none and not manual_setpoint and bias_range_valid }}"
                                 sequence:
                                   - variables:
                                       bedtime_error: "{{ warmest_bedroom | float - ideal_temp | float }}"
@@ -1310,21 +1313,22 @@ action:
                 sequence: []
 
   # =============================================
-  # STEP 7a: LEAD-BIAS-HELPER NOT CONFIGURED — one-time notice
+  # STEP 7a: LEAD-BIAS-HELPER NOT CONFIGURED / MISSING — one-time notice
   # =============================================
   - choose:
       - conditions:
           - condition: template
             value_template: >-
               {{ enable_notifications and enable_auto_learn
-                 and not lead_bias_configured }}
+                 and (not lead_bias_configured or states[lead_bias_entity] is none) }}
         sequence:
           - service: persistent_notification.create
             data:
               title: "Bedroom Pre-Cool — Auto-Learn Helper Missing"
               message: >
                 Auto-Learn is enabled but no Lead-Time Bias Helper is
-                configured. The blueprint still runs with a zero bias.
+                configured, or the configured one ({{ lead_bias_entity }})
+                does not exist. The blueprint still runs with a zero bias.
                 Create an input_number helper and select it to enable
                 self-learning.
               notification_id: "bedroom_precool_no_bias_helper"
@@ -1435,6 +1439,11 @@ action:
                 {{ ac_climate }} holds a setpoint of {{ current_setpoint }}°C
                 that the blueprint did not set. It is respected until the
                 deep-night check at {{ deep_tod }}, which may correct drift.
+                {% elif phase == 'BEDTIME_LOCK' %}
+                {{ ac_climate }} holds a setpoint of {{ current_setpoint }}°C
+                that the blueprint did not set; the bedtime lock is re-applying
+                {{ maintaining_setpoint }}°C now and tonight's auto-learn update
+                is skipped.
                 {% else %}
                 {{ ac_climate }} holds a setpoint of {{ current_setpoint }}°C
                 that the blueprint did not set (its own values are
