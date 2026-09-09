@@ -65,7 +65,7 @@ acts. Phase boundaries span midnight (bedtime -> wake is an overnight window).
 | BEDTIME-LOCK | bedtime − 1 min -> bedtime | Lock mode, maintaining setpoint and the night fan (`night_fan`, default low) + auto-learn write; `fan_only`: park then off unless already over the band (≤ 4 commands: mode, setpoint, fan, off — typically 1) | ≤ 3 (typically 1–2); `fan_only` ≤ 4 (typically 1) |
 | FAN SETTLE (lock -> bedtime + settle) | lock -> bedtime + `fan_settle_minutes` | Bedroom Fans to the night percentage under the fan write rule, at most one command per fan, live re-check before each call | — |
 | NIGHT-HOLD | bedtime -> deep-night check | Holds; blueprint issues nothing (ac_hold). fan_only: the night guard may switch the unit back on once (a 5-minute tick, warmest > ideal + tolerance, not during a respected manual off), then the guard settle asserts the parked state for 15 min | 0 (ac_hold) · fan_only: ≤ 1 guard turn_on + 1 guard mode + ≤ 2 settle (normally 0) |
-| NIGHT GUARD (any 5-minute tick after bedtime, `fan_only`) | any night phase | `turn_on` + an unconditional `set_hvac_mode` restoring the parked state in cooling mode; the running unit is the latch. HEAT BACKSTOP: any real tick that finds the unit running in `heat` mode gets an unconditional `climate.turn_off` (v1.2.0 — a heater is never the fallback in a child's bedroom); the guard's own turn_on + set_hvac_mode restores cooling on the next 5-minute tick. GUARD SETTLE, for 15 min after any night start, asserts setpoint (outside every quantised night-hold value) / fan from live reads — normally 0 commands (`settle_mode_due` only matters after a manual night start) | turn_on 1 + set_hvac_mode 1 + settle ≤ 2 (setpoint, fan) + nudge ≤ 1 (typical 2, worst 5); heat backstop ≤ 1 `turn_off` per tick, worst case ≤ 1 min of heat and 3 commands per 5-minute backstop+guard cycle |
+| NIGHT GUARD (any 5-minute tick after bedtime, `fan_only`) | any night phase | `turn_on` + an unconditional `set_hvac_mode` restoring the parked state in cooling mode; the running unit is the latch. HEAT BACKSTOP: any real tick that finds the unit running in `heat` mode gets an unconditional `climate.set_hvac_mode` back to the desired (cooling) mode — v1.2.0, a heater is never the fallback in a child's bedroom — idempotent, no `turn_off`, nothing latches, so there is nothing for the guard to restore. GUARD SETTLE, for 15 min after any night start, asserts setpoint (outside every quantised night-hold value) / fan from live reads — normally 0 commands (`settle_mode_due` excludes a heat read, which the backstop owns exclusively) | turn_on 1 + set_hvac_mode 1 + settle ≤ 2 (setpoint, fan) + nudge ≤ 1 (typical 2, worst 5); heat backstop ≤ 1 `set_hvac_mode` per tick while a heat read persists |
 | DEEP-NIGHT-CHECK | deep-night check -> +10 min | At most one corrective command | 0 or 1 |
 | DEEP-HOLD | deep-night check + 10 min -> wake | Holds; blueprint issues nothing (ac_hold). fan_only: the night guard may switch the unit back on once (a 5-minute tick, warmest > ideal + tolerance, not during a respected manual off), then the guard settle asserts the parked state for 15 min | 0 (ac_hold) · fan_only: ≤ 1 guard turn_on + 1 guard mode + ≤ 2 settle (normally 0) |
 
@@ -204,17 +204,20 @@ cooling mode — the running unit is the latch, so the guard does not fire
 again until DAY-OFF turns the unit off at wake — not while a manual off is
 being respected (v1.1.0 semantics); the lock's own off inside lock + 180 s
 is the blueprint's, not a person's. **Heat backstop (v1.2.0, board
-20260909-151815 cycle 2 G3):** on any real tick, fan-only, in a night phase,
-if the unit is found running in `heat` mode it is switched off unconditionally
-— a heater is never an acceptable fallback in a child's bedroom — and the
-guard's own turn_on + set_hvac_mode restores cooling on the next 5-minute
-tick. For 15 minutes after any night start (guard or otherwise), GUARD
+20260909-151815; cycle 3 H1/H3 rewrote it, was cycle 2 G3):** on any real
+tick, fan-only, in a night phase, if the unit is found running in `heat`
+mode it gets an unconditional `climate.set_hvac_mode` back to the desired
+(cooling) mode — a heater is never an acceptable fallback in a child's
+bedroom. This corrects the mode in place, never switches the unit off, and
+runs ahead of the sensor/entity validation stops (STEP 5) so a dead bedroom
+sensor cannot block it; it repeats on every tick the cloud read still says
+`heat`. For 15 minutes after any night start (guard or otherwise), GUARD
 SETTLE re-asserts mode / setpoint / fan from live reads, each only if it
 differs from the parked state — the setpoint check leaves every night-hold
 setpoint (maintaining and the two quantised nudges) alone; the mode check
-matters only after a manual night start, since a guard-triggered start
-already forced cooling mode — normally 0 commands, and never while a manual
-setpoint is active.
+excludes a heat read (the backstop's alone) and otherwise matters only after
+a manual night start, since a guard-triggered start already forced cooling
+mode — normally 0 commands, and never while a manual setpoint is active.
 
 **Honest note on the lock-window misread (code board 20260909-151815 cycle 2
 G4, was cycle 1 F6):** a person's off stamped inside `[lock_ts, lock_ts +
@@ -238,10 +241,16 @@ before the call:
    this can only cancel a write THIS blueprint itself could have issued in
    that window (code board 20260909-151815 F3, narrowed by cycle 2 G1 after
    the cycle-1 version was found firing on every tick, defeating the safety
-   cutoff's own "manual override wins" contract). Outside the fan-settle /
-   fan-assist windows, or a fan already on before the window opened, or a
-   fan started more than two minutes ago, this cut never touches it — a
-   deliberate fan start is cut at most once, only if it lands inside this
+   cutoff's own "manual override wins" contract). Armed only when the
+   matching write list could have fired — `night_fans_tonight` inside the
+   fan-settle window or `fan_assist_tonight` inside the fan-assist window
+   (cycle 3 H4) — each extended by a 120 s grace past its own end (cycle 3
+   H5), so a write this blueprint issued on the last in-window tick is still
+   cancellable after the window closes. Outside the settle/assist windows
+   (plus grace), on a night the matching experiment toggle is off, or a fan
+   already on before the window opened, or a fan started more than two
+   minutes ago, this cut never touches it — a deliberate fan start is cut at
+   most once, only if it lands inside this
    blueprint's own write window; the person keeps the fan by starting it
    after the interlock sensor clears, or outside those windows.
 1. Configured (listed in `bedroom_fans`) and available — not `unavailable`
@@ -291,12 +300,19 @@ it to, not the night percentage (spec §2.5).
 **Accepted residual (operator decision, 2026-09-09 — code board
 20260909-151815, R2C2-01):** a `fan.turn_on` this blueprint issues reaches
 the Tuya cloud 10–60 s after the call, so if an interlock sensor trips
-inside that lag the fan can run at its night speed (1 %) for roughly one
-tick plus delivery latency before `fans_unsafe_on` cuts it on the next
-tick; that cut cannot restore a cutoff resume the late write already
-cancelled. The operator accepted this bounded exposure rather than removing
-the kids-room fan from the instance, because the interlock and its clear
-hold block every ordinary case and the exposure is at the lowest fan speed.
+inside that lag the fan can run at its night speed (1 %) for a night write
+or the assist speed (21 %) for an assist write before `fans_unsafe_on` cuts
+it. That cut is best-effort, not guaranteed within one tick: it fires on the
+first tick that reads the fan `on`, and is armed for the write window plus a
+120 s grace past the window's end (code board 20260909-151815 cycle 3 H5) so
+a write that lands just after the window still gets cut; a write outside
+that grace, or a cut that lands after a cutoff resume already restored a
+different speed, cannot be recovered — the cut cannot restore a cutoff
+resume the late write already cancelled. The operator accepted this bounded
+exposure rather than removing the kids-room fan from the instance, because
+the interlock and its clear
+hold block every ordinary case, `fan_assist` defaults off so the 21 % case is
+opt-in, and the residual is a best-effort cut, not an unprotected write.
 Escape hatch: removing that fan from `bedroom_fans` in the instance
 disables every write to it while leaving the code path intact.
 
@@ -333,7 +349,7 @@ only runs on chosen nights.
 ### Beep Budget
 1. Unlimited commands before bedtime; after bedtime the lock issues ≤ 3 in ac_hold (mode, setpoint, night fan — typically 1–2) and ≤ 4 in fan_only (… + off — typically 1); the deep-night check ≤ 1.
 2. Every climate service call guarded by a current-vs-desired comparison.
-3. NIGHT-HOLD and DEEP-HOLD issue zero service calls in ac_hold mode; in fan_only mode only the night guard (`turn_on` + unconditional `set_hvac_mode`, restoring the parked state in cooling mode regardless of what the stale read shows), the heat backstop (`turn_off`, worst case ≤ 1 min of heat and 3 commands per 5-minute backstop+guard cycle — v1.2.0), and the guard's settle corrections (setpoint, fan — normally 0) may fire, and the fan step writes each configured fan at most once per transition.
+3. NIGHT-HOLD and DEEP-HOLD issue zero service calls in ac_hold mode; in fan_only mode only the night guard (`turn_on` + unconditional `set_hvac_mode`, restoring the parked state in cooling mode regardless of what the stale read shows), the heat backstop (`set_hvac_mode` back to cooling mode, ≤ 1 per tick while a heat read persists — v1.2.0, no `turn_off`, nothing latches), and the guard's settle corrections (setpoint, fan — normally 0) may fire, and the fan step writes each configured fan at most once per transition.
 
 ### Mode Selection
 1. `cool` is the proven default path.

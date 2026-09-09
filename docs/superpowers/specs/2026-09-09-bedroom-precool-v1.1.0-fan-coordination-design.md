@@ -351,6 +351,11 @@ logic was already correct, so no RED was reachable for those two):
    `test_rendered_heat_backstop_due_only_for_heat_at_night_in_fan_only_while_running`
    and `test_heat_backstop_is_exactly_one_turn_off_gated_on_heat_backstop_due`
    (both RED before the fix — `heat_backstop_due` did not exist).
+   **Superseded by cycle 3's H1/H3 below:** the `climate.turn_off` this item
+   describes made `manual_off` latch the night guard off (R1C3-01 ≡
+   R2C3-03) — it no longer ships. The backstop now corrects the mode in
+   place (`climate.set_hvac_mode`, never `turn_off`) and moved ahead of the
+   STEP 5 validation stops; see the cycle 3 section.
 4. **G4 (R2C2-04) — honest wording for the accepted lock-window misread
    (was cycle-1 F6).** Requirements "Night Mode & Pre-Chill", the README
    beep bullet, and this addendum's F6 entry above no longer claim "one
@@ -401,16 +406,108 @@ STEP order after G3's new STEP 6c: `4 < 5c < 5 < 5b < 6 < 6a < 6b < 6c <
 Codex raised, and Opus confirmed in shape, that no in-blueprint check can
 cancel a `fan.turn_on` already in flight to the Tuya cloud (10–60 s delivery):
 if an interlock sensor trips inside that lag, the fan can run at its night
-speed (1 %) for about one tick plus delivery latency before `fans_unsafe_on`
-switches it off on the next tick, and that cut cannot restore a cutoff resume
+speed (1 %) for a night write or the assist speed (21 %) for an assist write
+before `fans_unsafe_on` cuts it, and that cut cannot restore a cutoff resume
 the late write cancelled. Its recommendation was to stop writing the shared
 kids-room fan entirely until a cutoff-owned command path exists.
 
 The operator (Martin) adjudicated on 2026-09-09: **both fans stay in
 `bedroom_fans`; the residual is accepted.** Reasoning recorded with the
 decision — the interlock and its clear hold block every ordinary case, and
-the exposure is one tick at the lowest fan speed. The finding is kept in the
-board report at P1 (a safety finding is never killed by a vote); this is an
-accepted risk, not a refutation. The escape hatch is one instance key:
+`fan_assist` defaults off so the 21 % exposure is opt-in. The finding is kept
+in the board report at P1 (a safety finding is never killed by a vote); this
+is an accepted risk, not a refutation. The escape hatch is one instance key:
 removing `fan.ceiling_fan_light_v2` from `bedroom_fans` stops every write to
 that fan while the code path stays in place.
+
+**Cycle 3 correction (H4/H5, board 20260909-151815):** the cut is best-effort,
+not a guaranteed one-tick bound — it fires on the first tick that reads the
+fan `on`, and is armed only while the matching write list could have fired
+(`night_fans_tonight` / `fan_assist_tonight`), for the write window plus a
+120 s grace past the window's end, so a write landing just after the window
+closes is still cancellable. It still cannot restore a cutoff resume the late
+write already cancelled, and a write outside the armed window (plus grace)
+is never cut by this mechanism.
+
+## Code board 20260909-151815 fixes (Task 9, cycle 3 — the rework cap)
+
+Cycle 2's two new mechanisms (the heat backstop, the `fans_unsafe_on` cut)
+each created their own hole. Both fixed by making them narrower and
+non-latching, not by adding more machinery.
+
+1. **H1 (P1, R1C3-01 ≡ R2C3-03) — the heat backstop must not latch the night
+   off.** G3's `climate.turn_off` moved the climate entity's `last_changed`,
+   which made main's `manual_off` read True for the rest of the night
+   (outside the lock's own 180 s exemption) — `guard_due`'s trailing
+   `and not manual_off` then killed the night guard until wake, and STEP 7e
+   blamed a person for an off this blueprint itself caused. Superseded:
+   the backstop now sends an unconditional `climate.set_hvac_mode` with
+   `hvac_mode: desired_mode` — the same idempotent command the settle step
+   uses. No `turn_off`, nothing latches, so there is nothing for the guard
+   to restore; it re-fires every tick the cloud read still says `heat`.
+   `test_heat_backstop_is_exactly_one_turn_off_gated_on_heat_backstop_due`
+   renamed to assert the single `climate.set_hvac_mode` call and that no
+   `climate.turn_off` is gated on `heat_backstop_due`.
+2. **H2 (P2, R1C3-02) — sole ownership of the heat case.** With H1, both
+   `settle_mode_due` and `heat_backstop_due` would fire the same
+   `set_hvac_mode` on a heat read inside the 15-minute settle window (two
+   beeps for one repair). `settle_mode_due` gains `and not heat_backstop_due`
+   (single-lined; `heat_backstop_due` already precedes it in STEP 2c, no
+   reorder needed). New
+   `test_rendered_settle_mode_due_and_heat_backstop_due_are_mutually_exclusive`;
+   the pre-existing settle test's heat-read assertion flips from
+   `settle_mode_due is True` to `False`.
+3. **H3 (P2, R2C3-02) — the backstop must not sit behind the validation
+   stops.** The whole backstop block (renamed STEP 5d: HEAT BACKSTOP, was
+   STEP 6c) moves to sit immediately after STEP 5c (the fan step) and before
+   STEP 5 (sensor/entity validation) — previously a dead bedroom sensor's
+   `stop: "No valid bedroom temperature sensor"` (or an unavailable AC's
+   `stop: "AC entity unavailable"`) prevented the mode correction while the
+   unit kept heating. It needs only STEP 2a/2c variables, all defined well
+   before STEP 5c. **New STEP order: `4 < 5c < 5d < 5 < 5b < 6 < 6a < 6b <
+   7a...7e < 8`** (5d replaces cycle 2's 6c between 5c and 5; no other step
+   renumbered).
+4. **H4 (P2, R1C3-03 ≡ R2C3-01) — the cut must be armed only when this
+   blueprint could have written.** `fans_unsafe_on` gated on the raw time
+   windows (`in_fan_settle or in_fan_assist_window`) armed the cut whenever
+   the clock was inside a window, even when the matching write list's own
+   gate (`night_fans_tonight` / `fan_assist_tonight`) could never fire — on
+   the deployed instance (`fan_assist: off`) the cut was armed for the whole
+   45-minute assist window every cooling evening with no possible write,
+   and would cut a person's own deliberate fan start under an active
+   sensor, exactly what the safety cutoff leaves to the person. Fixed to
+   `(night_fans_tonight and in_fan_settle_grace) or (fan_assist_tonight and
+   in_fan_assist_grace)`, with `ref_ts` read from the same true branch
+   (`lock_ts` for the night branch, else `ac_started_ts`).
+5. **H5 (P2, R1C3-04 ≡ R2C3-04) — close the window-edge gap.** A `turn_on`
+   issued on the last in-window tick lands 10–60 s later, after the window
+   has already closed, and the next tick's due list is already `[]` — the
+   fan our own write turned on under a tripped sensor would never be cut.
+   New STEP 2c variables `settle_grace_tod` (bedtime + `fan_settle_minutes`
+   + 120 s), `in_fan_settle_grace` and `in_fan_assist_grace` (the assist
+   condition with `< fan_settle_minutes + 2` minutes instead of
+   `< fan_settle_minutes`) arm `fans_unsafe_on` for 120 s past each window's
+   own end; the write lists themselves keep the strict windows.
+6. **H6 (P3, R1C3-05, docs) — `night_mode` input description.** No longer
+   says the unit comes back "with one beep"; now names the two commands
+   (turn_on + force cooling mode) and mentions the heat backstop in one
+   clause. No code change.
+7. **H7 (P3, R1C3-06, tests) — pin `fans_unsafe_on`'s dependency order.**
+   `test_fan_due_lists_are_defined_after_their_inputs_and_use_state_attr`
+   extended to assert `in_fan_assist_window`, `lock_ts` and `ac_started_ts`
+   are all defined before `fans_unsafe_on` — an unordered `ref_ts | float`
+   would silently render `0.0` and cut every fan that came on in the last
+   120 s. No code change; the order already held.
+8. **H8 (docs, R2C3-04 + H1) — honest residual + backstop wording.**
+   `requirements_bedroom_precool.md` and this addendum's Accepted residual
+   section (above) reworded: the exposure is the night speed (1 %) for a
+   night write and the assist speed (21 %) for an assist write; the cut is
+   best-effort (first tick that reads the fan `on`, armed window + 120 s
+   grace), never a guaranteed one-tick bound, and it cannot restore a
+   cutoff resume the late write cancelled. Every place describing the
+   backstop as switching the unit off (requirements phase table, README
+   beep bullet, this addendum's G3 entry above) corrected to "corrects the
+   mode"; beep counts: guard nights = `turn_on` 1 + `set_hvac_mode` 1 +
+   settle ≤ 2 + nudge ≤ 1 (typical 2, worst 5), heat backstop ≤ 1
+   `set_hvac_mode` per tick while a heat read persists. Docs only, no code
+   change.

@@ -422,8 +422,10 @@ blueprint:
         v1.0.x behaviour). 'Fan-only' parks the unit on that same state, switches it
         OFF at the bedtime lock and hands the night to the Bedroom Fans; if the warmest
         bedroom exceeds Ideal + Drift Tolerance after bedtime the unit is switched back
-        on (one beep — it restores the parked state, which the blueprint re-checks for
-        15 minutes) and stays on until Wake Time.
+        on with two commands (turn on, then force cooling mode — it restores the parked
+        state, which the blueprint re-checks for 15 minutes) and stays on until Wake
+        Time. A heat backstop separately corrects the mode, without switching the unit
+        off, on any tick that finds it running in heat mode.
       default: "ac_hold"
       selector:
         select:
@@ -1240,6 +1242,16 @@ action:
       # fan_assist and dry mode both default off, and the experiment runs on chosen
       # nights only.
       in_fan_assist_window: "{{ phase == 'PRECOOL' and ac_is_running and (since_ac_start_min | float) < (fan_settle_minutes | float) and (automation_up_since_ts | float) < (earliest_turn_on_ts | float) }}"
+      # H5 (P2, board 20260909-151815 cycle 3, R1C3-04 ≡ R2C3-04): a turn_on issued on the
+      # last in-window tick lands 10-60 s later, i.e. AFTER the window has already closed,
+      # so the very next tick renders an empty due list and the fan our own write turned on
+      # under a tripped sensor is never cut. These *_grace variants arm fans_unsafe_on for
+      # 120 s past each window's own end; the write lists (fans_due_night / fans_due_precool)
+      # keep the strict windows above unchanged.
+      settle_grace_tod: >-
+        {{ (today_at(bedtime) + timedelta(minutes=fan_settle_minutes | int, seconds=120)).strftime('%H:%M:%S') }}
+      in_fan_settle_grace: "{{ lock_tod <= now_tod and now_tod < settle_grace_tod }}"
+      in_fan_assist_grace: "{{ phase == 'PRECOOL' and ac_is_running and (since_ac_start_min | float) < (fan_settle_minutes | float) + 2 and (automation_up_since_ts | float) < (earliest_turn_on_ts | float) }}"
       night_phase: "{{ phase in ['NIGHT_HOLD', 'DEEP_NIGHT_CHECK', 'DEEP_HOLD'] }}"
       # Board 20260909-151815 cycle 2 G3 (P1 residual R2C2-03 -> mitigation): a heater is
       # never an acceptable fallback in a child's bedroom. A stale cloud read that
@@ -1264,7 +1276,10 @@ action:
       # inside the 15-minute window is left alone (manual_setpoint already requires
       # ac_state_age_sec >= 120, so the first two ticks after a start are always ours).
       guard_settle_due: "{{ fan_only_mode and night_phase and ac_is_running and (since_ac_start_min | float) < 15 and not manual_setpoint }}"
-      settle_mode_due: "{{ guard_settle_due and current_hvac_mode not in ['cool', 'dry'] }}"
+      # H2 (P2, board 20260909-151815 cycle 3, R1C3-02): the backstop (STEP 5d) now owns the
+      # heat case exclusively — without this exclusion both would send the same
+      # set_hvac_mode on a heat read inside the settle window (two beeps for one repair).
+      settle_mode_due: "{{ guard_settle_due and current_hvac_mode not in ['cool', 'dry'] and not heat_backstop_due }}"
       # Board 20260909-151815 F7 (P1, R1-02/R1-03): on a unit whose ac_temp_step >= 1, main
       # QUANTISES every commanded setpoint (int()) — maintaining = int(21.0) = 21, the
       # deep-night down-nudge = int(21 - 1.5) = 19 (NOT 19.5), up-nudge = int(22.5) = 22.
@@ -1367,9 +1382,7 @@ action:
       # a person's deliberate `on` restarts the 120 s window each time, so the fan was cut
       # every minute for as long as the interlock stayed on, defeating the cutoff's own
       # documented "manual override wins" contract. Rewritten so it can ONLY cancel a
-      # write THIS blueprint's own STEP 5c could have issued in the CURRENT window:
-      # gated on (in_fan_settle or in_fan_assist_window) — outside those windows this
-      # blueprint has no command in flight and the list is always []; iterates
+      # write THIS blueprint's own STEP 5c could have issued in the CURRENT window; iterates
       # bedroom_fans filtered to interlocked_fans (the "blocked" idiom) so a fan listed
       # only in interlocked_fans, never commanded by this blueprint, is never touched
       # (R1C2-08); keys on the fan's ON-TRANSITION (last_changed, NOT last_updated —
@@ -1377,15 +1390,27 @@ action:
       # being newer than the active window's own reference (lock_ts while settling,
       # ac_started_ts while assisting) AND within the last 120 s; requires at least one
       # interlock sensor actively reading `on` (not unavailable/unknown/the clear hold —
-      # those already block new writes, not this one). Cancels only a write this
-      # blueprint could have issued in the current window (the Tuya cloud applies a
-      # turn_on 10-60 s late); a person's start outside the settle/assist windows, or
-      # older than two minutes, is never touched.
+      # those already block new writes, not this one).
+      # H4 (P2, board 20260909-151815 cycle 3, R1C3-03 ≡ R2C3-01): gating the cut on the raw
+      # time windows alone (in_fan_settle / in_fan_assist_window) armed it whenever the clock
+      # was inside a window, even on a deployed instance where the matching write list could
+      # never fire (e.g. fan_assist: off arms the 45-minute assist window every cooling
+      # evening with no possible write) — cutting a person's own deliberate fan start under
+      # an active sensor, exactly what the safety cutoff leaves to the person. The cut is now
+      # armed only on the SAME condition the matching write list requires
+      # (night_fans_tonight / fan_assist_tonight), and ref_ts is read from that same branch.
+      # H5 (P2, R1C3-04 ≡ R2C3-04): a turn_on issued on the last in-window tick lands 10-60 s
+      # later, after the window has already closed, and the next tick's due list is already
+      # []; the *_grace variants (STEP 2c) keep this cut armed 120 s past each window's own
+      # end so that late write is still cancelled — the write lists themselves keep the
+      # strict windows, only the cut's own arming uses the grace.
       fans_unsafe_on: >-
         {% set ns = namespace(out=[]) %}
-        {% if (in_fan_settle or in_fan_assist_window)
+        {% set night_branch = night_fans_tonight and in_fan_settle_grace %}
+        {% set assist_branch = fan_assist_tonight and in_fan_assist_grace %}
+        {% if (night_branch or assist_branch)
               and expand(fan_interlocks) | selectattr('state', 'eq', 'on') | list | length > 0 %}
-          {% set ref_ts = lock_ts if in_fan_settle else ac_started_ts %}
+          {% set ref_ts = lock_ts if night_branch else ac_started_ts %}
           {% for f in bedroom_fans %}
             {% if f in interlocked_fans %}
               {% set st = expand(f) | list %}
@@ -1559,6 +1584,38 @@ action:
                         lock — an interlock stayed on or the fan was unavailable. Nothing will
                         retry; set it by hand if you want it on.
                       notification_id: "bedroom_precool_fan_skipped"
+
+  # =============================================
+  # STEP 5d: HEAT BACKSTOP (v1.2.0, fan-only nights; was cycle 2 G3's STEP 6c — moved and
+  # rewritten by cycle 3 H1/H3, board 20260909-151815) — a heater is never the fallback in
+  # a child's bedroom. Moved here, immediately after STEP 5c and ahead of STEP 5's
+  # validation stops (H3, R2C3-02): sitting behind `stop: "AC entity unavailable"` /
+  # `stop: "No valid bedroom temperature sensor"` let a dead bedroom sensor block the mode
+  # correction while the unit kept heating. Needs only STEP 2a/2c variables
+  # (fan_only_mode, night_phase, ac_is_running, current_hvac_mode, heat_backstop_due,
+  # desired_mode), all defined earlier than this point.
+  # H1 (P1, R1C3-01 ≡ R2C3-03): corrects the MODE instead of switching the unit off. The
+  # old unconditional climate.turn_off moved the climate entity's last_changed, which made
+  # main's manual_off read True for the rest of the night (outside the lock's own 180 s
+  # exemption) and killed guard_due (`... and not manual_off`) until wake, with STEP 7e
+  # then blaming a person for an off this blueprint caused. climate.set_hvac_mode with
+  # hvac_mode: desired_mode is the same idempotent command the settle step uses — the unit
+  # never goes off, so there is nothing for the guard to bring back; it re-fires on every
+  # tick the cloud read still says 'heat'. H2 gives it sole ownership of the heat case:
+  # settle_mode_due excludes heat_backstop_due, so the two never double-command one tick.
+  # Does not close R2C2-03: a stale cloud 'off' while actually heating is unobservable
+  # from this automation (documented residual for the operator).
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_real_trigger and heat_backstop_due }}"
+        sequence:
+          - service: climate.set_hvac_mode
+            target:
+              entity_id: "{{ ac_climate }}"
+            data:
+              hvac_mode: "{{ desired_mode }}"
 
   # =============================================
   # STEP 5: SENSOR / ENTITY VALIDATION
@@ -1962,27 +2019,6 @@ action:
               entity_id: "{{ ac_climate }}"
             data:
               fan_mode: "{{ night_fan_mode }}"
-
-  # =============================================
-  # STEP 6c: HEAT BACKSTOP (v1.2.0, fan-only nights, board 20260909-151815 cycle 2 G3,
-  # P1 residual R2C2-03 -> mitigation) — a heater is never the fallback in a child's
-  # bedroom. Unconditional climate.turn_off whenever the unit is found running in
-  # 'heat' mode; the guard's own turn_on + set_hvac_mode at its next 5-minute tick
-  # brings it back on in cooling mode (guard_due only trips once the unit reads off).
-  # Bound: worst case under a cloud that lets set_hvac_mode fail is <= 1 minute of heat
-  # per 5-minute guard cycle, 3 commands per cycle (this turn_off + the guard's turn_on
-  # + set_hvac_mode) — visible in the trace. Does not close R2C2-03: a stale cloud
-  # 'off' while actually heating is unobservable from this automation (documented
-  # residual for the operator).
-  # =============================================
-  - choose:
-      - conditions:
-          - condition: template
-            value_template: "{{ is_real_trigger and heat_backstop_due }}"
-        sequence:
-          - service: climate.turn_off
-            target:
-              entity_id: "{{ ac_climate }}"
 
   # =============================================
   # STEP 7a: LEAD-BIAS-HELPER NOT CONFIGURED / MISSING — one-time notice
