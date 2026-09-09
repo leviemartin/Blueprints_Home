@@ -65,7 +65,7 @@ declared_tcb_changes:            # none — no TCB file is edited by this plan
 - Modify: `bedroom_precool.yaml` — Group 5 inputs after `night_fan:` (line ≈ 373), new Group 7 after Group 6 (after `enable_notifications`, line ≈ 417), top-level `variables:` Group 5/7 pass-through (lines ≈ 459–467), STEP 2a after `vacation_active` (line ≈ 555), STEP 2c after `night_fan_mode:` (line ≈ 804), STEP 3 condition + message (lines ≈ 807–840).
 - Test: `tests/test_bedroom_precool_structure.py` (append a `# --- v1.1.0 …` section).
 
-**Interfaces — Produces** (names later tasks use verbatim): inputs `night_mode`, `prechill_offset`, `bedroom_fans`, `interlocked_fans`, `fan_interlocks`, `night_fans`, `night_fan_percentage`, `fan_assist`, `precool_fan_percentage`, `fan_settle_minutes`, `fans_at_wake`; STEP 2a vars `fan_only_mode`, `interlock_blocked`, `ac_started_ts`; STEP 2c vars `bedtime_target`, `night_parity`, `fan_assist_tonight`, `night_fans_tonight`, `lock_ts`, `settle_end_tod`, `settle_last_tod`, `since_ac_start_min`, `in_wake_window`, `in_fan_settle`, `in_settle_last_tick`, `in_fan_assist_window`, `guard_due`.
+**Interfaces — Produces** (names later tasks use verbatim): inputs `night_mode`, `prechill_offset`, `bedroom_fans`, `interlocked_fans`, `fan_interlocks`, `interlock_clear_minutes`, `night_fans`, `night_fan_percentage`, `fan_assist`, `precool_fan_percentage`, `fan_settle_minutes`, `fans_at_wake`; STEP 2a vars `fan_only_mode`, `interlock_blocked`, `ac_started_ts`; STEP 2c vars `bedtime_target`, `night_parity`, `fan_assist_tonight`, `night_fans_tonight`, `lock_ts`, `settle_end_tod`, `settle_last_tod`, `since_ac_start_min`, `in_wake_window`, `in_fan_settle`, `in_settle_last_tick`, `in_fan_assist_window`, `guard_due`.
 
 - [ ] **Step 1 (RED): append tests**
 
@@ -74,7 +74,7 @@ declared_tcb_changes:            # none — no TCB file is edited by this plan
 
 V110_INPUTS = {
     "night_mode": "ac_hold", "prechill_offset": 0.5, "bedroom_fans": [], "interlocked_fans": [],
-    "fan_interlocks": [], "night_fans": "all", "night_fan_percentage": 1, "fan_assist": "off",
+    "fan_interlocks": [], "interlock_clear_minutes": 3, "night_fans": "all", "night_fan_percentage": 1, "fan_assist": "off",
     "precool_fan_percentage": 21, "fan_settle_minutes": 45, "fans_at_wake": "leave",
 }
 
@@ -178,13 +178,16 @@ def test_rendered_guard_due_only_in_night_phases_with_fan_only_ac_off_and_over_b
 def test_rendered_interlock_blocked_fails_safe(bp):
     now = datetime(2026, 9, 9, 19, 29, tzinfo=TZ)
     render = lambda states, sensors: _reparse(_fan_env(now, states).from_string(
-        _var_template(bp, "interlock_blocked")).render(fan_interlocks=sensors).strip())
+        _var_template(bp, "interlock_blocked")).render(fan_interlocks=sensors, interlock_clear_minutes=3).strip())
     pir = "binary_sensor.samuel_samuel_matthew_fanprotection"
-    assert render([_S(pir, "off")], [pir]) is False
+    assert render([_S(pir, "off")], [pir]) is False      # cleared 7.5 h ago (the _S default)
     assert render([_S(pir, "on")], [pir]) is True
     assert render([_S(pir, "unavailable")], [pir]) is True
     assert render([], [pir]) is True                     # sensor missing from the state machine
     assert render([], []) is False                       # no interlock configured
+    # the cutoff resumes only after 3 min continuously clear — so do we (spec §2.1)
+    assert render([_S(pir, "off", last_updated=now - timedelta(seconds=90))], [pir]) is True
+    assert render([_S(pir, "off", last_updated=now - timedelta(minutes=3, seconds=1))], [pir]) is False
 
 
 def test_config_validation_rejects_a_settle_window_across_midnight_and_a_noon_crossing_schedule(bp):
@@ -224,6 +227,7 @@ def _fan_env(now, states):
                     out.append(by_id[i])
         return out
     env.globals["expand"] = expand
+    env.filters["as_timestamp"] = env.globals["as_timestamp"]     # HA offers it as a filter too
     return env
 ```
 
@@ -305,6 +309,19 @@ New Group 7 after `enable_notifications` (end of Group 6):
         entity:
           domain: binary_sensor
           multiple: true
+    interlock_clear_minutes:
+      name: Interlock Clear Hold (min)
+      description: >
+        An interlock sensor that changed within the last N minutes still blocks, so
+        this blueprint never resumes an interlocked fan sooner than the safety
+        automation's own hold would (3 min on the kids-room cutoff).
+      default: 3
+      selector:
+        number:
+          min: 0
+          max: 15
+          step: 1
+          unit_of_measurement: "min"
     night_fans:
       name: Night Fans — Which Nights
       description: >
@@ -400,6 +417,7 @@ and a new block after Group 6:
   bedroom_fans: !input bedroom_fans
   interlocked_fans: !input interlocked_fans
   fan_interlocks: !input fan_interlocks
+  interlock_clear_minutes: !input interlock_clear_minutes
   night_fans: !input night_fans
   night_fan_percentage: !input night_fan_percentage
   fan_assist: !input fan_assist
@@ -414,13 +432,18 @@ STEP 2a — after `vacation_active`:
       # --- v1.1.0 fan coordination: live facts ---
       fan_only_mode: "{{ night_mode == 'fan_only' }}"
       # Any interlock sensor on / unavailable / unknown / absent from the state machine
-      # blocks the interlocked fans — the same fail-safe direction as the cutoff blueprint.
+      # blocks the interlocked fans — the same fail-safe direction as the cutoff
+      # blueprint — and so does a sensor that changed within the last
+      # interlock_clear_minutes: the cutoff resumes its fan only after 3 min
+      # continuously clear, and this blueprint must never resume it sooner.
       interlock_blocked: >-
         {% if fan_interlocks is iterable and fan_interlocks is not string
               and fan_interlocks | length > 0 %}
           {% set found = expand(fan_interlocks) | list %}
+          {% set recent = as_timestamp(now()) - (interlock_clear_minutes | float) * 60 %}
           {{ found | length < fan_interlocks | length
-             or found | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 }}
+             or found | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0
+             or found | map(attribute='last_changed') | map('as_timestamp') | select('gt', recent) | list | length > 0 }}
         {% else %}
           {{ false }}
         {% endif %}
@@ -555,17 +578,26 @@ def _guard_calls(bp):
     return [(c, s) for c, s in steps if any("guard_due" in t for t in c)]
 
 
-def test_night_guard_is_one_turn_on_gated_on_guard_due_and_a_real_trigger(bp):
+def test_night_guard_is_one_turn_on_with_a_read_back_correction_gated_on_guard_due(bp):
     calls = _guard_calls(bp)
     names = [(s.get("service") or s.get("action")) for c, s in calls]
-    assert names == ["climate.turn_on", "persistent_notification.create"], names
+    assert names == ["climate.turn_on", "climate.set_temperature", "climate.set_fan_mode",
+                     "persistent_notification.create"], names
     conds, turn_on = calls[0]
     assert any(t.strip() == "{{ is_real_trigger and guard_due }}" for t in conds)
     assert turn_on["target"]["entity_id"] == "{{ ac_climate }}"
     assert "data" not in turn_on                       # a bare turn_on: the unit restores its parked state
-    notice = calls[1][1]
+    # corrections fire only on a difference read back AFTER the unit reports running
+    assert any("restored_setpoint" in t and "maintaining_setpoint" in t and "abs > 0.1" in t for t in calls[1][0])
+    assert calls[1][1]["data"]["temperature"] == "{{ maintaining_setpoint | float }}"
+    assert any("restored_fan != night_fan_mode" in t and "enable_fan_control" in t for t in calls[2][0])
+    assert calls[2][1]["data"]["fan_mode"] == "{{ night_fan_mode }}"
+    seg = BP_PATH.read_text().split("STEP 6a", 1)[1][:4000]
+    assert seg.index("climate.turn_on") < seg.index("wait_template") < seg.index("restored_setpoint:") < seg.index("climate.set_temperature")
+    assert 'timeout: "00:00:10"' in seg and "continue_on_timeout: true" in seg
+    notice = calls[3][1]
     assert notice["data"]["notification_id"] == "bedroom_precool_guard_fired"
-    assert any("enable_notifications" in t for t in calls[1][0])
+    assert any("enable_notifications" in t for t in calls[3][0])
     # the three night branches of STEP 6 stay free of climate calls (guard lives outside)
     for ph in ("NIGHT_HOLD", "DEEP_HOLD"):
         assert _services_in_phase(bp, ph) == []
@@ -591,6 +623,41 @@ def test_night_guard_is_one_turn_on_gated_on_guard_due_and_a_real_trigger(bp):
           - service: climate.turn_on
             target:
               entity_id: "{{ ac_climate }}"
+          # The unit restores its parked state (verified on this unit: 2 s). Read it
+          # back once it reports running and correct ONLY what differs — normally
+          # nothing; one or two commands when the park was stale (a manual mid-DRIVE
+          # switch-off earlier that day). Same tick, so the deep-night nudge on later
+          # ticks works from the corrected setpoint instead of racing it.
+          - wait_template: "{{ states(ac_climate) not in ['off', 'unavailable', 'unknown'] }}"
+            timeout: "00:00:10"
+            continue_on_timeout: true
+          - variables:
+              restored_setpoint: "{{ state_attr(ac_climate, 'temperature') }}"
+              restored_fan: "{{ state_attr(ac_climate, 'fan_mode') }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: >-
+                      {{ restored_setpoint not in [none, 'none', 'unknown', 'unavailable']
+                         and (restored_setpoint | float - maintaining_setpoint | float) | abs > 0.1 }}
+                sequence:
+                  - service: climate.set_temperature
+                    target:
+                      entity_id: "{{ ac_climate }}"
+                    data:
+                      temperature: "{{ maintaining_setpoint | float }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: >-
+                      {{ enable_fan_control and ac_fan_modes | length > 0
+                         and restored_fan != night_fan_mode }}
+                sequence:
+                  - service: climate.set_fan_mode
+                    target:
+                      entity_id: "{{ ac_climate }}"
+                    data:
+                      fan_mode: "{{ night_fan_mode }}"
           - choose:
               - conditions:
                   - condition: template
@@ -825,6 +892,7 @@ def test_v110_version_docs_and_instance():
     assert i["bedroom_fans"] == ["fan.ceiling_fan_light_v2_2", "fan.ceiling_fan_light_v2"]
     assert i["interlocked_fans"] == ["fan.ceiling_fan_light_v2"]
     assert i["fan_interlocks"] == ["binary_sensor.samuel_samuel_matthew_fanprotection"]
+    assert i["interlock_clear_minutes"] == 3
     assert i["night_fans"] == "all" and i["fan_assist"] == "off" and i["fans_at_wake"] == "leave"
     assert i["night_fan_percentage"] == 1 and i["precool_fan_percentage"] == 21 and i["fan_settle_minutes"] == 45
     text = BP_PATH.read_text()
@@ -918,9 +986,9 @@ STEP 8 dump — add after the `night fan` line:
 
 Blueprint header: `name: "Bedroom Sleep Pre-Cool v1.1.0"`, description `**Version: 1.1.0** — ceiling-fan coordination: night_mode fan_only (park, off at the lock, one-beep night guard with the running unit as latch), pre-chill offset, bedroom fan list written under one edge-triggered rule (last_updated touch detection, interlock sensors), day-parity switches for the fan-assist / night-fan experiments. History: v1.0.3 …` and a Features bullet each for the night mode, the fans and the guard.
 
-Instance JSON `input` additions: `"night_mode": "fan_only", "prechill_offset": 0.5, "bedroom_fans": ["fan.ceiling_fan_light_v2_2", "fan.ceiling_fan_light_v2"], "interlocked_fans": ["fan.ceiling_fan_light_v2"], "fan_interlocks": ["binary_sensor.samuel_samuel_matthew_fanprotection"], "night_fans": "all", "night_fan_percentage": 1, "fan_assist": "off", "precool_fan_percentage": 21, "fan_settle_minutes": 45, "fans_at_wake": "leave"`; alias `Bedroom Sleep Pre-Cool v1.1.0`.
+Instance JSON `input` additions: `"night_mode": "fan_only", "prechill_offset": 0.5, "bedroom_fans": ["fan.ceiling_fan_light_v2_2", "fan.ceiling_fan_light_v2"], "interlocked_fans": ["fan.ceiling_fan_light_v2"], "fan_interlocks": ["binary_sensor.samuel_samuel_matthew_fanprotection"], "interlock_clear_minutes": 3, "night_fans": "all", "night_fan_percentage": 1, "fan_assist": "off", "precool_fan_percentage": 21, "fan_settle_minutes": 45, "fans_at_wake": "leave"`; alias `Bedroom Sleep Pre-Cool v1.1.0`.
 
-`requirements_bedroom_precool.md`: phase table — BEDTIME-LOCK row gains "fan_only: park then off (≤ 3, typically 1)"; add rows "FAN SETTLE (lock → bedtime + settle) — fans to the night percentage under the fan write rule, at most one command per fan" and "NIGHT GUARD (any minute after bedtime, fan_only) — one `turn_on` restoring the parked state; running unit = latch"; new sections "Night mode & pre-chill", "Bedroom fans — the fan write rule" (configured ∧ available ∧ not at target ∧ interlock clear ∧ `last_updated` older than the reference; never re-asserts the safety cutoff or a manual change; never writes direction), "Experiments (odd/even day-of-year parity)"; beep budget lines for both modes; the Hardware section lists optional ceiling fans + interlock sensor; Out-of-scope adds "learning from guard nights".
+`requirements_bedroom_precool.md`: phase table — BEDTIME-LOCK row gains "fan_only: park then off (≤ 3, typically 1)"; add rows "FAN SETTLE (lock → bedtime + settle) — fans to the night percentage under the fan write rule, at most one command per fan" and "NIGHT GUARD (any minute after bedtime, fan_only) — one `turn_on` restoring the parked state; running unit = latch"; new sections "Night mode & pre-chill", "Bedroom fans — the fan write rule" (configured ∧ available ∧ not at target ∧ interlock clear ∧ `last_updated` older than the reference; never re-asserts the safety cutoff or a manual change; never writes direction), "Experiments (odd/even day-of-year parity)"; beep budget lines for both modes; the Hardware section lists optional ceiling fans + interlock sensor; Out-of-scope adds "learning from guard nights"; the known limitation "a fan the safety cutoff resumed after the lock keeps the cutoff's restored speed" (spec §2.5); "manual-override handling is a v1.1.0 item" → "a v1.2.0 item (#19)".
 
 README §Features: `*   **🌀 Fan-Only Night Hold (v1.1.0):** …` and `*   **🪭 Bedroom Fans:** …` bullets (fan write rule in one sentence, parity experiments), beep bullet updated for fan-only.
 
@@ -935,7 +1003,7 @@ README §Features: `*   **🌀 Fan-Only Night Hold (v1.1.0):** …` and `*   **�
 **Effort:** xhigh at the [6] gate checkpoint (`/effort xhigh`), `high` after.
 
 - [ ] **Step 1:** TCB `verify "$BASELINE"` (same `TCB_EXTRA`) → rc 0; `review-shipped` → `convene-board` (code-time, standard, CYCLE=1, Codex unpinned); action P0/P1 in-session (delta re-review = fresh dispatch); `gh_post_board` + `gh_post_verdict` on #26; `code-review-gate`; merge (merge commit, keep branch); `#26 → status:in-review`.
-- [ ] **Step 2 (deploy, [8]):** `git fetch` + deploy from `main`: `scripts/deploy-blueprint.sh bedroom_precool.yaml leviemartin/bedroom_precool.yaml deploy/bedroom_precool_1779553673971.json`; instance `on`; next tick trace `finished`, `night_mode: fan_only` in the trace variables, 0 errors. Assign the master fan's device to the Master Bedroom area (registry). **Daytime guard live-verify:** copy the instance, set `bedtime` = now + 3 min and `ideal_temp` 20 via the config API, watch: lock tick → park calls if needed → `climate.turn_off` → fans 1 % → next tick NIGHT_HOLD + `guard_due` → `climate.turn_on` → entity shows `cool/21/low`; restore the real instance (POST the saved JSON) and switch the unit off. One house-meter delta reading with a fan at 1 % on/off (fan draw, research contested claim).
+- [ ] **Step 2 (deploy, [8]):** `git fetch` + deploy from `main`: `scripts/deploy-blueprint.sh bedroom_precool.yaml leviemartin/bedroom_precool.yaml deploy/bedroom_precool_1779553673971.json`; instance `on`; next tick trace `finished`, `night_mode: fan_only` in the trace variables, 0 errors. Assign the master fan's device to the Master Bedroom area (registry). Add the one-line ownership note to `~/projects/ceiling-fan-hue-blueprint/README.md` (spec §2.6; local repo, no remote — commit there). **Daytime guard live-verify:** copy the instance, set `bedtime` = now + 3 min and `ideal_temp` 20 via the config API, watch: lock tick → park calls if needed → `climate.turn_off` → fans 1 % → next tick NIGHT_HOLD + `guard_due` → `climate.turn_on` → entity shows `cool/21/low`; restore the real instance (POST the saved JSON) and switch the unit off. One house-meter delta reading with a fan at 1 % on/off (fan draw, research contested claim).
 - [ ] **Step 3 (observe, ≥ 2 nights):** criteria from the Phase 1 header; on pass → `observe:closed` → [9] closing-session (`gh_finish_session` #26, update the epic checklist, next session JIT for the A/B experiments: `fan_assist: odd` once PRECOOL nights return).
 
 ## Self-review (writing-plans)
