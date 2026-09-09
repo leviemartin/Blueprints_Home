@@ -23,6 +23,9 @@ manual human input.
 - **input_boolean helper:** For vacation mode toggle
 - **input_text helper (Optional, per floor):** Expected-state store for
   manual-override hold; feature is inert without it
+- **Presence entities (Optional):** `person` / `device_tracker` entities plus
+  `input_boolean` / `binary_sensor` "home indicators" (guest-mode toggle,
+  EV-at-home latch, presence-unreliable guard) for the presence setback
 - **Integration:** SmartThinQ Sensors or LG ThinQ (cloud or local)
 
 ## Functional Requirements
@@ -45,6 +48,17 @@ manual human input.
    would change the AC's state — steady state is command-silent (and beep-free).
    v1.2.0 adds genuine off/on cycles, whose transitions beep by design — the
    operator's explicit silence-over-beeps trade
+
+7. Presence setback (v1.3.0): while every presence entity has been in its
+   current away state (any state except home/unknown/unavailable; every
+   state change, including a move between named zones, restarts the delay,
+   so the setback engages one delay after the last change) for the away delay (default
+   10 min) and no home indicator holds comfort, the comfort band widens by the away
+   setback delta (default 2 °C) on both sides — a setback, never off: a unit
+   heating inside the widened band turns off and re-heats only below
+   `low − delta`, cooling mirrors it. Someone arriving or an indicator
+   switching on restores the band immediately (dedicated triggers). Vacation,
+   the schedule window and the door pierce still outrank presence
 
 ### Fan Control
 1. Proportional fan speed based on distance from comfort boundary
@@ -69,6 +83,13 @@ manual human input.
    and honored for a configurable hold window (default 60 min). Vacation,
    schedule end, and door-open still force off during a hold. Requires a
    dedicated helper per instance.
+4. Presence gating: the guest-mode toggle (`input_boolean.climate_guest_mode`
+   on the living-room instance) holds comfort while guests are in the house;
+   the security system's EV-at-home latch and presence-unreliable guard do the
+   same. Any indicator that is not exactly `off` (on, unknown, unavailable,
+   missing) holds comfort. `input_boolean.security_auto_away` is the alarm's
+   auto-arm feature toggle, not an away state, and is deliberately not a
+   presence input
 
 ### Safety & Degradation
 1. Sensor failure: holds current AC state, fires persistent notification;
@@ -79,7 +100,8 @@ manual human input.
 3. Comfort range validation: blocks operation if low >= high or if twice the
    hysteresis margin exceeds the range (equality is legal since v1.2.0 — the
    release thresholds meet at the midpoint; the deep-pull feasibility gates
-   keep the active targets strictly apart)
+   keep the active targets strictly apart). Validated on the CONFIGURED band
+   (v1.3.0): the widened away band never masks a bad configuration
 4. Graceful handling of AC entity unavailability
 5. Warnings self-dismiss when their condition heals
 6. HA restart never triggers a false manual-hold detection
@@ -88,3 +110,6 @@ manual human input.
 8. A transient cloud command failure can produce one spurious manual-hold
    window (self-clears); floors sharing one LG account can fail correlated
    at the /10 boundary
+9. Presence: `unknown` / `unavailable` counts as home (fail toward comfort,
+   the security resolver's rule); an HA restart resets every `last_changed`,
+   so the setback re-arms one away delay after boot

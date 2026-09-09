@@ -40,7 +40,12 @@ observed outcome.
   `set_temperature` fix (PR #147008).
 - **input_number helper:** Persists the self-learned lead-time bias across
   restarts. Create one via Settings -> Devices & Services -> Helpers ->
-  Number (range roughly -60 to 120, step 1).
+  Number with **min −60 (or lower), max 120 (or higher), step 1**. The
+  blueprint clamps its write to the whole numbers inside the helper's live
+  range intersected with −60…120, skips the write when the two do not overlap
+  at all, and raises a persistent notification while the helper is narrower
+  (v1.1.0 — a helper created with min 60 used to reject the write and abort
+  the lock run).
 - **input_boolean helper (optional):** For the vacation toggle.
 
 ## Daily State Machine
@@ -51,7 +56,7 @@ acts. Phase boundaries span midnight (bedtime -> wake is an overnight window).
 | Phase | Window | AC behaviour | Beeps |
 |---|---|---|---|
 | DAY-OFF | wake -> min(turn_on, bedtime − lead_cap) | Ensure AC off — any running unit is switched off on the next tick; recompute turn-on each tick | 1 at wake (+1 per manual daytime turn-on) |
-| PRECOOL | turn_on -> bedtime − 1 min | Cooling; closed-loop DRIVE / HOLD | many (allowed) |
+| PRECOOL | turn_on -> bedtime − 1 min | Cooling; closed-loop DRIVE / HOLD; stands down while a manual setpoint or a manual off is active (v1.1.0) | many (allowed) |
 | BEDTIME-LOCK | bedtime − 1 min -> bedtime | Lock mode, maintaining setpoint and the night fan (`night_fan`, default low) + auto-learn write | ≤ 3 (typically 1–2) |
 | NIGHT-HOLD | bedtime -> deep-night check | Holds; blueprint issues nothing | 0 |
 | DEEP-NIGHT-CHECK | deep-night check -> +10 min | At most one corrective command | 0 or 1 |
@@ -64,17 +69,58 @@ onward; earlier on the day side (from wake) a running unit is a leftover
 night hold and DAY-OFF turns it off. Consequence: a unit switched on by hand
 between wake and `bedtime − lead_cap_minutes` is switched off again within a
 minute (one beep) — to use it manually during the day, disable the
-automation (manual-override handling is a v1.1.0 item). Configuration
+automation. Configuration
 validation rejects a lead cap whose earliest turn-on is at or before wake
 time, comparing instants so a cap that wraps past midnight is caught too.
 Cool-day nights (the AC was never started) are fully no-op.
+
+## Manual Override (v1.1.0)
+
+A person's change on the unit during the pre-cool is respected until the next
+phase boundary:
+
+- **Manual setpoint.** The blueprint can only ever have commanded four
+  setpoints (drive, maintaining, and the two deep-night corrections, each as
+  the device holds it). A unit that has been running for at least two ticks
+  and whose setpoint is none of them (±0.1 °C) was set by a person:
+  PRECOOL issues no command at all (mode, setpoint, fan) until the bedtime
+  lock, which re-applies the maintaining setpoint and the night fan as usual;
+  that night's auto-learn update is skipped when the override is still active
+  at the lock. A manual setpoint during NIGHT-HOLD is untouched until the
+  deep-night check, which keeps its correction rule.
+- **Manual off.** The blueprint never switches the unit off between
+  `bedtime − lead_cap_minutes` and the lock (only the vacation branch can), so
+  an `off` transition stamped more than two minutes into that window came from
+  a person: the unit stays off for the night (no lock, no deep-night check).
+  The state re-created at an HA start / automation reload (up to ten minutes
+  after it) and the vacation turn-off (confirmed up to two minutes after the
+  toggle) are recognised and not treated as manual; a reload made after a
+  manual off ends that hold.
+- One persistent notification per override episode, dismissed at the boundary.
+- HA state contexts cannot distinguish this automation's own writes from the
+  remote's (both carry no parent/user on a time-pattern run), so detection is
+  by value, not authorship (the values as the device holds them — a
+  whole-degree unit stores 21 for a commanded 21.5, and the blueprint commands
+  the same quantised values). Known limits: a manual change *to* one of the
+  blueprint's own values is re-asserted within a minute; a manual change made
+  within the first two minutes after the unit switched on is re-asserted once
+  (that grace is what lets a lagged or lost command on the turn-on tick be
+  retried by the next tick instead of reading as manual — the effective
+  acknowledgement timeout is therefore 120 s); two consecutive lost commands,
+  or a coordinator acknowledgement delayed past those 120 s, can still leave a
+  remembered unknown value that reads as manual for that night; a cloud outage that ends inside the window re-stamps the `off`
+  state and reads as a manual off for that night (the notification says so;
+  switching the unit on by hand resumes the pre-cool at once).
 
 ## Prediction Model
 
 ```
 warmest_bedroom = aggregate(bedroom sensors, strategy)        # default: max
 delta_in        = max(0, warmest_bedroom − ideal_temp)
-forecast_max    = max forecast temp over [now -> bedtime]     # fallback: outdoor sensor
+forecast_max    = max hourly forecast temp over [now -> bedtime]
+                  # hourly fetched every 15 min; other ticks use the day's
+                  # forecast high (never below the live outdoor reading);
+                  # without either: the live outdoor sensor
 delta_out       = max(0, max(forecast_max, outdoor_now) − ideal_temp)
 solar_load      = 0..1 from sun elevation + azimuth
 lead_bias       = self-learned correction (minutes)
@@ -102,7 +148,8 @@ The blueprint self-learns one scalar — the lead-time bias — persisted in an
 ```
 # at BEDTIME-LOCK, only if the AC was running this night:
 bedtime_error = warmest_bedroom − ideal_temp
-new_bias      = clamp(lead_bias + learn_gain * bedtime_error * k_indoor, -60, 120)
+new_bias      = clamp(lead_bias + learn_gain * bedtime_error * k_indoor,
+                      max(helper.min, -60), min(helper.max, 120))
 ```
 
 Room too warm at bedtime -> bias rises (start earlier tomorrow); overcooled ->
@@ -140,8 +187,10 @@ the bias and subsequent nights wash the outlier out.
 ### Safety
 1. Bedroom sensor failure: holds state, fires a persistent notification.
 2. AC entity unavailable: skips the tick, retries next minute.
-3. Forecast unavailable: falls back to the daily forecast, then to the live
-   outdoor sensor.
+3. Forecast: the hourly window (fetched every 15 minutes) feeds the
+   prediction; every other daytime tick uses the day's forecast high
+   (`weather.get_forecasts type: daily`, gated on the entity's
+   FORECAST_DAILY feature); without either, the live outdoor sensor.
 4. `ideal_temp` is bounded >= 16 °C (child-safety floor); a bedroom reading
    below 16 °C raises an overcooling-fault notification.
 5. Every setpoint clamped to the AC's discovered `min_temp` / `max_temp`.
