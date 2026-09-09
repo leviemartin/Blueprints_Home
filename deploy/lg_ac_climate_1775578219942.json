@@ -1,6 +1,6 @@
 {
   "id": "1775578219942",
-  "alias": "LG AC Climate Control v1.2.0",
+  "alias": "LG AC Climate Control v1.3.0",
   "description": "",
   "use_blueprint": {
     "path": "leviemartin/lg_ac_climate.yaml",
@@ -35,7 +35,21 @@
       "escalation_stage_1_minutes": 20,
       "weather_entity": "weather.openweathermap",
       "fan_speed_medium_threshold": 2,
-      "comfort_margin": 1
+      "comfort_margin": 1,
+      "presence_entities": [
+        "person.martin_levie",
+        "person.savannah_levie"
+      ],
+      "home_indicators": [
+        "input_boolean.climate_guest_mode",
+        "input_boolean.security_ev_car_home",
+        "input_boolean.security_presence_unreliable"
+      ],
+      "away_setback_delta": 2,
+      "away_delay_minutes": 10
     }
+  },
+  "trace": {
+    "stored_traces": 20
   }
 }

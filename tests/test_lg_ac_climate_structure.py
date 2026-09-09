@@ -1,16 +1,21 @@
-"""Structural + logic pins for lg_ac_climate.yaml (LG AC Climate Control v1.2.0).
+"""Structural + logic pins for lg_ac_climate.yaml (LG AC Climate Control v1.3.0).
 
 Run: cd ~/AI/projects/Blueprints_Home && \
      ~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests -q
 """
-from datetime import datetime
+import ast
+import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 import yaml
 from jinja2 import Environment
 
-BP_PATH = Path(__file__).resolve().parent.parent / "lg_ac_climate.yaml"
+ROOT = Path(__file__).resolve().parent.parent
+BP_PATH = ROOT / "lg_ac_climate.yaml"
+LG_INSTANCE = ROOT / "deploy" / "lg_ac_climate_1775578219942.json"
+HA_PATH = "leviemartin/lg_ac_climate.yaml"
 
 
 class _Input:
@@ -104,8 +109,8 @@ def test_fan_discovery_untouched(bp):
 # ---- v1.1.0 additions ----
 
 def test_version_bumped(bp):
-    assert bp["blueprint"]["name"] == "LG AC Climate Control v1.2.0"
-    assert "**Version: 1.2.0**" in bp["blueprint"]["description"]
+    assert bp["blueprint"]["name"] == "LG AC Climate Control v1.3.0"
+    assert "**Version: 1.3.0**" in bp["blueprint"]["description"]
 
 
 def test_new_input_schemas(inputs):
@@ -144,11 +149,16 @@ def test_validation_gate_covers_margin(bp):
     # STEP 2 is the first choose in action (after the variables step)
     gate = bp["action"][1]["choose"]
     conds = [branch_cond(b) for b in gate]
-    assert conds[0] == "{{ temp_low | float >= temp_high | float }}"
+    # v1.3.0 (board R1-06): the gates validate the CONFIGURED band — the effective band is
+    # wider while away and must not mask an inverted or too-narrow config
+    assert conds[0] == "{{ temp_low_cfg | float >= temp_high_cfg | float }}"
     # strict > (v1.2.0 C4): equality margin*2 == width is legal — releases meet
     # at the midpoint, active targets straddle it under the _deep_ok gates
     assert conds[1] == ("{{ (margin | float * 2) > "
-                        "(temp_high | float - temp_low | float) }}")
+                        "(temp_high_cfg | float - temp_low_cfg | float) }}")
+    for b in gate:
+        msg = b["sequence"][0]["data"]["message"]
+        assert "temp_low_cfg" in msg and "temp_high_cfg" in msg and "{{ temp_low }}" not in msg
     assert "must not exceed the range" in gate[1]["sequence"][0]["data"]["message"]
     for b in gate:
         assert seq_kinds(b["sequence"]) == ["service:persistent_notification.create", "stop"]
@@ -220,7 +230,8 @@ def test_window_formula_owns_overnight_tail(bp):
 def test_trigger_roster(bp):
     trigs = bp["trigger"]
     ids = [t.get("id") for t in trigs]
-    assert ids == ["update_loop", "vacation_on", "init", "door_open", "vacation_off", "init"]
+    assert ids == ["update_loop", "vacation_on", "init", "door_open", "vacation_off", "init",
+                   "presence_return", "indicator_on"]
     reload_t = trigs[5]
     # reloads don't fire homeassistant:start (board R2-2); same id → same seed semantics.
     # If the event name were ever wrong, the trigger is inert — safe either way.
@@ -775,3 +786,247 @@ def test_rendered_manual_detected(bp):
     ]
     for ctx, want in cases:
         assert render_var(bp, "manual_detected", ctx) == want, ctx
+
+
+# ---- v1.3.0: presence setback (issue #19; spec docs/superpowers/specs/2026-09-09-climate-followup-v1.1.0-design.md) ----
+
+def _reparse(rendered):
+    """What HA does to a rendered variables value before the next step sees it."""
+    try:
+        return ast.literal_eval(rendered)
+    except (ValueError, SyntaxError):
+        return rendered
+
+
+class _St:
+    def __init__(self, state, last_changed):
+        self.state, self.last_changed = state, last_changed
+
+
+class _States(dict):
+    """`states[entity]` -> State or None (HA semantics)."""
+
+    def __getitem__(self, key):
+        return self.get(key)
+
+
+def test_presence_inputs_are_additive_with_defaults(inputs):
+    pe = inputs["presence_entities"]
+    assert pe["default"] == []
+    assert pe["selector"]["entity"]["multiple"] is True
+    assert pe["selector"]["entity"]["domain"] == ["person", "device_tracker"]
+    hi = inputs["home_indicators"]
+    assert hi["default"] == []
+    assert hi["selector"]["entity"]["multiple"] is True
+    assert hi["selector"]["entity"]["domain"] == ["input_boolean", "binary_sensor"]
+    d = inputs["away_setback_delta"]
+    assert d["default"] == 2.0
+    n = d["selector"]["number"]
+    assert (n["min"], n["max"], n["step"]) == (0.0, 5.0, 0.5)
+    dl = inputs["away_delay_minutes"]
+    assert dl["default"] == 10
+    n = dl["selector"]["number"]
+    assert (n["min"], n["max"], n["step"]) == (0, 120, 5)
+    # comfort-band defaults untouched (operator decision 2026-09-07)
+    assert (inputs["temp_range_low"]["default"], inputs["temp_range_high"]["default"]) == (20.0, 24.0)
+
+
+def test_presence_variable_mappings_and_cfg_rename(bp):
+    v = bp["variables"]
+    assert v["temp_low_cfg"] == _Input("temp_range_low")
+    assert v["temp_high_cfg"] == _Input("temp_range_high")
+    assert "temp_low" not in v and "temp_high" not in v      # the effective band lives in STEP 1
+    assert v["presence_entities"] == _Input("presence_entities")
+    assert v["home_indicators"] == _Input("home_indicators")
+    assert v["away_delta"] == _Input("away_setback_delta")
+    assert v["away_delay"] == _Input("away_delay_minutes")
+
+
+def test_presence_triggers(bp):
+    trigs = bp["trigger"]
+    ret = trigs[6]
+    assert (ret["platform"], ret["to"], ret["id"]) == ("state", "home", "presence_return")
+    assert ret["entity_id"] == _Input("presence_entities")
+    ind = trigs[7]
+    assert (ind["platform"], ind["to"], ind["id"]) == ("state", "on", "indicator_on")
+    assert ind["entity_id"] == _Input("home_indicators")
+
+
+def test_presence_variables_precede_every_band_consumer(bp):
+    keys = list(bp["action"][0]["variables"].keys())
+    i = {k: keys.index(k) for k in
+         ("current_temp", "presence_enabled", "away_delay_sec", "persons_all_away", "home_indicator_on",
+          "away_active", "temp_low", "temp_high", "outdoor_temp_raw", "setpoint_cool_q",
+          "setpoint_heat_q", "target_mode", "outdoor_distance", "cool_deep_ok")}
+    assert (i["current_temp"] < i["presence_enabled"] < i["away_delay_sec"] < i["persons_all_away"]
+            < i["home_indicator_on"] < i["away_active"] < i["temp_low"] < i["temp_high"]
+            < i["outdoor_temp_raw"])
+    for consumer in ("setpoint_cool_q", "setpoint_heat_q", "target_mode", "outdoor_distance", "cool_deep_ok"):
+        assert i["temp_high"] < i[consumer], consumer
+
+
+PRESENCE_CHAIN = ["presence_enabled", "away_delay_sec", "persons_all_away", "home_indicator_on",
+                  "away_active", "temp_low", "temp_high"]
+
+
+def _away(bp, persons, delay=10, indicators=(), delta=2.0, enabled=True, entities=None, tl=21.0, th=23.5,
+          indicator_ids=None):
+    """persons: [(state, minutes_since_last_change)]; indicators: states of the home indicators
+    (an indicator id listed in indicator_ids but absent from `indicators` is a MISSING entity)."""
+    now = datetime(2026, 9, 9, 17, 0)
+    ids = [f"person.p{i}" for i in range(len(persons))]
+    ind_ids = [f"input_boolean.i{i}" for i in range(len(indicators))] if indicator_ids is None else indicator_ids
+    st = _States({pid: _St(state, now - timedelta(minutes=mins)) for pid, (state, mins) in zip(ids, persons)})
+    st.update({f"input_boolean.i{i}": _St(x, now) for i, x in enumerate(indicators)})
+    ctx = dict(presence_entities=(ids if enabled else []) if entities is None else entities,
+               home_indicators=ind_ids,
+               away_delay=delay, away_delta=delta, temp_low_cfg=tl, temp_high_cfg=th, states=st)
+    for name in PRESENCE_CHAIN:
+        ctx[name] = _reparse(render_var(bp, name, ctx, now=now))
+    return ctx
+
+
+def test_rendered_persons_all_away_requires_everyone_away_for_the_delay(bp):
+    assert _away(bp, [("not_home", 15), ("not_home", 30)])["persons_all_away"] is True
+    assert _away(bp, [("work", 15), ("not_home", 30)])["persons_all_away"] is True     # a named zone is away
+    assert _away(bp, [("home", 15), ("not_home", 30)])["persons_all_away"] is False
+    assert _away(bp, [("unknown", 15), ("not_home", 30)])["persons_all_away"] is False  # unknown fails toward home
+    assert _away(bp, [("unavailable", 15), ("not_home", 30)])["persons_all_away"] is False
+    assert _away(bp, [("not_home", 3), ("not_home", 30)])["persons_all_away"] is False  # 3 min < 10 min delay
+    assert _away(bp, [("not_home", 10), ("not_home", 30)])["persons_all_away"] is True  # edge inclusive
+    assert _away(bp, [("not_home", 0), ("not_home", 0)], delay=0)["persons_all_away"] is True
+    ctx = _away(bp, [("not_home", 15)], enabled=False)
+    assert ctx["presence_enabled"] is False and ctx["persons_all_away"] is False
+    # a string-form list on the far side of the boundary must not enable the feature
+    ctx = _away(bp, [("not_home", 15)], entities="['person.p0']")
+    assert ctx["presence_enabled"] is False and ctx["persons_all_away"] is False
+    # an entity that does not exist fails toward home
+    assert _away(bp, [("not_home", 15)], entities=["person.p0", "person.gone"])["persons_all_away"] is False
+    # documented semantics (board R1-08 / R2-B2-02 / R1D-03): the delay measures the CURRENT away
+    # state — EVERY state change restarts it, so a commute not_home -> work -> not_home postpones
+    # the setback until one delay after the last change
+    assert _away(bp, [("work", 2), ("not_home", 30)])["persons_all_away"] is False
+    assert _away(bp, [("work", 10), ("not_home", 30)])["persons_all_away"] is True
+    assert _away(bp, [("not_home", 3), ("not_home", 30)])["persons_all_away"] is False   # left work 3 min ago
+    assert _away(bp, [("not_home", 10), ("not_home", 30)])["persons_all_away"] is True
+
+
+def test_rendered_home_indicator_on(bp):
+    assert _away(bp, [("not_home", 15)], indicators=("off", "on"))["home_indicator_on"] is True
+    assert _away(bp, [("not_home", 15)], indicators=("off", "off"))["home_indicator_on"] is False
+    assert _away(bp, [("not_home", 15)], indicators=())["home_indicator_on"] is False
+    # board R2-A-03 / R2-B2-01: an indicator that cannot be read holds comfort — unknown,
+    # unavailable, or a missing entity all fail toward comfort, never toward setback
+    assert _away(bp, [("not_home", 15)], indicators=("unknown", "off"))["home_indicator_on"] is True
+    assert _away(bp, [("not_home", 15)], indicators=("unavailable", "off"))["home_indicator_on"] is True
+    assert _away(bp, [("not_home", 15)], indicators=("off",),
+                 indicator_ids=["input_boolean.i0", "input_boolean.gone"])["home_indicator_on"] is True
+    # a collection in any shape other than a list (e.g. a string-form list on the far side of
+    # the boundary) holds comfort rather than enabling the setback (board delta R2-C2-02)
+    ctx = _away(bp, [("not_home", 15)], indicators=("off",), indicator_ids="['input_boolean.i0']")
+    assert ctx["home_indicator_on"] is True and ctx["away_active"] is False
+
+
+def test_rendered_away_active_and_effective_band(bp):
+    # live instance: band 21-23.5, delta 2 -> 19-25.5 while away
+    ctx = _away(bp, [("not_home", 15), ("not_home", 30)], indicators=("off", "off", "off"))
+    assert ctx["away_active"] is True and (ctx["temp_low"], ctx["temp_high"]) == (19.0, 25.5)
+    ctx = _away(bp, [("not_home", 15), ("not_home", 30)], indicators=("on", "off", "off"))  # guest mode
+    assert ctx["away_active"] is False and (ctx["temp_low"], ctx["temp_high"]) == (21.0, 23.5)
+    ctx = _away(bp, [("home", 15), ("not_home", 30)])
+    assert ctx["away_active"] is False and (ctx["temp_low"], ctx["temp_high"]) == (21.0, 23.5)
+    ctx = _away(bp, [("not_home", 15), ("not_home", 30)], delta=0)
+    assert ctx["away_active"] is False and (ctx["temp_low"], ctx["temp_high"]) == (21.0, 23.5)
+    ctx = _away(bp, [("not_home", 15)], enabled=False)
+    assert ctx["away_active"] is False and (ctx["temp_low"], ctx["temp_high"]) == (21.0, 23.5)
+
+
+def test_rendered_presence_chain_reaches_target_mode(bp):
+    """board R2-B2-03: from presence states through the effective band into the dispatch input —
+    every value re-parsed across the boundary, no hand-fed band."""
+    now = datetime(2026, 9, 9, 17, 0)
+    ctx = _away(bp, [("not_home", 15), ("not_home", 30)], indicators=("off", "off", "off"))
+    tm = lambda c, temp, mode: render_var(bp, "target_mode", {**c, "margin": 1.0, "current_temp": temp, "current_ac_mode": mode}, now=now)
+    assert ctx["away_active"] is True and tm(ctx, 21.5, "heat") == "off"      # inside 19-25.5: release
+    assert tm(ctx, 18.8, "off") == "heat"                                        # below the setback floor
+    assert tm(ctx, 25.7, "off") == "cool"                                        # above the setback ceiling
+    home = _away(bp, [("home", 1), ("not_home", 30)], indicators=("off", "off", "off"))
+    assert home["away_active"] is False and tm(home, 21.5, "heat") == "heat"     # back home: keep heating to 22
+    guest = _away(bp, [("not_home", 15), ("not_home", 30)], indicators=("on", "off", "off"))
+    assert guest["away_active"] is False and tm(guest, 21.5, "heat") == "heat"
+
+
+def test_rendered_presence_chain_reaches_the_commanded_setpoint(bp):
+    """board delta R2-C2-05: continue the chain into the ladder — select the acting branch by its
+    own condition and render the setpoint it would command, from the presence-derived band."""
+    now = datetime(2026, 9, 9, 17, 0)
+    dev = dict(ac_min_temp=18.0, ac_max_temp=30.0, ac_temp_step=0.5, margin=1.0)
+
+    def command(presence_ctx, current_temp, current_ac_mode="off", deadband_active=True):
+        c = {**presence_ctx, **dev, "current_temp": current_temp, "current_ac_mode": current_ac_mode,
+             "deadband_active": deadband_active}
+        for name in ("setpoint_cool_q", "setpoint_heat_q", "deep_pull_depth", "setpoint_cool_active_q",
+                     "setpoint_heat_active_q", "cool_deep_ok", "heat_deep_ok", "target_mode"):
+            c[name] = _reparse(render_var(bp, name, c, now=now))
+        env = Environment(); env.filters["float"] = _float
+        for branch in ladder(bp):
+            cond = branch_cond(branch)
+            if any(k in cond for k in ("unavailable", "is_vacation", "in_operating_window", "door_is_open",
+                                       "sensors_available", "manual_detected", "hold_active")):
+                continue                                   # pierces / hold: not under test here
+            if _reparse(env.from_string(cond).render(**c).strip()) is True:
+                if "target_mode == 'off'" in cond:
+                    return "off", None
+                dv = branch["sequence"][0]["variables"]
+                return dv["desired_mode"], _reparse(env.from_string(dv["desired_setpoint"]).render(**c).strip())
+        raise AssertionError("no ladder branch selected")
+
+    away = _away(bp, [("not_home", 15), ("not_home", 30)], indicators=("off", "off", "off"))
+    assert away["away_active"] is True
+    assert command(away, 21.5, "heat") == ("off", None)          # inside 19-25.5 -> release
+    assert command(away, 18.8) == ("heat", 20.5)                   # below 19 -> heat to the deep target past 20
+    assert command(away, 25.7) == ("cool", 24.0)                   # above 25.5 -> cool to the deep target past 24.5
+    home = _away(bp, [("home", 1), ("not_home", 30)], indicators=("off", "off", "off"))
+    assert command(home, 20.5) == ("heat", 22.5)                   # back home: band 21-23.5, deep target 22.5
+    assert command(home, 21.5, "heat") == ("heat", 22.5)           # still heating toward the release at 22
+
+
+def test_rendered_target_mode_turns_off_inside_the_widened_band(bp):
+    # heating at 21.5 with band 21-23.5 (margin 1, release 22) keeps heating; once away the band
+    # is 19-25.5 (release 20) and the same room reads in-range -> off; re-heat only below 19
+    ctx = dict(margin=1.0, current_ac_mode="heat", current_temp=21.5)
+    assert render_var(bp, "target_mode", {**ctx, "temp_low": 21.0, "temp_high": 23.5}) == "heat"
+    assert render_var(bp, "target_mode", {**ctx, "temp_low": 19.0, "temp_high": 25.5}) == "off"
+    assert render_var(bp, "target_mode", {**ctx, "current_temp": 18.8, "current_ac_mode": "off",
+                                          "temp_low": 19.0, "temp_high": 25.5}) == "heat"
+
+
+def test_description_documents_presence_setback(bp):
+    d = bp["blueprint"]["description"]
+    assert "Presence Setback" in d and "never off" in d
+
+
+def test_lg_instance_passes_the_deploy_dry_run_and_wires_presence():
+    from test_deploy_blueprint_script import run as deploy_run
+    r = deploy_run("--dry-run", str(BP_PATH), HA_PATH, str(LG_INSTANCE))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "dry-run: validation passed" in r.stdout
+    inst = json.loads(LG_INSTANCE.read_text())
+    i = inst["use_blueprint"]["input"]
+    assert inst["alias"].endswith("v1.3.0")
+    assert i["presence_entities"] == ["person.martin_levie", "person.savannah_levie"]
+    assert i["home_indicators"] == ["input_boolean.climate_guest_mode",
+                                    "input_boolean.security_ev_car_home",
+                                    "input_boolean.security_presence_unreliable"]
+    assert i["away_setback_delta"] == 2 and i["away_delay_minutes"] == 10
+    # security_auto_away is the alarm's auto-arm feature toggle, not an away state (spec §2)
+    assert "security_auto_away" not in json.dumps(inst)
+    assert (i["temp_range_low"], i["temp_range_high"]) == (21, 23.5)   # no comfort-band change
+    assert inst["trace"]["stored_traces"] >= 20
+    # target_fan tests stage 2 before stage 1 (elif chain): s2 <= s1 makes the mid stage unreachable
+    s1, s2 = i["escalation_stage_1_minutes"], i["escalation_stage_2_minutes"]
+    assert s1 < s2
+    inputs = yaml.load(BP_PATH.read_text(), Loader=HassLoader)["blueprint"]["input"]
+    for key, val in (("escalation_stage_1_minutes", s1), ("escalation_stage_2_minutes", s2)):
+        sel = inputs[key]["selector"]["number"]
+        assert sel["min"] <= val <= sel["max"], key
