@@ -113,3 +113,8 @@ manual human input.
 9. Presence: `unknown` / `unavailable` counts as home (fail toward comfort,
    the security resolver's rule); an HA restart resets every `last_changed`,
    so the setback re-arms one away delay after boot
+10. A presence or home-indicator entity that does not exist holds comfort (no
+    setback) and raises the self-healing notice
+    `ac_climate_presence_entity_missing` naming it; the deep-pull feasibility
+    notice is evaluated on the effective band, so a marginal configuration may
+    report infeasible only while someone is home

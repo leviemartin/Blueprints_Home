@@ -91,7 +91,9 @@ phase boundary:
 - **Manual off.** The blueprint never switches the unit off between
   `bedtime − lead_cap_minutes` and the lock (only the vacation branch can), so
   an `off` transition stamped more than two minutes into that window came from
-  a person: the unit stays off for the night (no lock, no deep-night check).
+  a person: the unit stays off for the night (no lock, no deep-night check);
+  before wake time the flag still refers to the previous evening's window, so
+  the notice stays until the deep-night check.
   The state re-created at an HA start / automation reload (up to ten minutes
   after it) and the vacation turn-off (confirmed up to two minutes after the
   toggle) are recognised and not treated as manual; a reload made after a
