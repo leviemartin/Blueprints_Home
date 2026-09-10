@@ -1,6 +1,6 @@
 {
   "id": "1779553673971",
-  "alias": "Bedroom Sleep Pre-Cool v1.1.0",
+  "alias": "Bedroom Sleep Pre-Cool v1.2.0",
   "description": "",
   "use_blueprint": {
     "path": "leviemartin/bedroom_precool.yaml",
@@ -18,7 +18,26 @@
       "night_fan": "low",
       "lead_bias_helper": [
         "input_number.autolearner"
-      ]
+      ],
+      "night_mode": "fan_only",
+      "prechill_offset": 0.5,
+      "bedroom_fans": [
+        "fan.ceiling_fan_light_v2_2",
+        "fan.ceiling_fan_light_v2"
+      ],
+      "interlocked_fans": [
+        "fan.ceiling_fan_light_v2"
+      ],
+      "fan_interlocks": [
+        "binary_sensor.samuel_samuel_matthew_fanprotection"
+      ],
+      "interlock_clear_minutes": 5,
+      "night_fans": "all",
+      "night_fan_percentage": 1,
+      "fan_assist": "off",
+      "precool_fan_percentage": 21,
+      "fan_settle_minutes": 45,
+      "fans_at_wake": "leave"
     }
   },
   "trace": {
