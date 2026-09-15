@@ -1,5 +1,7 @@
 # Bedroom Sleep Pre-Cool v1.1.0 — ceiling-fan coordination + fan-only night hold — Implementation Plan (epic #25, session #26)
 
+> **Status: Done — shipped as v1.2.0 (PR #29 `dbeda3b`, deployed 2026-09-10 09:49 CEST); observation closed 2026-09-15 after six nights (session #26 and epic #25 closed). Follow-up: bug #30 (DRIVE `min_temp` fallback). Code board 20260909-151815 ended at cap with all P0/P1 actioned; operator residuals in `reviews/halt-multi-round-20260909-151815.md`.**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Fable orchestrates; tasks 1–5 are Sonnet subagent work with an orchestrator review between tasks; task 6 is the orchestrator's own gate/merge/deploy work.
 
 **Goal:** Ship `bedroom_precool.yaml` v1.1.0: a `night_mode` (`ac_hold` | `fan_only`) with pre-chill, a bedroom-fan list written under one edge-triggered rule, a one-beep night guard, day-parity experiment switches, tests, the migrated instance, docs, and a live deploy before a 19:29 CEST lock.
