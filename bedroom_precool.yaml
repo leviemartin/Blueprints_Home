@@ -1,7 +1,11 @@
 blueprint:
-  name: "Bedroom Sleep Pre-Cool v1.2.0"
+  name: "Bedroom Sleep Pre-Cool v1.2.1"
   description: >
-    **Version: 1.2.0** — ceiling-fan coordination: night_mode fan_only (park,
+    **Version: 1.2.1** — no PRECOOL setpoint command while the AC has not reported
+    numeric min/max limits (bug #30: the ThinQ entity may lack them on the turn-on
+    tick, so the clamp sent the 16 °C fallback and HA rejected it; the next tick sets
+    the clamped drive value); the override detection is paused on such a tick and a
+    notice reports a unit running 5 min without limits. **Version: 1.2.0** — ceiling-fan coordination: night_mode fan_only (park,
     off at the lock unless already over the band, a two-beep night guard
     (turn_on + unconditional set_hvac_mode, so the unit always restarts in
     cooling mode) with the running unit as latch and a 15-minute settle
@@ -783,6 +787,14 @@ action:
       # --- AC capability discovery (never hard-code) ---
       ac_min_temp: "{{ state_attr(ac_climate, 'min_temp') | float(16) }}"
       ac_max_temp: "{{ state_attr(ac_climate, 'max_temp') | float(30) }}"
+      # v1.2.1 (bug #30): on the tick that turns the unit on the ThinQ entity may not
+      # carry its limits yet (or carries unparseable values); the clamps above then
+      # degrade to their fallbacks and a commanded drive setpoint is rejected by HA.
+      # STEP 6 PRECOOL sends no setpoint until both limits are numeric (the next tick,
+      # in practice); STEP 2c's override detection is paused for the same reason
+      # (known_setpoints would hold the degraded values); STEP 7g notices a unit that
+      # runs 5 min without reporting its limits.
+      ac_limits_known: "{{ (state_attr(ac_climate, 'min_temp') | float(-999)) != -999 and (state_attr(ac_climate, 'max_temp') | float(-999)) != -999 }}"
       ac_temp_step: "{{ [state_attr(ac_climate, 'target_temp_step') | float(0.5), 0.1] | max }}"
       # Seconds since the unit's last STATE (hvac-mode) change — the age of its
       # current running or off spell. Attribute-only pushes do not move it.
@@ -1179,7 +1191,12 @@ action:
       # change inside those first two minutes is re-asserted once (documented).
       known_setpoints: "{% set ns = namespace(vals=[]) %}{% for v in [effective_drive | float, maintaining_setpoint | float, [[maintaining_setpoint | float - correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min, [[maintaining_setpoint | float + correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min] %}{% set ns.vals = ns.vals + [(v | int) if ac_temp_step | float >= 1 else v] %}{% endfor %}{{ ns.vals }}"
       setpoint_is_known: "{% set ns = namespace(ok=false) %}{% if known_setpoints is string or known_setpoints is not iterable %}{% set ns.ok = true %}{% else %}{% for k in known_setpoints %}{% if (current_setpoint | float - k | float) | abs <= 0.1 %}{% set ns.ok = true %}{% endif %}{% endfor %}{% endif %}{{ ns.ok }}"
-      manual_setpoint: "{{ ac_is_running and current_setpoint_known and not setpoint_is_known and ac_state_age_sec | float >= 120 }}"
+      # v1.2.1 (bug #30, board R1-01): while the unit's limits are unknown, known_setpoints
+      # holds the degraded fallback values, so a setpoint this blueprint itself commanded
+      # could read as a person's — no override verdict on such a PRECOOL tick (delta R1-D1-01:
+      # the lock and deep-night writes are not gated on the limits, so their override
+      # detection stays as in v1.1.0).
+      manual_setpoint: "{{ (ac_limits_known or phase != 'PRECOOL') and ac_is_running and current_setpoint_known and not setpoint_is_known and ac_state_age_sec | float >= 120 }}"
       # --- Cool vs dry mode (only chosen while beeps are free) ---
       # Single-lined: this value feeds == comparisons and hvac_mode:; a
       # folded scalar would leave trailing whitespace on the rendered token.
@@ -1765,13 +1782,16 @@ action:
                                       data:
                                         hvac_mode: "{{ desired_mode }}"
                             # 2. Then set the temperature (separate, sequenced call).
+                            #    v1.2.1: never while the unit's limits are unknown (bug #30) —
+                            #    the clamped value would be the fallback and HA rejects it.
                             - choose:
                                 - conditions:
                                     - condition: template
                                       value_template: >-
-                                        {{ (not current_setpoint_known)
-                                           or (current_setpoint | float - precool_setpoint | float)
-                                              | abs > 0.1 }}
+                                        {{ ac_limits_known
+                                           and ((not current_setpoint_known)
+                                                or (current_setpoint | float - precool_setpoint | float)
+                                                   | abs > 0.1) }}
                                   sequence:
                                     - service: climate.set_temperature
                                       target:
@@ -2167,6 +2187,42 @@ action:
       - service: persistent_notification.dismiss
         data:
           notification_id: "bedroom_precool_manual_override"
+        continue_on_error: true
+
+  # =============================================
+  # STEP 7g: AC LIMITS UNKNOWN — state-driven notice (v1.2.1, bug #30 / board R1-02)
+  # The PRECOOL setpoint gate (STEP 6) is unbounded by design: a unit that never
+  # reports numeric min_temp/max_temp is turned on and put in cooling mode but never
+  # given a target. Say so once the running spell is 5 minutes old and the limits
+  # are still unknown; dismiss otherwise. Stateless: the age is the running spell's,
+  # not the outage's (delta R1-D1-02) — a unit flapping cool/off/unavailable restarts it.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ enable_notifications
+                 and phase == 'PRECOOL'
+                 and ac_is_running
+                 and not ac_limits_known
+                 and ac_state_age_sec | float >= 300 }}
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "Bedroom Pre-Cool — AC limits unknown"
+              message: >
+                {{ ac_climate }} is running (this spell:
+                {{ (ac_state_age_sec | float / 60) | int }} min) and currently
+                reports no numeric min/max temperature limits, so the pre-cool
+                sends it no setpoint (it keeps its own last one). Check the LG
+                ThinQ integration; the setpoint is sent as soon as the limits
+                parse.
+              notification_id: "bedroom_precool_ac_limits_unknown"
+            continue_on_error: true
+    default:
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: "bedroom_precool_ac_limits_unknown"
         continue_on_error: true
 
   # =============================================
