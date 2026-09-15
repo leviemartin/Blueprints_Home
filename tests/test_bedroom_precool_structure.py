@@ -741,7 +741,7 @@ OVERRIDE_CHAIN = ["known_setpoints", "setpoint_is_known", "manual_setpoint"]
 
 def _override(bp, current_setpoint, running=True, known=True, age_sec=600, **over):
     now = datetime(2026, 9, 9, 17, 0, tzinfo=TZ)
-    ctx = dict(effective_drive=18.0, maintaining_setpoint=21.0, correction_step=1.5,
+    ctx = dict(ac_limits_known=True, effective_drive=18.0, maintaining_setpoint=21.0, correction_step=1.5,
                ac_min_temp=18.0, ac_max_temp=30.0, ac_temp_step=0.5, current_setpoint=current_setpoint,
                current_setpoint_known=known, ac_is_running=running, ac_climate="climate.bedrooms",
                states=_States({"climate.bedrooms": _St("cool" if running else "off", now - timedelta(seconds=age_sec))}))
@@ -1778,22 +1778,68 @@ def test_v110_version_docs_and_instance():
 
 # --- v1.2.1 (bug #30): no setpoint command while the AC has not reported its limits ---
 
+def _precool_calls_by_service(bp):
+    out = {}
+    for c, s in _climate_calls_in_phase(bp, "PRECOOL"):
+        out.setdefault(s["service"], []).append(c)
+    return out
+
+
 def test_precool_setpoint_command_is_gated_on_known_ac_limits(bp, text):
     """On the tick that turns the LG unit on, the ThinQ entity may not carry min_temp/max_temp yet;
     ac_min_temp then falls back to 16 and effective_drive (16) is rejected by HA (18–30), aborting
-    the run (2026-09-14 17:02). The PRECOOL set_temperature call must wait for known limits; the
+    the run (2026-09-14 17:02). EVERY PRECOOL set_temperature call must wait for known limits; the
     other three PRECOOL commands (turn_on, mode, fan) stay unconditional on that flag."""
-    precool = _climate_calls_in_phase(bp, "PRECOOL")
-    conds = {s["service"]: c for c, s in precool}
-    assert any("ac_limits_known" in t for t in conds["climate.set_temperature"])
+    calls = _precool_calls_by_service(bp)
+    assert len(calls["climate.set_temperature"]) == 1
+    for conds in calls["climate.set_temperature"]:
+        assert any("ac_limits_known" in t for t in conds)
     for svc in ("climate.turn_on", "climate.set_hvac_mode", "climate.set_fan_mode"):
-        assert not any("ac_limits_known" in t for t in conds[svc]), svc
+        assert calls[svc] and all(not any("ac_limits_known" in t for t in conds) for conds in calls[svc]), svc
+    # the composed condition itself, rendered: the limits gate is a conjunct, not a disjunct or negation
+    cond = next(t for t in calls["climate.set_temperature"][0] if "ac_limits_known" in t)
     now = datetime(2026, 9, 14, 17, 2, tzinfo=TZ)
-    r = lambda attrs: _reparse(_render(bp, "ac_limits_known", now, ac_climate="climate.bedrooms",
+    r = lambda **ctx: _reparse(_env(now).from_string(cond).render(**ctx))
+    assert r(ac_limits_known=False, current_setpoint_known=False, current_setpoint=None, precool_setpoint=18.0) is False
+    assert r(ac_limits_known=False, current_setpoint_known=True, current_setpoint=21.0, precool_setpoint=18.0) is False
+    assert r(ac_limits_known=True, current_setpoint_known=False, current_setpoint=None, precool_setpoint=18.0) is True
+    assert r(ac_limits_known=True, current_setpoint_known=True, current_setpoint=21.0, precool_setpoint=18.0) is True
+    assert r(ac_limits_known=True, current_setpoint_known=True, current_setpoint=18.0, precool_setpoint=18.0) is False
+    # the flag: a value test, so a present-but-unusable attribute does not count as known
+    v = lambda attrs: _reparse(_render(bp, "ac_limits_known", now, ac_climate="climate.bedrooms",
                                        state_attr=lambda e, a: attrs.get(a)))
-    assert r({}) is False
-    assert r({"min_temp": 18.0}) is False
-    assert r({"min_temp": None, "max_temp": 30.0}) is False
-    assert r({"min_temp": 18.0, "max_temp": 30.0}) is True
+    assert v({}) is False
+    assert v({"min_temp": 18.0}) is False
+    assert v({"min_temp": None, "max_temp": 30.0}) is False
+    assert v({"min_temp": "unknown", "max_temp": 30.0}) is False
+    assert v({"min_temp": 18, "max_temp": 30.0}) is True
     # defined in STEP 2a next to the limits it describes, before the STEP 6 dispatch reads it
     assert _def_index(text, "ac_max_temp") < _def_index(text, "ac_limits_known") < text.index("# STEP 3: RUNTIME (CONFIG) VALIDATION")
+
+
+def test_manual_override_detection_pauses_while_the_ac_limits_are_unknown(bp):
+    """board R1-01: with the limits unknown, known_setpoints holds the degraded fallbacks, so a
+    setpoint the blueprint commanded earlier (18) would read as a person's. No verdict on that tick."""
+    now = datetime(2026, 9, 14, 17, 4, tzinfo=TZ)
+    base = dict(ac_is_running=True, current_setpoint_known=True, setpoint_is_known=False, ac_state_age_sec=600)
+    r = lambda **kw: _reparse(_render(bp, "manual_setpoint", now, **{**base, **kw}))
+    assert r(ac_limits_known=True) is True
+    assert r(ac_limits_known=False) is False
+    assert r(ac_limits_known=True, setpoint_is_known=True) is False
+
+
+def test_ac_limits_unknown_notice_is_state_driven_and_bounded(bp):
+    n = _notices(bp, "bedroom_precool_ac_limits_unknown")
+    kinds = sorted((s.get("service") or s.get("action")) for _, s in n)
+    assert kinds == ["persistent_notification.create", "persistent_notification.dismiss"]
+    create_conds = next(c for c, s in n if s["service"].endswith("create"))
+    assert any("enable_notifications" in t and "phase == 'PRECOOL'" in t and "not ac_limits_known" in t
+               and "ac_state_age_sec | float >= 300" in t for t in create_conds)
+    assert all(s.get("continue_on_error") is True for _, s in n)
+
+
+def test_v121_docs_are_pinned():
+    readme = (ROOT / "README.md").read_text()
+    assert "Limits-aware setpoints (v1.2.1)" in readme
+    req = (ROOT / "requirements_bedroom_precool.md").read_text()
+    assert "bedroom_precool_ac_limits_unknown" in req and "min_temp" in req
