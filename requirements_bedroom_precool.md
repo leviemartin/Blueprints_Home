@@ -341,7 +341,7 @@ only runs on chosen nights.
 ### Climate Control
 1. 6-phase stateless daily state machine, phase derived from `now`.
 2. Predictive turn-on from a transparent linear lead-time formula.
-3. Closed-loop pre-cool on the warmest bedroom (DRIVE / HOLD sub-states).
+3. Closed-loop pre-cool on the warmest bedroom (DRIVE / HOLD sub-states). No setpoint command while the AC entity's `min_temp`/`max_temp` are unknown (v1.2.1, bug #30): turn-on, mode and fan still go out that tick; the clamped setpoint follows on the next tick.
 4. Bedtime lock — locks the maintaining setpoint and the night fan mode (`night_fan`, default low, matched case-insensitively to the unit's modes; falls back to the normal fan with a notice if the unit lacks it).
 5. One optional corrective command at the deep-night checkpoint.
 6. AC off at wake.

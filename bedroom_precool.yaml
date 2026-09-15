@@ -1,7 +1,10 @@
 blueprint:
-  name: "Bedroom Sleep Pre-Cool v1.2.0"
+  name: "Bedroom Sleep Pre-Cool v1.2.1"
   description: >
-    **Version: 1.2.0** — ceiling-fan coordination: night_mode fan_only (park,
+    **Version: 1.2.1** — no PRECOOL setpoint command while the AC has not reported
+    its min/max limits (bug #30: the ThinQ entity may lack them on the turn-on tick,
+    so the clamp sent the 16 °C fallback and HA rejected it; the next tick sets the
+    clamped drive value). **Version: 1.2.0** — ceiling-fan coordination: night_mode fan_only (park,
     off at the lock unless already over the band, a two-beep night guard
     (turn_on + unconditional set_hvac_mode, so the unit always restarts in
     cooling mode) with the running unit as latch and a 15-minute settle
@@ -783,6 +786,11 @@ action:
       # --- AC capability discovery (never hard-code) ---
       ac_min_temp: "{{ state_attr(ac_climate, 'min_temp') | float(16) }}"
       ac_max_temp: "{{ state_attr(ac_climate, 'max_temp') | float(30) }}"
+      # v1.2.1 (bug #30): on the tick that turns the unit on the ThinQ entity may not
+      # carry its limits yet; the clamps above then degrade to their fallbacks and a
+      # commanded drive setpoint is rejected by HA. STEP 6 PRECOOL sends no setpoint
+      # until both limits are known (the next tick, in practice).
+      ac_limits_known: "{{ state_attr(ac_climate, 'min_temp') is not none and state_attr(ac_climate, 'max_temp') is not none }}"
       ac_temp_step: "{{ [state_attr(ac_climate, 'target_temp_step') | float(0.5), 0.1] | max }}"
       # Seconds since the unit's last STATE (hvac-mode) change — the age of its
       # current running or off spell. Attribute-only pushes do not move it.
@@ -1765,13 +1773,16 @@ action:
                                       data:
                                         hvac_mode: "{{ desired_mode }}"
                             # 2. Then set the temperature (separate, sequenced call).
+                            #    v1.2.1: never while the unit's limits are unknown (bug #30) —
+                            #    the clamped value would be the fallback and HA rejects it.
                             - choose:
                                 - conditions:
                                     - condition: template
                                       value_template: >-
-                                        {{ (not current_setpoint_known)
-                                           or (current_setpoint | float - precool_setpoint | float)
-                                              | abs > 0.1 }}
+                                        {{ ac_limits_known
+                                           and ((not current_setpoint_known)
+                                                or (current_setpoint | float - precool_setpoint | float)
+                                                   | abs > 0.1) }}
                                   sequence:
                                     - service: climate.set_temperature
                                       target:

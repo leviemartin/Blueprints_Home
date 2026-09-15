@@ -72,8 +72,8 @@ def test_instants_are_carried_as_timestamps_not_datetimes(text):
 
 
 def test_version_bumped(bp):
-    assert bp["blueprint"]["name"].endswith("v1.2.0")
-    assert "**Version: 1.2.0**" in bp["blueprint"]["description"]
+    assert bp["blueprint"]["name"].endswith("v1.2.1")
+    assert "**Version: 1.2.1**" in bp["blueprint"]["description"]
 
 
 # --- deployed instance config (board 20260907-163522 R1-04: the deploy dry-run owns the
@@ -96,7 +96,7 @@ def test_precool_instance_values():
     # weather.openweathermap supports no forecast type (a get_forecasts call raises);
     # weather.home_sm (Met.no) supports daily + hourly (supported_features 3).
     assert inst["use_blueprint"]["input"]["weather_entity"] == "weather.home_sm"
-    assert inst["alias"].endswith("v1.2.0")
+    assert inst["alias"].endswith("v1.2.1")
     # HA keeps 5 traces by default — ~5 minutes of a 1-minute automation, too few to read
     # the bedtime-lock evidence after the fact ([8] observation)
     assert inst["trace"]["stored_traces"] >= 30
@@ -1759,7 +1759,7 @@ def test_fan_skipped_notice_fires_once_on_the_last_settle_tick(bp):
 def test_v110_version_docs_and_instance():
     inst = json.loads(PRECOOL_INSTANCE.read_text())
     i = inst["use_blueprint"]["input"]
-    assert inst["alias"].endswith("v1.2.0")
+    assert inst["alias"].endswith("v1.2.1")
     assert i["night_mode"] == "fan_only" and i["prechill_offset"] == 0.5
     assert i["bedroom_fans"] == ["fan.ceiling_fan_light_v2_2", "fan.ceiling_fan_light_v2"]
     assert i["interlocked_fans"] == ["fan.ceiling_fan_light_v2"]
@@ -1768,9 +1768,32 @@ def test_v110_version_docs_and_instance():
     assert i["night_fans"] == "all" and i["fan_assist"] == "off" and i["fans_at_wake"] == "leave"
     assert i["night_fan_percentage"] == 1 and i["precool_fan_percentage"] == 21 and i["fan_settle_minutes"] == 45
     text = BP_PATH.read_text()
-    assert "**Version: 1.2.0**" in text
+    assert "**Version: 1.2.1**" in text and "**Version: 1.2.0**" in text
     req = (ROOT / "requirements_bedroom_precool.md").read_text()
     for token in ("fan_only", "Night guard", "settle window", "last_updated", "odd/even", "interlock_clear_minutes"):
         assert token in req, token
     readme = (ROOT / "README.md").read_text()
     assert "Fan-Only Night Hold (v1.2.0)" in readme
+
+
+# --- v1.2.1 (bug #30): no setpoint command while the AC has not reported its limits ---
+
+def test_precool_setpoint_command_is_gated_on_known_ac_limits(bp, text):
+    """On the tick that turns the LG unit on, the ThinQ entity may not carry min_temp/max_temp yet;
+    ac_min_temp then falls back to 16 and effective_drive (16) is rejected by HA (18–30), aborting
+    the run (2026-09-14 17:02). The PRECOOL set_temperature call must wait for known limits; the
+    other three PRECOOL commands (turn_on, mode, fan) stay unconditional on that flag."""
+    precool = _climate_calls_in_phase(bp, "PRECOOL")
+    conds = {s["service"]: c for c, s in precool}
+    assert any("ac_limits_known" in t for t in conds["climate.set_temperature"])
+    for svc in ("climate.turn_on", "climate.set_hvac_mode", "climate.set_fan_mode"):
+        assert not any("ac_limits_known" in t for t in conds[svc]), svc
+    now = datetime(2026, 9, 14, 17, 2, tzinfo=TZ)
+    r = lambda attrs: _reparse(_render(bp, "ac_limits_known", now, ac_climate="climate.bedrooms",
+                                       state_attr=lambda e, a: attrs.get(a)))
+    assert r({}) is False
+    assert r({"min_temp": 18.0}) is False
+    assert r({"min_temp": None, "max_temp": 30.0}) is False
+    assert r({"min_temp": 18.0, "max_temp": 30.0}) is True
+    # defined in STEP 2a next to the limits it describes, before the STEP 6 dispatch reads it
+    assert _def_index(text, "ac_max_temp") < _def_index(text, "ac_limits_known") < text.index("# STEP 3: RUNTIME (CONFIG) VALIDATION")
