@@ -741,7 +741,7 @@ OVERRIDE_CHAIN = ["known_setpoints", "setpoint_is_known", "manual_setpoint"]
 
 def _override(bp, current_setpoint, running=True, known=True, age_sec=600, **over):
     now = datetime(2026, 9, 9, 17, 0, tzinfo=TZ)
-    ctx = dict(ac_limits_known=True, effective_drive=18.0, maintaining_setpoint=21.0, correction_step=1.5,
+    ctx = dict(ac_limits_known=True, phase="PRECOOL", effective_drive=18.0, maintaining_setpoint=21.0, correction_step=1.5,
                ac_min_temp=18.0, ac_max_temp=30.0, ac_temp_step=0.5, current_setpoint=current_setpoint,
                current_setpoint_known=known, ac_is_running=running, ac_climate="climate.bedrooms",
                states=_States({"climate.bedrooms": _St("cool" if running else "off", now - timedelta(seconds=age_sec))}))
@@ -1813,6 +1813,7 @@ def test_precool_setpoint_command_is_gated_on_known_ac_limits(bp, text):
     assert v({"min_temp": None, "max_temp": 30.0}) is False
     assert v({"min_temp": "unknown", "max_temp": 30.0}) is False
     assert v({"min_temp": 18, "max_temp": 30.0}) is True
+    assert v({"min_temp": "18.0", "max_temp": "30"}) is True     # numeric strings parse, like the clamps
     # defined in STEP 2a next to the limits it describes, before the STEP 6 dispatch reads it
     assert _def_index(text, "ac_max_temp") < _def_index(text, "ac_limits_known") < text.index("# STEP 3: RUNTIME (CONFIG) VALIDATION")
 
@@ -1821,11 +1822,15 @@ def test_manual_override_detection_pauses_while_the_ac_limits_are_unknown(bp):
     """board R1-01: with the limits unknown, known_setpoints holds the degraded fallbacks, so a
     setpoint the blueprint commanded earlier (18) would read as a person's. No verdict on that tick."""
     now = datetime(2026, 9, 14, 17, 4, tzinfo=TZ)
-    base = dict(ac_is_running=True, current_setpoint_known=True, setpoint_is_known=False, ac_state_age_sec=600)
+    base = dict(ac_is_running=True, current_setpoint_known=True, setpoint_is_known=False, ac_state_age_sec=600, phase="PRECOOL")
     r = lambda **kw: _reparse(_render(bp, "manual_setpoint", now, **{**base, **kw}))
     assert r(ac_limits_known=True) is True
     assert r(ac_limits_known=False) is False
     assert r(ac_limits_known=True, setpoint_is_known=True) is False
+    # delta R1-D1-01: only PRECOOL's setpoint command is gated on the limits, so the lock and
+    # deep-night phases keep the v1.1.0 detection even while the limits are unknown
+    assert r(ac_limits_known=False, phase="BEDTIME_LOCK") is True
+    assert r(ac_limits_known=False, phase="NIGHT_HOLD") is True
 
 
 def test_ac_limits_unknown_notice_is_state_driven_and_bounded(bp):
