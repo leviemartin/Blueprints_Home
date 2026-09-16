@@ -1,6 +1,6 @@
 # Bedroom Sleep Pre-Cool v1.2.1 — PRECOOL setpoint gated on known AC limits (bug #30) — Implementation Plan (epic #18, session #31)
 
-> **Status: in progress 2026-09-15.** Model exception recorded on #31: Martin approved running this chain on the Fable session; the standard code gate (fresh Opus R1 through the board wrapper) still applies.
+> **Status: Done — merged as PR #32 (`88719d0`), deployed 2026-09-15 21:50Z, observation closed 2026-09-16 19:43 local (session #31, bug #30 and epic #18 closed). Code board 20260915-213915 PASS (R1 Opus initial + delta-1; wave 1 + post-board fixes); report in `reviews/board-20260915-213915.md`.** Model exception recorded on #31: Martin approved running this chain on the Fable session; the standard code gate (fresh Opus R1 through the board wrapper) still applied.
 
 ```text
 Driver: claude
