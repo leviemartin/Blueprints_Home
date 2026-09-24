@@ -1,6 +1,6 @@
 # Bathroom Heating Rack v3.0.0 — room-sensor thermostat (DRAFT, Stack B input)
 
-Status: draft, 2026-09-23. Nothing is deployed or committed. The live blueprint (`bathroom_heating_rack.yaml`, v2.0.0) and `deploy/` are untouched.
+Status: implemented 2026-09-24 on `feat/heating-rack-v3.0.0` (session #34). The draft files below were promoted into `bathroom_heating_rack.yaml` and `deploy/`, and `drafts/` was removed; the scenario rows live in `tests/test_bathroom_heating_rack_structure.py`. Code board 20260924-083742 PASS added a boost-safe window latch (`latch_ok`) and a fully-blind push (`backup_lost`); see `requirements_bathroom_heating_rack.md`. This document is the 2026-09-23 design record.
 
 Draft artifacts:
 - `drafts/heating-rack-v3.0.0/bathroom_heating_rack.yaml` — revised blueprint
