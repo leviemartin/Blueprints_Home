@@ -1,0 +1,400 @@
+blueprint:
+  name: "Bedroom Fan Daytime v1.0.0"
+  description: >
+    **Version: 1.0.0** — off-only daytime fan housekeeping for one bedroom.
+
+    Inside the day window (default 08:00–18:00) a running ceiling fan is
+    switched off once the upstairs has been vacant for the vacancy timeout
+    (default 20 min). Activity is any change of a configured activity sensor
+    (a sensor reading on means occupied now), any change of the fan itself
+    (whoever made it) and any change of the nap toggle. The blueprint never
+    switches a fan on and never changes its speed or direction: its only fan
+    command is a single `fan.turn_off` per run, re-checked on live state.
+
+    Optional kids-room nap lifecycle: with a nap toggle (input_boolean) and a
+    nap-since helper (input_datetime, date + time) configured, a short press of
+    the nap-start button while the gate light is on starts a nap (the since
+    helper is written first, then the toggle); a short press of a nap-end
+    button with the gate dark, the gate turning on, the nap cap (default 3 h),
+    the forced end at day end minus the margin (default 17:55) or a nap left
+    over from before today's day start ends it. While a nap is on, the room's
+    fan is left exactly as it is. A toggle switched on from a dashboard gets
+    its since written by the blueprint.
+
+    Outside the day window only the nap toggle and its since helper are ever
+    written (the toggle's own housekeeping) and no fan command is issued. A
+    Home Assistant start and a manual Run evaluate everything and write
+    nothing. A configuration problem raises one persistent notification and
+    never suppresses an off; only a nap-helper problem disables the nap
+    lifecycle.
+
+    **Requirements:** Home Assistant with the fan entity, one or more
+    binary_sensor activity sensors, and — for the nap lifecycle only — an
+    input_boolean ("Kids nap") and an input_datetime with date and time
+    ("Kids nap since"), both without an initial value so they restore across
+    restarts.
+  domain: automation
+  input:
+    fan:
+      name: Ceiling Fan
+      description: The fan this instance may switch off. Required.
+      selector:
+        entity:
+          domain: fan
+    activity_sensors:
+      name: Activity Sensors
+      description: >
+        Motion / presence sensors whose changes count as activity. A sensor
+        reading on means occupied now. An unavailable sensor counts as no
+        activity since it dropped. Leaving this empty raises a configuration
+        notice.
+      default: []
+      selector:
+        entity:
+          domain: binary_sensor
+          multiple: true
+    day_start:
+      name: Day Start
+      description: Start of the window in which the fan may be switched off.
+      default: "08:00:00"
+      selector:
+        time:
+    day_end:
+      name: Day End
+      description: End of the window (exclusive). Must be later than Day Start.
+      default: "18:00:00"
+      selector:
+        time:
+    day_end_margin_minutes:
+      name: Day End Margin
+      description: >
+        A running nap is ended this many minutes before Day End, and no nap
+        starts after that instant.
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 1
+          unit_of_measurement: "min"
+    vacancy_minutes:
+      name: Vacancy Timeout
+      description: Minutes without any activity before a running fan is switched off.
+      default: 20
+      selector:
+        number:
+          min: 1
+          max: 240
+          step: 1
+          unit_of_measurement: "min"
+    nap_toggle:
+      name: Nap Toggle (optional)
+      description: >
+        input_boolean that is on while a nap runs. Configure together with the
+        Nap Since helper, or leave both empty (no nap lifecycle).
+      default: []
+      selector:
+        entity:
+          domain: input_boolean
+    nap_since_helper:
+      name: Nap Since Helper (optional)
+      description: >
+        input_datetime (date + time) holding the nap start instant. Written by
+        this blueprint only.
+      default: []
+      selector:
+        entity:
+          domain: input_datetime
+    nap_start_button:
+      name: Nap Start Button (optional)
+      description: Event entity whose short press (short_release) with the gate lit starts a nap.
+      default: []
+      selector:
+        entity:
+          domain: event
+    nap_end_buttons:
+      name: Nap End Buttons (optional)
+      description: Event entities whose short press (short_release) with the gate dark ends a nap.
+      default: []
+      selector:
+        entity:
+          domain: event
+          multiple: true
+    gate_entity:
+      name: Gate Light (optional)
+      description: >
+        The room's main light group. A nap starts only while it is on; it
+        turning on ends a nap.
+      default: []
+      selector:
+        entity:
+          domain: light
+    nap_max_hours:
+      name: Nap Cap
+      description: A nap is ended this many hours after its start.
+      default: 3
+      selector:
+        number:
+          min: 1
+          max: 6
+          step: 0.5
+          unit_of_measurement: "h"
+    enable_notifications:
+      name: Enable Notifications
+      description: Raise a persistent notification while the configuration has a problem.
+      default: true
+      selector:
+        boolean:
+
+mode: queued
+max: 10
+max_exceeded: silent
+
+# =============================================
+# TOP-LEVEL VARIABLES — !input pass-through
+# =============================================
+variables:
+  fan: !input fan
+  activity_sensors: !input activity_sensors
+  day_start: !input day_start
+  day_end: !input day_end
+  day_end_margin_minutes: !input day_end_margin_minutes
+  vacancy_minutes: !input vacancy_minutes
+  nap_toggle: !input nap_toggle
+  nap_since_helper: !input nap_since_helper
+  nap_start_button: !input nap_start_button
+  nap_end_buttons: !input nap_end_buttons
+  gate_entity: !input gate_entity
+  nap_max_hours: !input nap_max_hours
+  enable_notifications: !input enable_notifications
+
+trigger:
+  # The tick evaluates the fan and the activity sensors (no fan or sensor state triggers).
+  - platform: time_pattern
+    minutes: "/1"
+    id: tick
+  # Re-evaluates only: is_real_trigger is false on this run, so it writes nothing.
+  - platform: homeassistant
+    event: start
+    id: ha_start
+  - platform: state
+    entity_id: !input nap_toggle
+    id: nap_toggle
+  - platform: state
+    entity_id: !input nap_start_button
+    id: nap_start
+  - platform: state
+    entity_id: !input nap_end_buttons
+    id: nap_end
+  - platform: state
+    entity_id: !input gate_entity
+    to: "on"
+    id: gate_on
+
+condition:
+  # Restored-trigger guard: a state trigger replayed at start (no from_state, or a
+  # restored from_state) never passes; tick, ha_start and a manual Run always pass.
+  - condition: template
+    value_template: "{{ trigger.id is not defined or trigger.id in ['tick', 'ha_start'] or (trigger.from_state is not none and not (trigger.from_state.attributes.restored | default(false))) }}"
+
+action:
+  # =============================================
+  # STEP 1: PREDICATES. The definition order is normative: HA renders this step key by
+  # key and hands each key the literal_eval'd result of the ones above it, so a State
+  # object never survives — fan_obj and trig_to are plain dict snapshots.
+  # =============================================
+  - variables:
+      is_real_trigger: "{{ trigger is defined and trigger.id is defined and trigger.id != 'ha_start' }}"
+      now_ts: "{{ as_timestamp(now()) }}"
+      day_start_ts: "{{ as_timestamp(today_at(day_start)) }}"
+      day_end_ts: "{{ as_timestamp(today_at(day_end)) }}"
+      wrap_ts: "{{ (day_end_ts | float) - (day_end_margin_minutes | float) * 60 }}"
+      in_day: "{{ (day_start_ts | float) <= (now_ts | float) < (day_end_ts | float) }}"
+      # Optional single-entity inputs: a string when set, none when unset (the gate idiom),
+      # so no is_state / state_attr / states call ever receives a list.
+      nap_toggle_id: "{{ nap_toggle if nap_toggle is string and nap_toggle | length > 0 else none }}"
+      nap_since_id: "{{ nap_since_helper if nap_since_helper is string and nap_since_helper | length > 0 else none }}"
+      gate_id: "{{ gate_entity if gate_entity is string and gate_entity | length > 0 else none }}"
+      sensor_ids: >-
+        {% set raw = [activity_sensors] if activity_sensors is string else activity_sensors %}
+        {{ raw | select('string') | reject('eq', '') | list }}
+      # --- the fan (absent -> none; never aborts this step) ---
+      fan_obj: >-
+        {% set s = states[fan] if fan is string and fan | length > 0 else none %}
+        {{ {'state': s.state, 'last_updated': s.last_updated.isoformat()} if s is not none else none }}
+      fan_avail: "{{ fan_obj is not none and fan_obj.state not in ['unavailable', 'unknown'] }}"
+      fan_on: "{{ fan_avail and fan_obj.state == 'on' }}"
+      fan_touch_ts: "{{ as_timestamp(fan_obj.last_updated) if fan_obj is not none else 0 }}"
+      # --- activity sensors ---
+      occupied_now: >-
+        {% set ns = namespace(on=false) %}
+        {% for s in sensor_ids %}{% if is_state(s, 'on') %}{% set ns.on = true %}{% endif %}{% endfor %}
+        {{ ns.on }}
+      # The latest last_changed over the configured sensors: a sensor reading off
+      # contributes its last clear, an unavailable/unknown one the instant it dropped,
+      # an absent one 0.
+      sensor_ts: >-
+        {% set ns = namespace(ts=0) %}
+        {% for s in sensor_ids %}
+          {% set o = states[s] %}
+          {% if o is not none %}{% set ns.ts = [ns.ts, as_timestamp(o.last_changed)] | max %}{% endif %}
+        {% endfor %}
+        {{ ns.ts }}
+      missing_sensors: >-
+        {% set ns = namespace(m=[]) %}
+        {% for s in sensor_ids %}{% if states[s] is none %}{% set ns.m = ns.m + [s] %}{% endif %}{% endfor %}
+        {{ ns.m }}
+      # --- nap helpers ---
+      has_nap: >-
+        {{ nap_toggle_id is not none and nap_since_id is not none
+           and states[nap_toggle_id] is not none and states[nap_since_id] is not none
+           and states(nap_toggle_id) != 'unavailable' and states(nap_since_id) != 'unavailable' }}
+      nap_on: "{{ has_nap and is_state(nap_toggle_id, 'on') }}"
+      since_ts: "{{ state_attr(nap_since_id, 'timestamp') | float(0) if has_nap else 0 }}"
+      toggle_ts: "{{ as_timestamp(states[nap_toggle_id].last_changed) if has_nap else 0 }}"
+      gate_on: "{{ gate_id is not none and is_state(gate_id, 'on') }}"
+      # --- vacancy ---
+      activity_ts: "{{ [sensor_ts | float, fan_touch_ts | float, toggle_ts | float] | max }}"
+      vacant: "{{ not occupied_now and (now_ts | float) - (activity_ts | float) >= (vacancy_minutes | float) * 60 }}"
+      # --- the trigger's new state (tick, ha_start and a manual Run have none) ---
+      trig_to: >-
+        {{ {'state': trigger.to_state.state,
+            'last_changed': trigger.to_state.last_changed.isoformat(),
+            'attributes': {'event_type': trigger.to_state.attributes.get('event_type', '')}}
+           if (trigger is defined and trigger.to_state is defined and trigger.to_state is not none)
+           else none }}
+      gesture: "{{ trig_to.attributes.get('event_type', '') if trig_to is not none else '' }}"
+      # A dashboard off->on flip: the since is (re)written to the flip instant unless it
+      # already holds an instant within 60 s (the blueprint's own start wrote it first).
+      since_fallback_due: >-
+        {{ is_real_trigger and has_nap and trigger.id == 'nap_toggle'
+           and trig_to is not none and trig_to.state == 'on'
+           and trigger.from_state is not none and trigger.from_state.state == 'off'
+           and ((since_ts | float) - as_timestamp(trig_to.last_changed)) | abs > 60 }}
+      effective_since_ts: "{{ as_timestamp(trig_to.last_changed) if since_fallback_due else since_ts }}"
+      nap_stale: "{{ nap_on and (now_ts | float) >= (day_start_ts | float) and (effective_since_ts | float) < (day_start_ts | float) }}"
+      nap_cap: "{{ nap_on and (now_ts | float) - (effective_since_ts | float) >= (nap_max_hours | float) * 3600 }}"
+      nap_forced: "{{ nap_on and in_day and (now_ts | float) >= (wrap_ts | float) }}"
+      nap_start_due: >-
+        {{ is_real_trigger and has_nap and not nap_on and trigger.id == 'nap_start'
+           and gesture == 'short_release' and gate_on
+           and (day_start_ts | float) <= (now_ts | float) < (wrap_ts | float) }}
+      nap_end_due: >-
+        {{ is_real_trigger and nap_on
+           and ((trigger.id == 'nap_end' and gesture == 'short_release' and not gate_on)
+                or trigger.id == 'gate_on' or nap_cap or nap_forced or nap_stale) }}
+      exempt: "{{ (nap_on and not nap_stale) or nap_start_due }}"
+      off_due: "{{ is_real_trigger and in_day and fan_avail and fan_on and vacant and not exempt }}"
+      # --- configuration (never suppresses an off; only nap-helper problems reach has_nap) ---
+      config_problems: >-
+        {% set ns = namespace(p=[]) %}
+        {% if (nap_toggle_id is none) != (nap_since_id is none) %}
+          {% set ns.p = ns.p + ['configure both the nap toggle and the nap since helper, or neither'] %}
+        {% endif %}
+        {% for h in [nap_toggle_id, nap_since_id] %}
+          {% if h is not none and (states[h] is none or states(h) == 'unavailable') %}
+            {% set ns.p = ns.p + [h ~ ' is missing or unavailable'] %}
+          {% endif %}
+        {% endfor %}
+        {% if sensor_ids | length == 0 %}
+          {% set ns.p = ns.p + ['no activity sensor is configured'] %}
+        {% endif %}
+        {% for s in missing_sensors %}
+          {% set ns.p = ns.p + [s ~ ' is not in the state machine'] %}
+        {% endfor %}
+        {% if fan_obj is none %}
+          {% set ns.p = ns.p + [fan ~ ' is not in the state machine'] %}
+        {% endif %}
+        {{ ns.p }}
+      config_error: "{{ config_problems | length > 0 }}"
+
+  # =============================================
+  # STEP 2: NAP START — the since first, then the toggle.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ nap_start_due }}"
+        sequence:
+          - service: input_datetime.set_datetime
+            continue_on_error: true
+            target:
+              entity_id: "{{ nap_since_helper }}"
+            data:
+              timestamp: "{{ now_ts }}"
+          - service: input_boolean.turn_on
+            continue_on_error: true
+            target:
+              entity_id: "{{ nap_toggle }}"
+
+  # =============================================
+  # STEP 3: SINCE FALLBACK — a toggle switched on from a dashboard.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ since_fallback_due }}"
+        sequence:
+          - service: input_datetime.set_datetime
+            continue_on_error: true
+            target:
+              entity_id: "{{ nap_since_helper }}"
+            data:
+              timestamp: "{{ effective_since_ts }}"
+
+  # =============================================
+  # STEP 4: NAP END — button, gate, cap, forced end or stale reset.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ nap_end_due }}"
+        sequence:
+          - service: input_boolean.turn_off
+            continue_on_error: true
+            target:
+              entity_id: "{{ nap_toggle }}"
+
+  # =============================================
+  # STEP 5: VACANCY OFF — the only fan command. The branch repeats the rule on live
+  # state; a fan that went off or a sensor that came on since STEP 1 cancels it.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ off_due and is_state(fan, 'on')
+                 and expand(sensor_ids) | selectattr('state', 'eq', 'on') | list | length == 0 }}
+        sequence:
+          - service: fan.turn_off
+            continue_on_error: true
+            target:
+              entity_id: "{{ fan }}"
+
+  # =============================================
+  # STEP 6: CONFIGURATION NOTICE — state-driven, fixed id per instance; written only on
+  # a real trigger inside the day window (a start, a manual Run and the night write
+  # nothing).
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_real_trigger and in_day and config_error and enable_notifications }}"
+        sequence:
+          - service: persistent_notification.create
+            continue_on_error: true
+            data:
+              title: "Bedroom Fan Daytime — Configuration"
+              message: >
+                {{ this.entity_id }}: {{ config_problems | join('; ') }}.
+                Vacancy switch-off continues; the nap lifecycle runs only while
+                both nap helpers are configured and available.
+              notification_id: "bedroom_fan_daytime_config_{{ this.entity_id | replace('.', '_') }}"
+      - conditions:
+          - condition: template
+            value_template: "{{ is_real_trigger and in_day }}"
+        sequence:
+          - service: persistent_notification.dismiss
+            continue_on_error: true
+            data:
+              notification_id: "bedroom_fan_daytime_config_{{ this.entity_id | replace('.', '_') }}"
