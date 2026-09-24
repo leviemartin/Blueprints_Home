@@ -101,23 +101,28 @@ An intelligent bathroom exhaust fan automation using dew point comparison for op
 ## Bathroom Heating Rack Blueprint
 
 ### Overview
-Pre-heats a bathroom heating rack for scheduled routines (adult morning, kids bath) using a dynamic **ΔT-based warmup formula** that self-adjusts across seasons — no calendar boundaries needed. A **comfort floor** keeps the rack off while the room is already within `comfort_floor_delta` (default 1 °C) of the slot target, so a warm bathroom gets no pre-heat and no hold. Scheduled routines pause while the exhaust fan runs; a boost toggle gives an ad-hoc heat-up; a vacation toggle switches the rack off.
+Heats a bathroom heating rack by the **room** temperature sensor — never the rack's own internal
+sensor — for two daily windows (morning, evening) using a dynamic **ΔT-based warmup formula** that
+self-adjusts across seasons — no calendar boundaries needed. A **restart deadband** keeps the rack off
+once the room reaches its 22 °C target, and it restarts only if the room drops `restart_deadband`
+below that line. The ventilator no longer pauses heating; a boost toggle gives a room-governed ad-hoc
+heat-up; a vacation toggle switches the rack off.
 
 ### Features
-*   **🌡️ Dynamic Warmup:** Computes lead time from the current indoor-to-target temperature gap (`warmup_base + warmup_per_degree × ΔT`, clamped between a floor and a cap), so cold winter mornings get a longer pre-heat than warm summer mornings without any calendar configuration.
-*   **🎯 Comfort Floor (v2.0.0):** A slot heats only while `indoor < target − comfort_floor_delta`. At or above that line the slot is satisfied — no pre-heat, no hold. While the device holds that slot's setpoint a 0.5 °C release deadband and a latched opening edge keep a noisy sensor from flipping the setpoint; without the room sensor the floor is suspended and a warning is raised.
-*   **📅 Dual-Slot Routines:** Primary + optional secondary slot per phase (e.g., Morning A = Mon–Fri 06:45, Morning B = Sat–Sun 08:30). Evening A for kids bath, Evening B for an optional adult evening. A hold-until at or before target-warm is taken as the next day (the slot is evaluated per calendar day, so it still ends at midnight).
-*   **⚡ Ad-hoc Boost Toggle:** Flip an `input_boolean` for an instant N-minute heat-up at a configurable boost temperature. Auto-expires cleanly; boost is explicit intent and is not paused by the fan.
-*   **🌀 Ventilator Coordination:** Scheduled routines drop to `idle_setpoint` while the exhaust fan entity is on — no point heating air that's being evicted.
+*   **🌡️ Dynamic Warmup:** Computes lead time from the current room-to-target temperature gap (`warmup_base + warmup_per_degree × ΔT`, clamped between a floor and a cap), so cold winter mornings get a longer pre-heat than warm summer mornings without any calendar configuration.
+*   **🎯 Room-Sensor Thermostat (v3.0.0):** The blueprint, not the rack, decides when the element runs. A window (or boost) heats only while the room sensor is below the room target; it stops at target and restarts only below `target − restart_deadband` (default 0.3 °C). The rack's own sensor is never read for this decision — `drive_setpoint` (24 °C) only caps the element inside the device. With no room sensor (primary and every backup non-numeric) the rack stays idle, the priority label reads `_blind`, and a warning is raised.
+*   **📅 Dual-Slot Routines:** Primary + optional secondary slot per phase (Morning A = every day 06:45→07:45, Morning B optional; Evening A = every day 18:30→19:30, Evening B optional). Evening slots can skip the pre-heat lead entirely (`evening_preheat: false`, the default) and open exactly at their start time, or pre-heat like the morning (`evening_preheat: true`). A hold-until at or before target-warm is taken as the next day (the slot is evaluated per calendar day, so it still ends at midnight).
+*   **⚡ Ad-hoc Boost Toggle:** Flip an `input_boolean` for an instant N-minute heat-up toward a room-governed boost target. Auto-expires cleanly; boost is explicit intent and is not paused by the fan.
+*   **🌀 No Fan Pause:** Scheduled windows keep heating through ventilator cycles — the exhaust fan no longer blocks heating.
 *   **🏖️ Vacation Mode:** Optional `input_boolean`(s) switch the rack off.
-*   **🪶 Idempotent:** Evaluates every minute for precise timing, rounds the setpoint to the device `target_temp_step` and clamps it to the device range, and only sends climate service calls on actual transitions.
-*   **🔍 Debug-Friendly:** Manual "Run" produces a persistent notification dumping all computed state (indoor temp, step, each slot's ΔT / warmup / auto_start / hold_until / in_window / active, winning priority, desired mode + setpoint).
+*   **🪶 Idempotent:** Evaluates every minute for precise timing, rounds both the idle and drive setpoints to the device `target_temp_step` and clamps them to the device range, and only sends climate service calls on actual transitions.
+*   **🔍 Debug-Friendly:** Manual "Run" produces a persistent notification dumping all computed state (room temp, primary/backup/known, setpoint step/range/idle/drive, mode, heating_now, each slot's ΔT / warmup / open / hold_until / in_window, the winning target source / target / line / call, winning priority, desired mode + setpoint).
 *   **📱 Mobile Push:** Opt-in push via HA Companion (`notify.mobile_app_*`) for three high-signal events — climate unavailable (once, after 5 min), room sensor offline (once, after 10 min), and warmup started (once per transition, dismissed when the setpoint returns to idle). Targets are filtered to `notify.*` names, every push runs after the climate calls, and an empty list disables push. A target that does not exist aborts the run at the push step (HA does not suppress a missing action) — check it exists after editing.
 
 ### Requirements
 *   `climate` entity for the heating rack (tested on a Tuya cloud thermostat element that reports `unknown` while on)
-*   Bathroom temperature sensor (`device_class: temperature`); the climate entity's `current_temperature` is the fallback
-*   Ventilator entity (or the group mirroring it) for coordination
+*   Primary room temperature sensor (`device_class: temperature`) — the bathroom humidity sensor's temperature entity, not the rack's own sensor
+*   Optional backup room temperature sensor(s), used in order while the primary is non-numeric
 *   Two `input_boolean` helpers: one for Ad-hoc Boost (required), one for Vacation (optional)
 *   Optional: `notify.*` services for mobile push
 
