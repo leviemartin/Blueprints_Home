@@ -384,6 +384,15 @@ trigger:
       minutes: 10
     id: temp_lost
 
+  # T8: backup room sensor(s) non-numeric for 10 min (fires the fully-blind push when the primary
+  # is already non-numeric; one push per outage)
+  - platform: state
+    entity_id: !input backup_temp_sensors
+    to: [unavailable, unknown]
+    for:
+      minutes: 10
+    id: backup_lost
+
 action:
   # =============================================
   # STEP 1: LIVE STATE (inside action for trace visibility)
@@ -436,13 +445,17 @@ action:
         {% if states[entity_boost] %}{{ ((now() - states[entity_boost].last_changed).total_seconds() / 60) | int }}{% else %}0{% endif %}
       boost_active: "{{ boost_is_on and boost_age_min < boost_runtime_min_int }}"
       boost_expired: "{{ boost_is_on and boost_age_min >= boost_runtime_min_int }}"
+      # A window's opening edge may only latch to the warmup cap when the current heat is a
+      # slot-started (or long-aged) drive, never a fresh or still-active boost — otherwise an
+      # expiring boost hands straight into the next window at its earliest possible open time.
+      latch_ok: "{{ heating_now and not boost_is_on and boost_age_min >= warmup_max_minutes | int }}"
 
   # =============================================
   # STEP 2: WINDOW RESOLUTION (schedule only — the room decision is STEP 3)
   # Per slot: in_days → target_warm/hold_until (hold anchored to the next day when it is at or
   # before target_warm) → lead (0 for evening slots without pre-heat) → open edge (latched at
-  # target_warm − warmup cap while the rack is heating, so ΔT noise cannot close the window)
-  # → in_window.
+  # target_warm − warmup cap while latch_ok — a slot-started or long-aged drive, never a fresh
+  # or active boost — so ΔT noise cannot close the window) → in_window.
   # =============================================
   - variables:
       # ----- MORNING A -----
@@ -456,7 +469,7 @@ action:
             [warmup_min_minutes | int,
              (warmup_base_min | int) + (warmup_per_degree_min | int) * (ma_delta_T | float)] | max
            ] | min | int }}
-      ma_open_dt: "{{ as_datetime(ma_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if heating_now else ma_warmup_min | int)) }}"
+      ma_open_dt: "{{ as_datetime(ma_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if latch_ok else ma_warmup_min | int)) }}"
       ma_in_window: >-
         {{ ma_in_days and as_datetime(ma_open_dt) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(ma_hold_until_dt) }}
 
@@ -471,7 +484,7 @@ action:
             [warmup_min_minutes | int,
              (warmup_base_min | int) + (warmup_per_degree_min | int) * (mb_delta_T | float)] | max
            ] | min | int }}
-      mb_open_dt: "{{ as_datetime(mb_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if heating_now else mb_warmup_min | int)) }}"
+      mb_open_dt: "{{ as_datetime(mb_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if latch_ok else mb_warmup_min | int)) }}"
       mb_in_window: >-
         {{ mb_in_days and as_datetime(mb_open_dt) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(mb_hold_until_dt) }}
 
@@ -483,7 +496,7 @@ action:
       ea_delta_T: "{{ [0, evening_a_target_temp | float - indoor_temp | float] | max }}"
       ea_warmup_min: >-
         {% if evening_preheat %}{{ [warmup_max_minutes | int, [warmup_min_minutes | int, (warmup_base_min | int) + (warmup_per_degree_min | int) * (ea_delta_T | float)] | max] | min | int }}{% else %}0{% endif %}
-      ea_open_dt: "{{ as_datetime(ea_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if (evening_preheat and heating_now) else ea_warmup_min | int)) }}"
+      ea_open_dt: "{{ as_datetime(ea_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if (evening_preheat and latch_ok) else ea_warmup_min | int)) }}"
       ea_in_window: >-
         {{ ea_in_days and as_datetime(ea_open_dt) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(ea_hold_until_dt) }}
 
@@ -495,7 +508,7 @@ action:
       eb_delta_T: "{{ [0, evening_b_target_temp | float - indoor_temp | float] | max }}"
       eb_warmup_min: >-
         {% if evening_preheat %}{{ [warmup_max_minutes | int, [warmup_min_minutes | int, (warmup_base_min | int) + (warmup_per_degree_min | int) * (eb_delta_T | float)] | max] | min | int }}{% else %}0{% endif %}
-      eb_open_dt: "{{ as_datetime(eb_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if (evening_preheat and heating_now) else eb_warmup_min | int)) }}"
+      eb_open_dt: "{{ as_datetime(eb_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if (evening_preheat and latch_ok) else eb_warmup_min | int)) }}"
       eb_in_window: >-
         {{ eb_in_days and as_datetime(eb_open_dt) <= as_datetime(now_dt) and as_datetime(now_dt) < as_datetime(eb_hold_until_dt) }}
 
@@ -645,6 +658,21 @@ action:
                             message: >-
                               {{ sensor_bathroom_temp }} non-numeric for 10 min.
                               {% if indoor_temp_has_backup %}Using the backup room sensor.{% else %}No room sensor: scheduled heating is blocked.{% endif %}
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.id | default('') == 'backup_lost' and not indoor_temp_has_backup }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ notify_list }}"
+                      sequence:
+                        - service: "{{ repeat.item }}"
+                          continue_on_error: true
+                          data:
+                            title: "Heating Rack — Room Sensor Offline"
+                            message: >-
+                              {{ sensor_bathroom_temp }} and the backup room sensor are non-numeric.
+                              No room sensor: scheduled heating is blocked.
       - conditions:
           - condition: template
             value_template: "{{ indoor_temp_has_primary }}"
@@ -722,7 +750,7 @@ action:
               message: >
                 **Room:** {{ indoor_temp | round(1) }}°C (primary {{ indoor_temp_primary }}, backup {{ indoor_temp_backup }}, known {{ room_known }})
                 | **Setpoint:** {{ current_setpoint }}°C (step {{ setpoint_step }}, range {{ setpoint_min }}–{{ setpoint_max }}, idle {{ idle_setpoint_dev }}, drive {{ drive_setpoint_dev }})
-                | **Mode:** {{ current_hvac_mode }} | **Heating:** {{ heating_now }}
+                | **Mode:** {{ current_hvac_mode }} | **Heating:** {{ heating_now }} | **Latch OK:** {{ latch_ok }}
                 | **Push:** {{ notify_list }}
 
                 **Vacation:** {{ vacation_active }}

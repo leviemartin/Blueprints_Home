@@ -331,7 +331,7 @@ def test_mode_restart(bp):
 
 def test_trigger_roster(bp):
     trig = {t["id"]: t for t in bp["trigger"]}
-    assert list(trig) == ["periodic", "boost_change", "vacation_change", "ha_start", "climate_lost", "temp_lost"]
+    assert list(trig) == ["periodic", "boost_change", "vacation_change", "ha_start", "climate_lost", "temp_lost", "backup_lost"]
     assert "fan_change" not in trig
     assert trig["periodic"] == {"platform": "time_pattern", "minutes": "/1", "id": "periodic"}
     assert trig["boost_change"] == {"platform": "state", "entity_id": _Input("boost_toggle"), "to": ["on", "off"], "id": "boost_change"}
@@ -341,6 +341,8 @@ def test_trigger_roster(bp):
                                     "for": {"minutes": 5}, "id": "climate_lost"}
     assert trig["temp_lost"] == {"platform": "state", "entity_id": _Input("bathroom_temp_sensor"), "to": ["unavailable", "unknown"],
                                  "for": {"minutes": 10}, "id": "temp_lost"}
+    assert trig["backup_lost"] == {"platform": "state", "entity_id": _Input("backup_temp_sensors"), "to": ["unavailable", "unknown"],
+                                   "for": {"minutes": 10}, "id": "backup_lost"}
 
 
 def test_action_shape(bp):
@@ -387,7 +389,7 @@ def test_boost_expiry_is_the_last_step(bp):
 
 def test_outage_pushes_are_edge_gated(bp):
     chooses = choose_steps(bp)
-    for idx, trigger_ids in ((0, ["climate_lost", "temp_lost"]), (3, ["temp_lost"])):
+    for idx, trigger_ids in ((0, ["climate_lost", "temp_lost"]),):
         seq = chooses[idx]["choose"][0]["sequence"]
         nested = [d for d in seq if "choose" in d]
         assert len(nested) == len(trigger_ids)
@@ -397,6 +399,23 @@ def test_outage_pushes_are_edge_gated(bp):
             assert any("repeat" in d for d in walk(branch["sequence"]))
             assert "default" not in block
     assert chooses[0]["choose"][0]["sequence"][-1] == {"stop": "Climate entity unavailable"}
+
+
+def test_room_sensor_pushes_are_edge_gated(bp):
+    # STEP 7's "not indoor_temp_has_primary" branch carries two edge-gated pushes: the primary-lost
+    # push (temp_lost) and, when the backup then also dies, the fully-blind push (backup_lost).
+    seq = choose_steps(bp)[3]["choose"][0]["sequence"]
+    nested = [d for d in seq if "choose" in d]
+    assert len(nested) == 2
+    temp_block, backup_block = nested
+    (temp_branch,) = temp_block["choose"]
+    assert branch_cond(temp_branch) == "{{ trigger.id | default('') == 'temp_lost' }}"
+    assert any("repeat" in d for d in walk(temp_branch["sequence"]))
+    (backup_branch,) = backup_block["choose"]
+    assert branch_cond(backup_branch) == "{{ trigger.id | default('') == 'backup_lost' and not indoor_temp_has_backup }}"
+    assert any("repeat" in d for d in walk(backup_branch["sequence"]))
+    assert "default" not in temp_block
+    assert "default" not in backup_block
 
 
 def test_no_fan_remnants(bp):
@@ -441,7 +460,7 @@ def test_morning_slot_templates(bp, slot, prefix):
         "{{ [warmup_max_minutes | int, [warmup_min_minutes | int, "
         f"(warmup_base_min | int) + (warmup_per_degree_min | int) * ({prefix}_delta_T | float)] | max ] | min | int }}}}")
     assert norm(get_var(bp, f"{prefix}_open_dt")) == norm(
-        f"{{{{ as_datetime({prefix}_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if heating_now else {prefix}_warmup_min | int)) }}}}")
+        f"{{{{ as_datetime({prefix}_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int if latch_ok else {prefix}_warmup_min | int)) }}}}")
     assert norm(get_var(bp, f"{prefix}_in_window")) == norm(
         f"{{{{ {prefix}_in_days and as_datetime({prefix}_open_dt) <= as_datetime(now_dt) "
         f"and as_datetime(now_dt) < as_datetime({prefix}_hold_until_dt) }}}}")
@@ -456,7 +475,7 @@ def test_evening_slot_templates(bp, slot, prefix):
         "{% else %}0{% endif %}")
     assert norm(get_var(bp, f"{prefix}_open_dt")) == norm(
         f"{{{{ as_datetime({prefix}_target_warm_dt) - timedelta(minutes=(warmup_max_minutes | int "
-        f"if (evening_preheat and heating_now) else {prefix}_warmup_min | int)) }}}}")
+        f"if (evening_preheat and latch_ok) else {prefix}_warmup_min | int)) }}}}")
     assert norm(get_var(bp, f"{prefix}_in_window")) == norm(
         f"{{{{ {prefix}_in_days and as_datetime({prefix}_open_dt) <= as_datetime(now_dt) "
         f"and as_datetime(now_dt) < as_datetime({prefix}_hold_until_dt) }}}}")
@@ -508,6 +527,24 @@ def test_setpoint_and_room_sensor_templates(bp):
     assert norm(get_var(bp, "room_known")) == "{{ indoor_temp_has_primary or indoor_temp_has_backup }}"
 
 
+def test_latch_ok_template_and_position(bp):
+    # latch_ok must be defined after boost_is_on/boost_age_min (STEP 1) and used by STEP 2 instead
+    # of heating_now, so a fresh/active boost can never masquerade as a slot-started heat.
+    assert norm(get_var(bp, "latch_ok")) == norm(
+        "{{ heating_now and not boost_is_on and boost_age_min >= warmup_max_minutes | int }}")
+    step1 = var_blocks(bp)[0]
+    names = list(step1)
+    assert names.index("boost_age_min") < names.index("latch_ok") < len(names)
+    assert "latch_ok" in step1
+    assert "latch_ok" not in var_blocks(bp)[1]
+
+
+def test_debug_dump_includes_latch_ok(bp):
+    branch = choose_steps(bp)[5]["choose"][0]
+    msg = " ".join(str(d.get("message", "")) for d in walk(branch["sequence"]) if "message" in d)
+    assert "latch_ok" in msg or "{{ latch_ok }}" in msg
+
+
 def test_no_bare_boolean_text(bp):
     for block in var_blocks(bp):
         for name, tpl in block.items():
@@ -540,7 +577,7 @@ def test_climate_calls_continue_on_error(bp):
 
 def test_notify_fanout_continue_on_error(bp):
     repeats = [d["repeat"] for d in walk(bp["action"]) if "repeat" in d]
-    assert len(repeats) == 4
+    assert len(repeats) == 5
     assert "{{ notify_targets }}" not in BP_PATH.read_text().split("action:", 1)[1]
     for r in repeats:
         assert r["for_each"] == "{{ notify_list }}"
@@ -785,6 +822,116 @@ def test_idle_exact_restart_line_no_start(bp):
     # default restart_deadband 0.3, target 22 -> line 21.7; strict < required
     out = render_vars(bp, base_ctx(), world(room="21.7"), "call_for_heat", at("06:40", WED))
     assert out["call_for_heat"] is False
+
+
+# ------------------------------------------------- R1-01: latch_ok gates the boost off heating_now
+
+
+def test_latch_ok_closes_window_after_a_recent_boost(bp):
+    # rack at 24 from a boost that turned off 5 min ago: not a slot-started heat, so the morning
+    # opening edge must NOT latch to warmup_max_minutes (05:45) — it uses the ordinary ΔT lead
+    # (ΔT 1 -> 15 min -> opens 06:30), which has not arrived yet at 05:50.
+    w = world(sp=24.0, boost=("off", 5))
+    out = render_vars(bp, base_ctx(), w, "active_priority", at("05:50", WED))
+    assert out["latch_ok"] is False
+    assert (out["active_priority"], out["desired_setpoint"]) == ("P6_idle", 7.0)
+
+
+def test_latch_ok_holds_window_after_an_aged_boost(bp):
+    # the boost has been off for 90 min (>= warmup_max_minutes): this is a slot-started heat, so
+    # the latch still opens the window at target_warm - warmup_max_minutes (05:45).
+    w = world(sp=24.0, room="21.6", boost=("off", 90))
+    out = render_vars(bp, base_ctx(), w, "active_priority", at("06:32", WED))
+    assert out["latch_ok"] is True
+    assert (out["active_priority"], out["desired_setpoint"]) == ("P5_morning", 24.0)
+
+
+def test_latch_ok_false_while_boost_is_on(bp):
+    # an active boost never latches the morning window, whatever the rack currently holds.
+    w = world(sp=24.0, boost=("on", 5))
+    out = render_vars(bp, base_ctx(), w, "active_priority", at("05:50", WED))
+    assert out["latch_ok"] is False
+    assert (out["active_priority"], out["desired_setpoint"]) == ("P3_boost", 24.0)
+
+
+def test_off_mode_not_heating_now_does_not_latch(bp):
+    # rack mode 'off' with a stale setpoint of 24: never heating_now, so never latches.
+    w = world(sp=24.0)
+    w.table["climate.rack"] = _State("off", attrs={"temperature": 24.0, "current_temperature": 25.0,
+                                                     "target_temp_step": 1.0, "min_temp": 7.0, "max_temp": 30.0})
+    out = render_vars(bp, base_ctx(), w, "latch_ok")
+    assert (out["heating_now"], out["latch_ok"]) == (False, False)
+
+
+# ------------------------------------------------- R1-03: coverage gaps
+
+
+def test_evening_beats_morning_when_both_in_window(bp):
+    ctx = base_ctx(morning_a_hold_until="20:00:00", morning_a_target_temp=21, evening_a_target_temp=23)
+    out = render_vars(bp, ctx, world(room="20.0"), "room_target", at("18:40", WED))
+    assert (out["ma_in_window"], out["ea_in_window"]) == (True, True)
+    assert (out["target_source"], out["room_target"]) == ("evening_a", 23.0)
+
+
+def test_window_day_filter(bp):
+    # a day not in the slot's list stays closed
+    out = render_vars(bp, base_ctx(evening_a_days=["mon"]), world(room="20.0"), "ea_in_window", at("19:00", WED))
+    assert (out["ea_in_days"], out["ea_in_window"]) == (False, False)
+    # an empty days list (the B-slot default) also stays closed
+    out_mb = render_vars(bp, base_ctx(), world(room="10.0"), "mb_in_window", at("08:45", WED))
+    assert (out_mb["mb_in_days"], out_mb["mb_in_window"]) == (False, False)
+    out_eb = render_vars(bp, base_ctx(), world(room="20.0"), "eb_in_window", at("21:00", WED))
+    assert (out_eb["eb_in_days"], out_eb["eb_in_window"]) == (False, False)
+
+
+def test_warmup_eta_rows(bp):
+    seq = choose_steps(bp)[4]["choose"][0]["sequence"]
+    eta_vars = seq[0]["variables"]
+    env = make_env(world(), NOW)
+    ctx = dict(base_ctx(), desired_setpoint=24.0, indoor_temp=22.0, room_target=24.0)
+    ctx["eta_delta"] = parse(env.from_string(str(eta_vars["eta_delta"])).render(**ctx))
+    ctx["eta_min"] = parse(env.from_string(str(eta_vars["eta_min"])).render(**ctx))
+    assert (ctx["eta_delta"], ctx["eta_min"]) == (2.0, 20)
+
+
+# ------------------------------------------------- R1-02: retained from v2 (templates unchanged)
+
+
+@pytest.mark.parametrize("attr,expected", [(1.0, 1.0), (0.5, 0.5), (None, 0.5), (0, 0.5), ("1", 1.0)])
+def test_setpoint_step_rows(bp, attr, expected):
+    attrs = {"temperature": 7.0, "current_temperature": 23.4}
+    if attr is not None:
+        attrs["target_temp_step"] = attr
+    w = world()
+    w.table["climate.rack"] = _State("unknown", attrs=attrs)
+    assert render_vars(bp, base_ctx(), w, "setpoint_step")["setpoint_step"] == expected
+
+
+@pytest.mark.parametrize("idle,step,attrs,expected", [
+    (7, 1.0, {}, 7.0),
+    (7.5, 1.0, {}, 8.0),          # off-grid idle is written as 8.0 — every idle comparison must use this value
+    (7.5, 0.5, {}, 7.5),
+    (5, 1.0, {}, 7.0),            # selector allows 5, device minimum is 7 -> clamped
+    (5, 1.0, {"min_temp": 5.0}, 5.0),
+    (7, 1.0, {"min_temp": None}, 7.0),
+])
+def test_idle_setpoint_dev_rows(bp, idle, step, attrs, expected):
+    a = {"temperature": 7.0, "current_temperature": 23.4, "target_temp_step": step, "min_temp": 7.0, "max_temp": 30.0}
+    a.update(attrs)
+    w = world()
+    w.table["climate.rack"] = _State("unknown", attrs=a)
+    out = render_vars(bp, base_ctx(idle_setpoint=idle), w, "idle_setpoint_dev")
+    assert out["idle_setpoint_dev"] == expected
+
+
+def test_warmup_edges_use_the_device_idle_value(bp):
+    # idle 7.5 on a 1.0 step is written as 8.0: no phantom push at idle, and the dismiss can clear
+    on = choose_steps(bp)[4]["choose"][0]["conditions"][0]["value_template"]
+    off = choose_steps(bp)[4]["choose"][1]["conditions"][0]["value_template"]
+    assert render_tpl(bp, on, world(), enable_notifications=True, desired_setpoint=8.0, current_setpoint=8.0, idle_setpoint_dev=8.0) is False
+    assert render_tpl(bp, on, world(), enable_notifications=True, desired_setpoint=24.0, current_setpoint=8.0, idle_setpoint_dev=8.0) is True
+    assert render_tpl(bp, off, world(), desired_setpoint=8.0, current_setpoint=24.0, idle_setpoint_dev=8.0) is True
+    assert render_tpl(bp, off, world(), desired_setpoint=8.0, current_setpoint=8.0, idle_setpoint_dev=8.0) is False
 
 
 # ------------------------------------------------- ported 26 scenario rows (drafts/heating-rack-v3.0.0/sim_v3.py)
