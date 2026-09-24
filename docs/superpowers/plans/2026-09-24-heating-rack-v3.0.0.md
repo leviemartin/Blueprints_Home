@@ -1,6 +1,6 @@
 # Bathroom Heating Rack v3.0.0 — room-sensor thermostat — Implementation Plan (epic #33, session #34)
 
-> **Status: In review 2026-09-24 — PR #35 (`Session: #34`). Task 1 done (Sonnet, first pass); Task 2 code board 20260924-083742 PASS (report `reviews/board-20260924-083742.md`); Task 3 stage 7 checks green (367 tests, dry-run, secret scan clean, TCB verify rc 0 with the declared external `~/.claude/tg-notify` drift). Merge and Task 4 deploy/observe wait for Martin's go-ahead.**
+> **Status: Deployed 2026-09-24 13:09Z — observing (session #34 open, `<!-- observe:open -->`).** PR #35 merged as `a8bec6f`; code board 20260924-083742 PASS. Tasks 1–3 done; Task 4 deploy and read-path proof done (the rack was Tuya-offline 06:20–13:27Z; manual v3 run clean at 13:33Z). Observation is automated by `heating-rack-v3-observe.timer` (07:53/19:53 Amsterdam) → Telegram topic "Blueprints_Home - Heating rack v3 observation (#34)"; after 6 clean windows it posts READY TO CLOSE, then a Claude session closes #34 and epic #33. Follow-ups filed: #36 (ventilator all-day cycling), #37 (stale-sensor guard), #38 (learned warmup rate).
 
 ```text
 Driver: claude
