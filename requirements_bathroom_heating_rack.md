@@ -77,13 +77,19 @@ while `latch_ok`, so a warmer sensor report mid-warmup cannot close the window e
 still-active boost can never masquerade as a slot-started heat and force an early open.
 
 **Known residuals of the `latch_ok` gate** (accepted, not fixed in v3.0.0):
-- A rack manually set to 24 °C, with the room inside `[target_warm − warmup_max_minutes, target_warm)`
+- A rack manually set to 24 °C, with the current time inside `[target_warm − warmup_max_minutes, target_warm)`
   and no boost active/recent, is indistinguishable from a slot-started heat and is honoured by the
   latch (opens early) exactly like a real slot restart would.
 - With both A and B configured for the same phase (e.g. Morning A and Morning B), a heat still
   running from A at B's target-warm time latches B's opening edge early, the same "sibling hand-off"
   behaviour v2 also carried. The live instance only configures the A slots, so this residual is
   currently unreachable.
+- After an HA restart (or an integration reload that takes the boost helper through `unavailable`)
+  the boost helper's `last_changed` is fresh, so `latch_ok` stays false for `warmup_max_minutes`.
+  A slot-started pre-warm that is still before its ΔT-lead opening time then pauses until that time
+  arrives (heat resumes on the first tick at or after it). After `target_warm` the ΔT-lead edge is
+  always in the past, so a running window is never closed by this. A missing boost entity counts as
+  "never on" (age 100000 min), so the latch still works.
 
 ## Priority order (first match wins)
 1. Vacation / Off — `hvac_mode: off`, setpoint untouched — `P1_vacation`
@@ -128,6 +134,9 @@ Every push therefore runs after the climate calls, and the deploy procedure chec
 exists before deploying.
 
 ## Known limitations (deferred)
+- **`backup_temp_sensors` must stay a list.** The default `[]` is a valid state-trigger target
+  (verified with HA `validate_config` 2026-09-24); a blank entry `['']` is rejected and would disable
+  the automation. The multi-select entity selector never produces a blank entry.
 - **Frozen-but-available primary sensor.** The room sensor is the sole authority; a sensor that has
   stopped updating (e.g. died silently, as the Aqara AS008 did on 2026-08-01) but still reports a
   numeric, in-range value is indistinguishable from a live reading. If that stale value sits below the

@@ -757,11 +757,13 @@ def test_vacation_empty_list_is_false(bp):
     assert out["vacation_active"] is False
 
 
-def test_boost_missing_entity_age_zero(bp):
+def test_boost_missing_entity_counts_as_never_on(bp):
+    # v3 (board R1-D1-01): a missing boost entity is "never on" (age 100000 min), so it can neither
+    # boost nor block the window latch.
     w = world()
     del w.table["input_boolean.boost"]
     out = render_vars(bp, base_ctx(), w, "boost_active")
-    assert out["boost_age_min"] == 0
+    assert out["boost_age_min"] == 100000
     assert out["boost_active"] is False
 
 
@@ -888,10 +890,12 @@ def test_warmup_eta_rows(bp):
     seq = choose_steps(bp)[4]["choose"][0]["sequence"]
     eta_vars = seq[0]["variables"]
     env = make_env(world(), NOW)
-    ctx = dict(base_ctx(), desired_setpoint=24.0, indoor_temp=22.0, room_target=24.0)
+    # v3: the ETA is measured to the ROOM target (22), not to the drive setpoint sent to the rack (24)
+    assert "room_target" in norm(eta_vars["eta_delta"]) and "desired_setpoint" not in norm(eta_vars["eta_delta"])
+    ctx = dict(base_ctx(), desired_setpoint=24.0, indoor_temp=21.0, room_target=22.0)
     ctx["eta_delta"] = parse(env.from_string(str(eta_vars["eta_delta"])).render(**ctx))
     ctx["eta_min"] = parse(env.from_string(str(eta_vars["eta_min"])).render(**ctx))
-    assert (ctx["eta_delta"], ctx["eta_min"]) == (2.0, 20)
+    assert (ctx["eta_delta"], ctx["eta_min"]) == (1.0, 15)
 
 
 # ------------------------------------------------- R1-02: retained from v2 (templates unchanged)
@@ -914,6 +918,7 @@ def test_setpoint_step_rows(bp, attr, expected):
     (5, 1.0, {}, 7.0),            # selector allows 5, device minimum is 7 -> clamped
     (5, 1.0, {"min_temp": 5.0}, 5.0),
     (7, 1.0, {"min_temp": None}, 7.0),
+    (5, 1.0, {"min_temp": None}, 7.0),   # None falls back to the 7.0 device default, not the idle 5
 ])
 def test_idle_setpoint_dev_rows(bp, idle, step, attrs, expected):
     a = {"temperature": 7.0, "current_temperature": 23.4, "target_temp_step": step, "min_temp": 7.0, "max_temp": 30.0}
@@ -1007,3 +1012,54 @@ def test_instance_json_dry_run_validates():
     assert r.returncode == 0, r.stdout + r.stderr
     assert "ok (id 1776551429917" in r.stdout
     assert "dry-run: validation passed" in r.stdout
+
+
+# ------------------------------------------------- board 20260924-083742 delta-1 (post-board rows)
+
+
+def test_latch_ok_without_a_boost_entity(bp):
+    # R1-D1-01: a missing boost entity counts as never-on, so a slot-started heat still latches.
+    w = world(sp=24.0, room="21.6")
+    del w.table["input_boolean.boost"]
+    out = render_vars(bp, base_ctx(), w, "active_priority", at("06:32", WED))
+    assert (out["boost_age_min"], out["latch_ok"]) == (100000, True)
+    assert (out["active_priority"], out["desired_setpoint"]) == ("P5_morning", 24.0)
+
+
+def test_latch_residual_after_ha_restart(bp):
+    # R1-D1-02 (documented residual): HA restart gives the boost helper a fresh last_changed; a
+    # slot-started pre-warm before its ΔT-lead edge (room 21.5 -> lead 12 -> opens 06:33) pauses.
+    w = world(sp=24.0, room="21.5", boost=("off", 2))
+    out = render_vars(bp, base_ctx(), w, "active_priority", at("06:10", WED))
+    assert out["latch_ok"] is False
+    assert (out["active_priority"], out["desired_setpoint"]) == ("P6_idle", 7.0)
+    # ... and resumes at the ΔT-lead edge
+    out = render_vars(bp, base_ctx(), world(sp=24.0, room="21.5", boost=("off", 25)), "active_priority", at("06:33", WED))
+    assert (out["active_priority"], out["desired_setpoint"]) == ("P5_morning", 24.0)
+
+
+def test_latch_off_while_boost_on_but_expired(bp):
+    # R1-D1-03a: boost still ON but past its runtime at 05:50, rack at 24 -> no latch, no boost -> idle
+    w = world(sp=24.0, boost=("on", 60))
+    out = render_vars(bp, base_ctx(), w, "active_priority", at("05:50", WED))
+    assert (out["boost_active"], out["boost_expired"], out["latch_ok"]) == (False, True, False)
+    assert (out["active_priority"], out["desired_setpoint"]) == ("P6_idle", 7.0)
+
+
+def test_latch_residual_manual_24_is_honoured(bp):
+    # R1-D1-03b (documented residual): a manual 24 at 05:50, boost long off, reads as a slot-started heat
+    w = world(sp=24.0, boost=("off", 600))
+    out = render_vars(bp, base_ctx(), w, "active_priority", at("05:50", WED))
+    assert out["latch_ok"] is True
+    assert (out["active_priority"], out["desired_setpoint"]) == ("P5_morning", 24.0)
+
+
+def test_latch_residual_sibling_hand_off(bp):
+    # R1-D1-03c (documented residual): with Morning B configured, heat still running when A ends
+    # (07:45) latches B's edge to 08:30 - 60 = 07:30 instead of its ΔT-lead edge 08:15.
+    ctx = base_ctx(morning_b_days=ALLWEEK)
+    out = render_vars(bp, ctx, world(sp=24.0), "active_priority", at("07:45", WED))
+    assert (out["ma_in_window"], out["mb_in_window"]) == (False, True)
+    assert (out["active_priority"], out["desired_setpoint"]) == ("P5_morning", 24.0)
+    out = render_vars(bp, ctx, world(sp=7.0), "active_priority", at("07:45", WED))
+    assert (out["mb_in_window"], out["active_priority"]) == (False, "P6_idle")

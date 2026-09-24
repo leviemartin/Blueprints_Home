@@ -442,7 +442,7 @@ action:
       boost_runtime_min_int: "{{ (boost_runtime_min | float) | int }}"
       boost_is_on: "{{ is_state(entity_boost, 'on') }}"
       boost_age_min: >-
-        {% if states[entity_boost] %}{{ ((now() - states[entity_boost].last_changed).total_seconds() / 60) | int }}{% else %}0{% endif %}
+        {% if states[entity_boost] %}{{ ((now() - states[entity_boost].last_changed).total_seconds() / 60) | int }}{% else %}100000{% endif %}
       boost_active: "{{ boost_is_on and boost_age_min < boost_runtime_min_int }}"
       boost_expired: "{{ boost_is_on and boost_age_min >= boost_runtime_min_int }}"
       # A window's opening edge may only latch to the warmup cap when the current heat is a
