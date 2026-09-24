@@ -1,6 +1,6 @@
 # Bathroom Heating Rack v3.0.0 — room-sensor thermostat — Implementation Plan (epic #33, session #34)
 
-> **Status: Planned 2026-09-24.** Stage 5 waits for Martin's go-ahead, because the worker commits on a feature branch.
+> **Status: In review 2026-09-24 — PR #35 (`Session: #34`). Task 1 done (Sonnet, first pass); Task 2 code board 20260924-083742 PASS (report `reviews/board-20260924-083742.md`); Task 3 stage 7 checks green (367 tests, dry-run, secret scan clean, TCB verify rc 0 with the declared external `~/.claude/tg-notify` drift). Merge and Task 4 deploy/observe wait for Martin's go-ahead.**
 
 ```text
 Driver: claude
