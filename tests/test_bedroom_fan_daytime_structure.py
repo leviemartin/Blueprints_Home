@@ -339,10 +339,10 @@ def _calls(bp, env, ctx):
     return calls
 
 
-def evaluate(bp, now, trigger=TICK, inputs=KIDS, states=None, live=None, **world_kw):
+def evaluate(bp, now, trigger=TICK, inputs=KIDS, states=None, live=None, live_now=None, **world_kw):
     states = world(**world_kw) if states is None else states
     ctx = _render_vars(bp, _strict_env(now, states), inputs, trigger)
-    calls = _calls(bp, _strict_env(now, live if live is not None else states), ctx)
+    calls = _calls(bp, _strict_env(live_now or now, live if live is not None else states), ctx)
     return ctx, calls
 
 
@@ -936,7 +936,7 @@ def test_rendered_config_error(bp):
     ctx, calls = evaluate(bp, at(13, 30), drop=(SINCE,), **{**nap, **vacant})
     assert ctx["exempt"] is False and _svcs(calls, "fan.") == ["fan.turn_off"]
     # ex 17: the toggle deleted -> notice, no crash; also an unavailable helper
-    ctx, calls = evaluate(bp, at(13, 30), drop=(TOGGLE,), **vacant)
+    ctx, calls = evaluate(bp, at(14, 0), drop=(TOGGLE,), **vacant)  # notices are hourly (code gate R2-02)
     assert ctx["config_error"] is True and ctx["has_nap"] is False
     assert "persistent_notification.create" in _svcs(calls)
     ctx, _ = evaluate(bp, at(13, 30), toggle="unavailable", **vacant)
@@ -991,3 +991,55 @@ def test_instance_values():
         "gate_entity": GATE,
     }
     assert master["use_blueprint"]["input"] == {"fan": MASTER_FAN, "activity_sensors": [STAIRS]}
+
+
+
+# =========================================================================================
+# Code-gate post-board fixes (board-20260924-214705, all P2)
+# =========================================================================================
+
+def test_fan_branch_rechecks_the_day_window_live(bp):
+    """R2-01: helper steps before the fan step may carry the run past 18:00."""
+    base = dict(fan="on", stairs_at=at(17, 30))
+    ctx, calls = evaluate(bp, at(17, 59), **base)
+    assert ctx["off_due"] is True and _svcs(calls, "fan.") == ["fan.turn_off"]
+    _, calls = evaluate(bp, at(17, 59), live_now=at(18, 0, 30), **base)
+    assert _svcs(calls, "fan.") == [], "no fan write after 18:00 even if the snapshot said due"
+
+
+def test_config_notice_upkeep_is_hourly_not_every_tick(bp):
+    """R2-02: create/dismiss only on the full hour (or a non-tick trigger), not 600 times a day."""
+    bad = {**KIDS, "nap_since_helper": []}
+    _, calls = evaluate(bp, at(13, 1), inputs=bad)
+    assert [c for c in calls if c[0].startswith("persistent_notification.")] == []
+    _, calls = evaluate(bp, at(13, 1))
+    assert [c for c in calls if c[0].startswith("persistent_notification.")] == []
+    _, calls = evaluate(bp, at(14, 0), inputs=bad)
+    assert [c[0] for c in calls if c[0].startswith("persistent_notification.")] == ["persistent_notification.create"]
+
+
+def _press(trigger_id, entity, from_state_value, to_state_value, event_type, when):
+    frm = S(entity, from_state_value, {"event_type": "short_release"}, last_changed=when - timedelta(hours=1))
+    to = S(entity, to_state_value, {"event_type": event_type}, last_changed=when)
+    return {"id": trigger_id, "platform": "state", "entity_id": entity, "from_state": frm, "to_state": to}
+
+
+def test_only_a_fresh_button_press_starts_or_ends_a_nap(bp):
+    """R1-01 / R2-03: an availability flap or an attribute-only update re-exposes the old
+    event_type; only a new event (timestamp state changed, from a real state) counts."""
+    t = at(12, 40)
+    fresh = _press("nap_start", BTN_OFF, (t - timedelta(hours=1)).isoformat(), t.isoformat(), "short_release", t)
+    flap = _press("nap_start", BTN_OFF, "unavailable", (t - timedelta(hours=1)).isoformat(), "short_release", t)
+    attr_only = _press("nap_start", BTN_OFF, t.isoformat(), t.isoformat(), "short_release", t)
+    to_unknown = _press("nap_start", BTN_OFF, (t - timedelta(hours=1)).isoformat(), "unknown", "short_release", t)
+    assert evaluate(bp, t, trigger=fresh, gate="on", stairs_at=at(12, 39))[0]["nap_start_due"] is True
+    for trig in (flap, attr_only, to_unknown):
+        ctx, calls = evaluate(bp, t, trigger=trig, gate="on", stairs_at=at(12, 39))
+        assert ctx["nap_start_due"] is False, trig["from_state"]
+        assert not any(c[0] in ("input_datetime.set_datetime", "input_boolean.turn_on") for c in calls)
+    nap = dict(toggle="on", toggle_at=at(12, 40), since=at(12, 40), stairs_at=at(14, 29))
+    t2 = at(14, 30)
+    end_flap = _press("nap_end", BTN_UP, "unavailable", (t2 - timedelta(hours=1)).isoformat(), "short_release", t2)
+    end_fresh = _press("nap_end", BTN_UP, (t2 - timedelta(hours=1)).isoformat(), t2.isoformat(), "short_release", t2)
+    assert evaluate(bp, t2, trigger=end_flap, gate="off", **nap)[0]["nap_end_due"] is False
+    assert evaluate(bp, t2, trigger=end_fresh, gate="off", **nap)[0]["nap_end_due"] is True

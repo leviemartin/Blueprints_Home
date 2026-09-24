@@ -264,6 +264,14 @@ action:
            if (trigger is defined and trigger.to_state is defined and trigger.to_state is not none)
            else none }}
       gesture: "{{ trig_to.attributes.get('event_type', '') if trig_to is not none else '' }}"
+      # A new button event changes the event entity's state (its timestamp); an
+      # availability flap or an attribute-only update re-exposes the old event_type
+      # and must not count as a press (code gate R1-01 / R2-03).
+      fresh_press: >-
+        {{ trig_to is not none and trigger.from_state is not none
+           and trigger.from_state.state not in ['unavailable', 'unknown']
+           and trig_to.state not in ['unavailable', 'unknown']
+           and trigger.from_state.state != trig_to.state }}
       # A dashboard off->on flip: the since is (re)written to the flip instant unless it
       # already holds an instant within 60 s (the blueprint's own start wrote it first).
       since_fallback_due: >-
@@ -277,11 +285,11 @@ action:
       nap_forced: "{{ nap_on and in_day and (now_ts | float) >= (wrap_ts | float) }}"
       nap_start_due: >-
         {{ is_real_trigger and has_nap and not nap_on and trigger.id == 'nap_start'
-           and gesture == 'short_release' and gate_on
+           and fresh_press and gesture == 'short_release' and gate_on
            and (day_start_ts | float) <= (now_ts | float) < (wrap_ts | float) }}
       nap_end_due: >-
         {{ is_real_trigger and nap_on
-           and ((trigger.id == 'nap_end' and gesture == 'short_release' and not gate_on)
+           and ((trigger.id == 'nap_end' and fresh_press and gesture == 'short_release' and not gate_on)
                 or trigger.id == 'gate_on' or nap_cap or nap_forced or nap_stale) }}
       exempt: "{{ (nap_on and not nap_stale) or nap_start_due }}"
       off_due: "{{ is_real_trigger and in_day and fan_avail and fan_on and vacant and not exempt }}"
@@ -364,7 +372,8 @@ action:
           - condition: template
             value_template: >-
               {{ off_due and is_state(fan, 'on')
-                 and expand(sensor_ids) | selectattr('state', 'eq', 'on') | list | length == 0 }}
+                 and expand(sensor_ids) | selectattr('state', 'eq', 'on') | list | length == 0
+                 and (day_start_ts | float) <= as_timestamp(now()) < (day_end_ts | float) }}
         sequence:
           - service: fan.turn_off
             continue_on_error: true
@@ -379,7 +388,7 @@ action:
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ is_real_trigger and in_day and config_error and enable_notifications }}"
+            value_template: "{{ is_real_trigger and in_day and (trigger.id != 'tick' or now().minute == 0) and config_error and enable_notifications }}"
         sequence:
           - service: persistent_notification.create
             continue_on_error: true
@@ -392,7 +401,7 @@ action:
               notification_id: "bedroom_fan_daytime_config_{{ this.entity_id | replace('.', '_') }}"
       - conditions:
           - condition: template
-            value_template: "{{ is_real_trigger and in_day }}"
+            value_template: "{{ is_real_trigger and in_day and (trigger.id != 'tick' or now().minute == 0) }}"
         sequence:
           - service: persistent_notification.dismiss
             continue_on_error: true
