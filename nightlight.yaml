@@ -1,7 +1,12 @@
 blueprint:
-  name: "Toddler Sleep Trainer & Nightlight v1.2.0"
+  name: "Toddler Sleep Trainer & Nightlight v1.3.0"
   description: >
-    **Version: 1.2.0**
+    **Version: 1.3.0**
+
+    **New in 1.3.0:** Optional nap toggle. When `nap_toggle` is set, the nap
+    window state follows this input_boolean instead of the fixed
+    nap_start/nap_end window, so a nap can start or end at any time; leave
+    it empty for exact v1.2.0 behavior (fixed nap window).
 
     **New in 1.2.0:** Optional suppression gate + nap window. While the gate
     entity (e.g. the room's main light group) is ON, this automation pauses
@@ -56,6 +61,16 @@ blueprint:
       default: "00:00:00"
       selector:
         time:
+    nap_toggle:
+      name: Nap Toggle (optional, v1.3.0)
+      description: >
+        When set, this input_boolean fully overrides the fixed nap window
+        above: nap-colour painting follows the toggle's state instead of
+        nap_start/nap_end. Leave empty for exact v1.2.0 behavior.
+      default: []
+      selector:
+        entity:
+          domain: input_boolean
 
     # --- Scheduling ---
     wakeup_time_mon:
@@ -217,6 +232,17 @@ trigger:
     at: !input nap_end
     id: "nap_end"
 
+  # 8. Nap toggle transitions (v1.3.0): repaint within seconds of a nap
+  # starting or ending via the toggle, when nap_toggle is configured.
+  - platform: state
+    entity_id: !input nap_toggle
+    to: "on"
+    id: "nap_toggle_on"
+  - platform: state
+    entity_id: !input nap_toggle
+    to: "off"
+    id: "nap_toggle_off"
+
 variables:
   # Simple Input Mapping
   sensor_motion: !input motion_entity
@@ -235,6 +261,7 @@ variables:
   gate: !input gate_entity
   nap_start_t: !input nap_start
   nap_end_t: !input nap_end
+  nap_toggle: !input nap_toggle
   # entity selector yields a string when set; the default is [] (unset)
   is_gate_on: >-
     {% set g = gate if gate is string else (gate | first | default('')) %}
@@ -245,6 +272,11 @@ condition:
   # the light then). The gate_off trigger passes here by definition.
   - condition: template
     value_template: "{{ not is_gate_on }}"
+  # v1.3: restored-trigger guard on the nap_toggle triggers only (a restart
+  # replaying a restored toggle state must not repaint).
+  - condition: template
+    value_template: >-
+      {{ trigger.id is not defined or trigger.id not in ['nap_toggle_on', 'nap_toggle_off'] or (trigger.from_state is not none and not (trigger.from_state.attributes.restored | default(false))) }}
 
 action:
   # 1. Calculate Logic Variables
@@ -264,9 +296,14 @@ action:
       is_motion_active: "{{ is_state(sensor_motion, 'on') }}"
 
       is_nap_window: >
+        {% set nt = nap_toggle if nap_toggle is string else (nap_toggle | first | default('')) %}
+        {% if nt != '' %}
+        {{ is_state(nt, 'on') }}
+        {% else %}
         {% set s = today_at(nap_start_t) %}
         {% set e = today_at(nap_end_t) %}
         {{ s != e and s <= now() < e }}
+        {% endif %}
 
   # 2. Execute Logic
   - choose:

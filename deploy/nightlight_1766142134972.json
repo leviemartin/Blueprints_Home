@@ -1,0 +1,32 @@
+{
+ "id": "1766142134972",
+ "alias": "Toddler Sleep Trainer & Nightlight v1.3 (Samuel)",
+ "description": "",
+ "use_blueprint": {
+  "path": "leviemartin/nightlight.yaml",
+  "input": {
+   "light_entity": "light.samuel_nightlight",
+   "motion_entity": "binary_sensor.samuel_nightlight_motion",
+   "wakeup_time_mon": "06:50:00",
+   "wakeup_time_tue": "06:50:00",
+   "wakeup_time_wed": "06:50:00",
+   "wakeup_time_thu": "06:50:00",
+   "wakeup_time_fri": "06:50:00",
+   "wakeup_time_sat": "07:10:00",
+   "wakeup_time_sun": "07:10:00",
+   "wakeup_color": [
+    0,
+    64,
+    255
+   ],
+   "night_brightness": 3,
+   "boost_brightness": 7,
+   "wakeup_brightness": 10,
+   "transition_time": 8,
+   "gate_entity": "light.kids_room_gate",
+   "nap_start": "12:30:00",
+   "nap_end": "15:30:00",
+   "nap_toggle": "input_boolean.kids_nap"
+  }
+ }
+}

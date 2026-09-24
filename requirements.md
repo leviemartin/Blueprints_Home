@@ -82,12 +82,42 @@ The blueprint must provide the following configurable inputs:
 *   **Trigger:** 1 hour after `Wakeup Time`.
 *   **Action:** Turn Light OFF.
 
+### Nap toggle (v1.3.0)
+*   **Input:** New optional `nap_toggle` (input_boolean selector, default empty).
+*   **Behavior:** When configured, the nap-window color state (State: Nap,
+    same cue as Night) follows `is_state(nap_toggle, 'on')` instead of the
+    fixed `nap_start`/`nap_end` window, so a nap can start or end at any
+    time of day, not just inside the fixed window.
+*   **Fallback:** Leaving `nap_toggle` empty (the default) reproduces exact
+    v1.2.0 behavior — the fixed nap window still applies unchanged.
+*   **Responsiveness:** Two new state triggers (`nap_toggle` to `on`/`off`)
+    repaint the light within seconds of a toggle transition, instead of
+    waiting for the next motion/time trigger. A restored-trigger guard
+    (second global condition) prevents a Home Assistant restart from
+    replaying a restored toggle state as a real transition.
+*   **Safety:** This blueprint never controls a fan; the toggle is read-only
+    here (owned and written by the companion `bedroom_fan_daytime.yaml`
+    blueprint and/or a dashboard).
+
 ## 6. Edge Cases & Constraints
 *   **Manual Override:** If the user manually changes the light color/brightness, the automation should ideally respect it until the next automation trigger (Motion or Time).
 *   **Power Loss:** Ensure the light restores to the correct state (Night vs Wakeup) if power is cycled, based on the current time.
 *   **Smooth Transitions:** All light changes must use the `transition` parameter to avoid jarring flashes.
 
-## 7. Summary of Variables for Blueprint
+## 7. Deployment
+
+### Nap toggle (v1.3.0)
+*   Live instance `1766142134972` deploys with `nap_toggle: input_boolean.kids_nap`
+    added to its inputs; `nap_start`/`nap_end` are kept at `12:30:00`/`15:30:00`
+    as the one-input-away fallback if the toggle is ever removed.
+*   Deploy order: helper `input_boolean.kids_nap` must exist before this
+    blueprint version is deployed to the live instance (see the bedroom-fan
+    daytime chain's Stage 8 for the helper creation step).
+*   Verify with `scripts/deploy-blueprint.sh --dry-run nightlight.yaml
+    leviemartin/nightlight.yaml deploy/nightlight_1766142134972.json` before
+    any live deploy.
+
+## 8. Summary of Variables for Blueprint
 1.  `light_entity`
 2.  `motion_entity`
 3.  `night_color` (Default: Red)
