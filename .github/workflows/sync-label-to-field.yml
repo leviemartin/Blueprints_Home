@@ -58,13 +58,16 @@ jobs:
             [adr]=72cf9416
           )
 
-          # 1) Resolve project item ID for this Issue. Newly-opened Issues may
-          #    not yet have a project item (auto-add-to-project also fires on
-          #    'opened' but may race); in that case skip — the next 'labeled'
-          #    event will catch up.
-          ITEM_ID=$(gh api graphql -f query="
-            query(\$id: ID!) {
-              node(id: \$id) {
+          # 1) Resolve project item ID for this Issue. Two benign skip cases:
+          #    a. Issue was DELETED between its (queued) event and this run —
+          #       GraphQL answers data.node = null (NOT_FOUND); nothing to sync.
+          #    b. Newly-opened Issue not yet on project #3 (auto-add-to-project
+          #       may race); the next 'labeled' event catches up.
+          #    Any other failure (e.g. 401 from an expired PROJECT_PAT) has no
+          #    `data` key and must fail the run, not skip silently.
+          NODE_JSON=$(gh api graphql -f query='
+            query($id: ID!) {
+              node(id: $id) {
                 ... on Issue {
                   projectItems(first: 20) {
                     nodes {
@@ -74,8 +77,19 @@ jobs:
                   }
                 }
               }
-            }" -F id="$ISSUE_NODE_ID" \
-            --jq ".data.node.projectItems.nodes[] | select(.project.id == \"$PROJECT_ID\") | .id" | head -1)
+            }' -F id="$ISSUE_NODE_ID" || true)
+
+          if jq -e '.data != null and .data.node == null' >/dev/null 2>&1 <<<"$NODE_JSON"; then
+            echo "Issue #$ISSUE_NUMBER no longer exists (deleted before sync ran) — nothing to sync. Skipping."
+            exit 0
+          fi
+          if ! jq -e '.data.node != null' >/dev/null 2>&1 <<<"$NODE_JSON"; then
+            echo "::error::Could not read issue #$ISSUE_NUMBER — check the PROJECT_PAT secret. Response: $NODE_JSON"
+            exit 1
+          fi
+
+          ITEM_ID=$(jq -r --arg pid "$PROJECT_ID" \
+            '.data.node.projectItems.nodes[]? | select(.project.id == $pid) | .id' <<<"$NODE_JSON" | head -1)
 
           if [ -z "$ITEM_ID" ]; then
             echo "Issue #$ISSUE_NUMBER not on project #3 yet — likely racing with auto-add-to-project. Skipping; next label event will sync."
