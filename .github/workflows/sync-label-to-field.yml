@@ -42,6 +42,7 @@ jobs:
           declare -A STATUS_OPTS=(
             [queued]=bf4aaa3a
             [in-progress]=c943ac31
+            [in-review]=e5134bff
             [between]=ce577a9b
             [blocked]=106a240a
             [paused]=5803832a
