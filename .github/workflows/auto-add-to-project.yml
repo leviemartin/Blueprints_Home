@@ -16,7 +16,31 @@ jobs:
     name: Add issue to project
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/add-to-project@v2
+      # Queued issues-events still fire for an issue that was deleted before the
+      # job runs (e.g. the github-sync test harness creates, labels, then deletes
+      # throwaway issues). add-to-project@v2 then hard-errors on NOT_FOUND. Skip
+      # only that case; any other failure (e.g. 401 from an expired PROJECT_PAT)
+      # must fail the run. Mirrors the sibling guard in sync-label-to-field.yml.
+      - name: Skip if the issue was deleted before this run
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_PAT }}
+          ISSUE_NODE_ID: ${{ github.event.issue.node_id }}
+        run: |
+          RESP=$(gh api graphql -f query='query($id: ID!) { node(id: $id) { __typename } }' \
+            -F id="$ISSUE_NODE_ID" || true)
+          if jq -e '.data != null and .data.node == null' >/dev/null 2>&1 <<<"$RESP"; then
+            echo "Issue no longer exists (deleted before run) — nothing to add. Skipping."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          elif jq -e '.data.node != null' >/dev/null 2>&1 <<<"$RESP"; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Could not read the issue — check the PROJECT_PAT secret. Response: $RESP"
+            exit 1
+          fi
+      - name: Add issue to project
+        if: steps.guard.outputs.present == 'true'
+        uses: actions/add-to-project@v2
         with:
           # User-level Projects v2 URL (substituted per-repo during Phase 5 propagation)
           project-url: https://github.com/users/leviemartin/projects/3
