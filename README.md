@@ -31,7 +31,7 @@ This Home Assistant blueprint is an expert-level automation designed to help tod
 ## Bedroom Fan Daytime Blueprint
 
 ### Overview
-Limits how long a bedroom ceiling fan runs during the day (v1.1.0). At 08:00 a fan still running from the night is switched off; between 08:00 and 18:00 a fan that is switched on runs for 2 hours and is then switched off. It only ever switches a fan **off**. It never switches a fan on and never changes speed or direction, so it cannot fight the safety cutoff, the Hue dimmer, the pre-cool night write or the seasonal direction. One instance per room: kids and master.
+Limits how long a bedroom ceiling fan runs during the day (v1.1.0). At 08:00 a fan still running from the night is switched off; between 08:00 and 18:00 a fan that is switched on runs for 2 hours and is then switched off. It only ever switches a fan **off**. It never switches a fan on and never changes speed or direction, so it cannot fight the safety cutoff, the Hue dimmer or the pre-cool night write. One instance per room: kids and master.
 
 ### Features
 *   **08:00 switch-off:** a fan running since before 08:00 is switched off at the 08:00 tick.
@@ -49,6 +49,28 @@ Limits how long a bedroom ceiling fan runs during the day (v1.1.0). At 08:00 a f
 3. Once no instance references them, the v1.0.0 helpers "Kids nap" (`input_boolean.kids_nap`) and "Kids nap since" (`input_datetime.kids_nap_since`) can be deleted.
 
 Or import via URL: `https://raw.githubusercontent.com/leviemartin/Blueprints_Home/main/bedroom_fan_daytime.yaml`. Full contract: `requirements_bedroom_fan_daytime.md`.
+
+---
+
+## Bedroom Fan Direction Blueprint
+
+### Overview
+Advisory-only evening season decision and direction advice for a bedroom ceiling fan (v1.0.0). At 18:00 and the three following quarter hours it reads tonight's forecast night low and decides whether the season is winter or summer (8 °C / 14 °C by default), writing that decision to a season toggle at most once per evening. It then compares the fan's *reported* direction against what the toggle implies and, if they differ or the direction can't be read, sends a notice — it never commands the fan itself. Martin changes the direction by hand (Tuya app or remote) while the fan is off. It replaces the old seasonal-direction automation, which is deleted at deploy.
+
+### Features
+*   **🌙 Forecast-driven season decision:** Night low comes from the hourly forecast first, the next day's daily low as a backstop, then a live outdoor reading, each validated (finite, °C, fresh, enough coverage) before use.
+*   **🔒 One toggle change per evening:** a hand flip after Decide Time freezes the toggle for the rest of the evening; Stage A never overwrites it.
+*   **📢 Advisory, never a command:** the blueprint sends no fan service of any kind — no `set_direction`, `turn_on`, `turn_off` or `toggle`. Its only writes are the season toggle and notifications.
+*   **📱 Bounded notices:** a persistent notification plus (optionally) a push, at most twice per evening; it clears within 15 minutes of the direction matching.
+*   **🛟 Degraded-forecast notice:** if no forecast or live reading is usable, a persistent notice says so and no season decision is made that evening.
+
+### Requirements
+*   A fan entity that reports a `direction` attribute (read only) · an `input_boolean` season toggle · a weather entity with an hourly forecast · optional outdoor temperature sensor and `notify.*` push targets
+
+### Installation
+1. Follow the deploy runbook in `requirements_bedroom_fan_direction.md` step by step — there is no one-command install. It first checks and turns off the old seasonal-direction automation with `stop_actions: true` and deletes it only if it has not run and is not running (F1), then saves the blueprint without the instance argument, creates the instance, and runs the forced check with `write_toggle: false`.
+
+There is deliberately no import-by-URL path for this blueprint: every install goes through that runbook. Full contract, deploy runbook and rollback: `requirements_bedroom_fan_direction.md`.
 
 ---
 
