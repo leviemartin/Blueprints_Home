@@ -1,23 +1,11 @@
 {
   "id": "bedroom_fan_daytime_kids",
-  "alias": "Kids room — fan daytime v1.0.0",
+  "alias": "Kids room — fan daytime v1.1.0",
   "description": "",
   "use_blueprint": {
     "path": "leviemartin/bedroom_fan_daytime.yaml",
     "input": {
-      "fan": "fan.ceiling_fan_light_v2",
-      "activity_sensors": [
-        "binary_sensor.stairs_motion",
-        "binary_sensor.samuel_samuel_matthew_fanprotection"
-      ],
-      "nap_toggle": "input_boolean.kids_nap",
-      "nap_since_helper": "input_datetime.kids_nap_since",
-      "nap_start_button": "event.baby_room_button_4",
-      "nap_end_buttons": [
-        "event.baby_room_button_2",
-        "event.baby_room_button_3"
-      ],
-      "gate_entity": "light.kids_room_gate"
+      "fan": "fan.ceiling_fan_light_v2"
     }
   },
   "trace": {

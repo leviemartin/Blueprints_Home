@@ -25,8 +25,7 @@
    "transition_time": 8,
    "gate_entity": "light.kids_room_gate",
    "nap_start": "12:30:00",
-   "nap_end": "15:30:00",
-   "nap_toggle": "input_boolean.kids_nap"
+   "nap_end": "15:30:00"
   }
  }
 }
