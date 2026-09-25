@@ -16,7 +16,7 @@ This Home Assistant blueprint is an expert-level automation designed to help tod
     *   **Boost Mode:** Smoothly increases brightness (default 20%) when the toddler moves/gets up, ensuring safety without startling them.
 *   **⏰ Wakeup Indicator:** Automatically changes color (e.g., Green) and brightness at the scheduled time to signal "It's okay to get up".
 *   **🔋 Power-Loss Safe:** Automatically restores the correct state (Night, Wakeup, or Off) after a power outage or Home Assistant restart.
-*   **🛏️ Nap toggle (v1.3.0):** the nightlight blueprint accepts an optional `nap_toggle` input_boolean; when set, nap-colour painting follows the toggle's state instead of the fixed nap window, repainting within seconds via two new state triggers (with a restored-trigger guard so a HA restart never replays a stale toggle state). Leave it empty for exact v1.2.0 behaviour.
+*   **🛏️ Nap toggle (v1.3.0):** the nightlight blueprint accepts an optional `nap_toggle` input_boolean; when set, nap-colour painting follows the toggle's state instead of the fixed nap window, repainting within seconds via two new state triggers (with a restored-trigger guard so a HA restart never replays a stale toggle state). The input is optional; leave it empty for exact v1.2.0 behaviour (the fixed nap window). It is unused in this home: the deployed instance does not set it.
 
 ### Installation
 1. Click the button below to import this blueprint into your Home Assistant instance:
@@ -31,25 +31,22 @@ This Home Assistant blueprint is an expert-level automation designed to help tod
 ## Bedroom Fan Daytime Blueprint
 
 ### Overview
-Switches a running bedroom ceiling fan off once the upstairs has been empty for a while during the day, and manages the kids' nap toggle. It only ever switches a fan **off** — it never switches a fan on and never changes speed or direction, so it cannot fight the safety cutoff, the Hue dimmer, the pre-cool night write or the seasonal direction. One instance per room: kids (with the nap lifecycle) and master (without).
+Limits how long a bedroom ceiling fan runs during the day (v1.1.0). At 08:00 a fan still running from the night is switched off; between 08:00 and 18:00 a fan that is switched on runs for 2 hours and is then switched off. It only ever switches a fan **off**. It never switches a fan on and never changes speed or direction, so it cannot fight the safety cutoff, the Hue dimmer, the pre-cool night write or the seasonal direction. One instance per room: kids and master.
 
 ### Features
-*   **Vacancy switch-off (08:00–18:00):** a running fan goes off 20 min after the last activity — any change of the configured motion sensors (a sensor reading on means occupied), of the fan itself, or of the nap toggle.
-*   **One command, re-checked:** exactly one `fan.turn_off` per run on live state; nothing is sent to a fan between 18:00 and 08:00.
-*   **Kids nap lifecycle:** a short press of the dimmer's Off button while the room lights are on (08:00–17:55) starts a nap; a short +/− press with the lights off, or the lights turning on, ends it; automatic ends at the 3-hour cap, at 17:55, and for a nap left over from before 08:00. While a nap is on the fan is left exactly as it is.
-*   **Dashboard fallback:** switching "Kids nap" on by hand records the start time.
-*   **Restart-safe:** a Home Assistant start and a manual Run write nothing; button, toggle and gate replays are ignored.
-*   **Configuration notice:** one persistent notification per instance for configuration problems; it never blocks a switch-off.
+*   **08:00 switch-off:** a fan running since before 08:00 is switched off at the 08:00 tick.
+*   **Daytime run limit (08:00–18:00):** a fan switched on by anyone or anything is switched off after `max_run_minutes` (default 120). The run counts from the moment the fan went on; a speed change does not restart it, but a safety-cutoff resume or a cloud availability flap does.
+*   **Evenings untouched:** nothing is switched off between 18:00 and 08:00, so a fan started at 17:00 keeps running into the evening and pre-cool works as before.
+*   **One command, re-checked:** the only service is one `fan.turn_off`, sent only when the fan still reads on and the clock is still inside the window.
+*   **Restart-safe:** a Home Assistant start and a manual Run issue nothing.
 
 ### Requirements
-*   The fan entity and at least one `binary_sensor` activity sensor.
-*   For the nap lifecycle: an input_boolean **"Kids nap"** (`input_boolean.kids_nap`, on a dashboard), an input_datetime with date and time **"Kids nap since"** (`input_datetime.kids_nap_since`, off dashboards) — both without an initial value, so they survive restarts — plus the Hue dimmer's event entities and the room's gate light group.
+*   The fan entity. No helpers, sensors or notifications.
 
 ### Installation
-1. Create the helpers "Kids nap" (icon `mdi:sleep`) and "Kids nap since" (date + time) and check they received exactly the entity ids above.
-2. Deploy the nightlight v1.3.0 and its instance: `bash scripts/deploy-blueprint.sh nightlight.yaml leviemartin/nightlight.yaml deploy/nightlight_1766142134972.json`.
-3. Save this blueprint: `bash scripts/deploy-blueprint.sh bedroom_fan_daytime.yaml leviemartin/bedroom_fan_daytime.yaml`.
-4. Create the two instances (POST `deploy/bedroom_fan_daytime_kids.json` and `deploy/bedroom_fan_daytime_master.json` to `/api/config/automation/config/<id>`), then run the script with both instance files and check both are `state=on`.
+1. Save this blueprint and update both instances: `bash scripts/deploy-blueprint.sh bedroom_fan_daytime.yaml leviemartin/bedroom_fan_daytime.yaml deploy/bedroom_fan_daytime_kids.json deploy/bedroom_fan_daytime_master.json`, then check both are `state=on`. For a first install, POST each instance file once to `/api/config/automation/config/<id>` before running the script with the instance files.
+2. Update the nightlight instance (it no longer sets `nap_toggle`): `bash scripts/deploy-blueprint.sh nightlight.yaml leviemartin/nightlight.yaml deploy/nightlight_1766142134972.json`.
+3. Once no instance references them, the v1.0.0 helpers "Kids nap" (`input_boolean.kids_nap`) and "Kids nap since" (`input_datetime.kids_nap_since`) can be deleted.
 
 Or import via URL: `https://raw.githubusercontent.com/leviemartin/Blueprints_Home/main/bedroom_fan_daytime.yaml`. Full contract: `requirements_bedroom_fan_daytime.md`.
 
