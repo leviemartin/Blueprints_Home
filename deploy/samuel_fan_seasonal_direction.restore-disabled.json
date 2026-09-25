@@ -1,0 +1,1 @@
+{"id":"samuel_fan_seasonal_direction","alias":"Samuel — Fan Seasonal Direction","description":"Manual season toggle -> safe reverse. Blueprint leviemartin/fan_seasonal_direction.yaml","use_blueprint":{"path":"leviemartin/fan_seasonal_direction.yaml","input":{"fan":"fan.ceiling_fan_light_v2","season_toggle":"input_boolean.samuel_fan_winter_mode"}},"initial_state":false}
