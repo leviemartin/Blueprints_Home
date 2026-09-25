@@ -251,7 +251,7 @@ def test_instance_passes_dry_run_and_values():
     data = json.loads(INSTANCE_PATH.read_text())
     assert data["alias"].endswith("v1.3 (Samuel)")
     inp = data["use_blueprint"]["input"]
-    assert inp["nap_toggle"] == "input_boolean.kids_nap"
+    assert "nap_toggle" not in inp
     assert inp["gate_entity"] == "light.kids_room_gate"
     assert inp["light_entity"] == "light.samuel_nightlight"
     assert inp["nap_start"] == "12:30:00"
