@@ -1,14 +1,11 @@
 {
   "id": "bedroom_fan_daytime_master",
-  "alias": "Master bedroom — fan daytime v1.0.0",
+  "alias": "Master bedroom — fan daytime v1.1.0",
   "description": "",
   "use_blueprint": {
     "path": "leviemartin/bedroom_fan_daytime.yaml",
     "input": {
-      "fan": "fan.ceiling_fan_light_v2_2",
-      "activity_sensors": [
-        "binary_sensor.stairs_motion"
-      ]
+      "fan": "fan.ceiling_fan_light_v2_2"
     }
   },
   "trace": {

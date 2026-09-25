@@ -1,18 +1,17 @@
-"""Structural and rendered pins for bedroom_fan_daytime.yaml (Bedroom Fan Daytime v1.0.0)
+"""Structural and rendered pins for bedroom_fan_daytime.yaml (Bedroom Fan Daytime v1.1.0)
 and its two deployed instance configs.
 
 Run: cd <worktree> && ~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests -q
 
-Contract: docs/superpowers/plans/2026-09-24-bedroom-fan-daytime-v1.0.0.md (C1, C2, C4, C5,
-the interaction matrix, acceptance examples 1-12 and 15-20). Expectations come from that
-contract, never from the implementation.
+Contract: docs/superpowers/plans/2026-09-25-bedroom-fan-daytime-v1.1.0.md ("Contract" and
+acceptance examples 1-11; example 12 lives in test_bedroom_fans_deploy_consistency.py).
+Expectations come from that contract, never from the implementation.
 
-Harness notes (C5): the fakes are strict like HA — `is_state` / `state_attr` / `states`
-raise TypeError on a non-string entity id, `as_timestamp` (no default) raises on None /
-Undefined, and the Jinja environment uses a non-chainable StrictUndefined, so nested access
-on a missing `trigger.to_state` raises. The action-level `variables:` step is rendered from
-the YAML key by key IN FILE ORDER, and every value is re-parsed (`_reparse`) before the next
-key sees it — HA renders each variable separately and hands the next one the literal_eval'd
+Harness notes: the fakes are strict like HA — `is_state` / `states` raise TypeError on a
+non-string entity id, `as_timestamp` (no default) raises on None / Undefined, and the Jinja
+environment uses StrictUndefined. The action-level `variables:` step is rendered from the
+YAML key by key IN FILE ORDER, and every value is re-parsed (`_reparse`) before the next key
+sees it — HA renders each variable separately and hands the next one the literal_eval'd
 result, so a State object never survives a variables boundary (pre-cool hotfix 2026-09-07).
 """
 import json
@@ -35,37 +34,15 @@ MASTER_INSTANCE = ROOT / "deploy" / "bedroom_fan_daytime_master.json"
 
 KIDS_FAN = "fan.ceiling_fan_light_v2"
 MASTER_FAN = "fan.ceiling_fan_light_v2_2"
-STAIRS = "binary_sensor.stairs_motion"
-PROT = "binary_sensor.samuel_samuel_matthew_fanprotection"
-TOGGLE = "input_boolean.kids_nap"
-SINCE = "input_datetime.kids_nap_since"
-BTN_OFF = "event.baby_room_button_4"
-BTN_UP = "event.baby_room_button_2"
-BTN_DOWN = "event.baby_room_button_3"
-GATE = "light.kids_room_gate"
 THIS = {"entity_id": "automation.kids_room_fan_daytime_v1_0_0"}
 
-INPUT_DEFAULTS = {
-    "activity_sensors": [], "day_start": "08:00:00", "day_end": "18:00:00",
-    "day_end_margin_minutes": 5, "vacancy_minutes": 20, "nap_toggle": [], "nap_since_helper": [],
-    "nap_start_button": [], "nap_end_buttons": [], "gate_entity": [], "nap_max_hours": 3,
-    "enable_notifications": True,
-}
+INPUT_DEFAULTS = {"day_start": "08:00:00", "day_end": "18:00:00", "max_run_minutes": 120}
 INPUT_NAMES = {"fan", *INPUT_DEFAULTS}
-KIDS = {**INPUT_DEFAULTS, "fan": KIDS_FAN, "activity_sensors": [STAIRS, PROT], "nap_toggle": TOGGLE,
-        "nap_since_helper": SINCE, "nap_start_button": BTN_OFF, "nap_end_buttons": [BTN_UP, BTN_DOWN],
-        "gate_entity": GATE}
-MASTER = {**INPUT_DEFAULTS, "fan": MASTER_FAN, "activity_sensors": [STAIRS]}
+KIDS = {**INPUT_DEFAULTS, "fan": KIDS_FAN}
+MASTER = {**INPUT_DEFAULTS, "fan": MASTER_FAN}
 
-ALLOWED_SERVICES = {
-    "fan.turn_off", "input_boolean.turn_on", "input_boolean.turn_off", "input_datetime.set_datetime",
-    "persistent_notification.create", "persistent_notification.dismiss",
-}
-GLOBAL_CONDITION = (
-    "{{ trigger.id is not defined or trigger.id in ['tick', 'ha_start'] or "
-    "(trigger.from_state is not none and not (trigger.from_state.attributes.restored | default(false))) }}"
-)
-NOTICE_ID = "bedroom_fan_daytime_config_{{ this.entity_id | replace('.', '_') }}"
+VAR_ORDER = ["is_real_trigger", "now_ts", "day_start_ts", "day_end_ts", "in_day", "fan_state",
+             "fan_on", "on_since_ts", "from_night", "run_expired", "off_due"]
 
 
 # --- loading ----------------------------------------------------------------------------
@@ -90,7 +67,7 @@ def _actions(bp):
 
 def _vars_step(bp):
     steps = [s for s in _actions(bp) if isinstance(s, dict) and "variables" in s]
-    assert len(steps) == 1, "exactly one action-level variables step (C2)"
+    assert len(steps) == 1, "exactly one action-level variables step"
     return steps[0]["variables"]
 
 
@@ -133,25 +110,7 @@ def _templates_of(conditions):
     return out
 
 
-def _top_step_index(bp, predicate):
-    for i, step in enumerate(_actions(bp)):
-        if predicate(step):
-            return i
-    raise AssertionError("no top-level action step matches")
-
-
-def _top_step_with_service(bp, service, data_key=None, data_value=None):
-    def pred(step):
-        for s in _service_steps(step):
-            if _svc(s) != service:
-                continue
-            if data_key is None or _norm((s.get("data") or {}).get(data_key)) == _norm(data_value):
-                return True
-        return False
-    return _top_step_index(bp, pred)
-
-
-# --- strict fakes (C5) -------------------------------------------------------------------
+# --- strict fakes ------------------------------------------------------------------------
 
 class S:
     """A fake HA State: state, attributes, last_changed (state transitions) and last_updated
@@ -201,25 +160,19 @@ def _strict_env(now, states):
         _need_str(entity_id)
         return by_id[entity_id].attributes.get(attr) if entity_id in by_id else None
 
-    def expand(*ids):
-        out = []
-        for group in ids:
-            for i in ([group] if isinstance(group, str) else group):
-                _need_str(i)
-                if i in by_id:
-                    out.append(by_id[i])
-        return out
-
-    env.globals.update(states=_States(), is_state=is_state, state_attr=state_attr, expand=expand,
+    env.globals.update(states=_States(), is_state=is_state, state_attr=state_attr,
                        as_timestamp=_strict_as_timestamp)
     return env
 
 
 def test_the_fakes_are_strict():
     env = _strict_env(datetime(2026, 9, 24, 12, 0, tzinfo=TZ), [S(KIDS_FAN, "on")])
-    for tmpl in ("{{ is_state(x, 'on') }}", "{{ state_attr(x, 'a') }}", "{{ states(x) }}", "{{ expand(x) }}"):
+    for tmpl in ("{{ is_state(x, 'on') }}", "{{ state_attr(x, 'a') }}", "{{ states(x) }}"):
         with pytest.raises(TypeError):
             env.from_string(tmpl).render(x=[[KIDS_FAN]])
+    # Jinja's subscript turns the TypeError into a strict Undefined, which fails the render
+    with pytest.raises(Exception):
+        env.from_string("{{ states[x] }}").render(x=[[KIDS_FAN]])
     with pytest.raises(TypeError):
         env.from_string("{{ as_timestamp(none) }}").render()
     with pytest.raises(Exception):
@@ -235,29 +188,14 @@ def at(h, m=0, s=0, day=0):
 
 
 OLD = at(6, 0)
-UNSET_SINCE = datetime(1970, 1, 1, tzinfo=TZ)  # a never-written input_datetime (date + time)
+NIGHT_WRITE = at(19, 29, day=-1)  # pre-cool's evening fan write
 
 
-def since_state(when):
-    when = UNSET_SINCE if when is None else when
-    return S(SINCE, when.strftime("%Y-%m-%d %H:%M:%S"),
-             {"has_date": True, "has_time": True, "timestamp": when.timestamp()}, last_changed=OLD)
-
-
-def world(*, fan="on", fan_touch=OLD, stairs="off", stairs_at=OLD, prot="off", prot_at=OLD,
-          toggle="off", toggle_at=OLD, since=None, gate="off", gate_at=OLD,
-          master_fan="on", master_touch=OLD, drop=()):
+def world(*, fan="on", on_since=OLD, touched=None, master="off", master_since=OLD, drop=()):
     states = [
-        S(KIDS_FAN, fan, {"percentage": 1, "direction": "forward"}, last_changed=fan_touch),
-        S(MASTER_FAN, master_fan, {"percentage": 1, "direction": "forward"}, last_changed=master_touch),
-        S(STAIRS, stairs, {"device_class": "motion"}, last_changed=stairs_at),
-        S(PROT, prot, {"device_class": "motion"}, last_changed=prot_at),
-        S(TOGGLE, toggle, last_changed=toggle_at),
-        since_state(since),
-        S(GATE, gate, last_changed=gate_at),
-        S(BTN_OFF, OLD.isoformat(), {"event_type": "short_release"}, last_changed=OLD),
-        S(BTN_UP, OLD.isoformat(), {"event_type": "short_release"}, last_changed=OLD),
-        S(BTN_DOWN, OLD.isoformat(), {"event_type": "short_release"}, last_changed=OLD),
+        S(KIDS_FAN, fan, {"percentage": 1, "direction": "forward"}, last_changed=on_since,
+          last_updated=touched),
+        S(MASTER_FAN, master, {"percentage": 1, "direction": "forward"}, last_changed=master_since),
     ]
     return [s for s in states if s.entity_id not in drop]
 
@@ -265,28 +203,6 @@ def world(*, fan="on", fan_touch=OLD, stairs="off", stairs_at=OLD, prot="off", p
 TICK = {"id": "tick", "idx": "0", "platform": "time_pattern"}
 HA_START = {"id": "ha_start", "idx": "1", "platform": "homeassistant", "event": "start"}
 MANUAL = {"platform": None}
-
-
-def button(trigger_id, entity, event_type, when, restored=False, from_none=False):
-    attrs = {"event_type": "short_release"}
-    if restored:
-        attrs["restored"] = True
-    frm = None if from_none else S(entity, (when - timedelta(hours=1)).isoformat(), attrs,
-                                   last_changed=when - timedelta(hours=1))
-    to = S(entity, when.isoformat(), {"event_type": event_type}, last_changed=when)
-    return {"id": trigger_id, "platform": "state", "entity_id": entity, "from_state": frm, "to_state": to}
-
-
-def toggle_flip(frm, to, when):
-    return {"id": "nap_toggle", "platform": "state", "entity_id": TOGGLE,
-            "from_state": S(TOGGLE, frm, last_changed=when - timedelta(hours=2)),
-            "to_state": S(TOGGLE, to, last_changed=when)}
-
-
-def gate_lit(when):
-    return {"id": "gate_on", "platform": "state", "entity_id": GATE,
-            "from_state": S(GATE, "off", last_changed=when - timedelta(hours=1)),
-            "to_state": S(GATE, "on", last_changed=when)}
 
 
 # --- the file-order render and a small action interpreter --------------------------------
@@ -346,45 +262,44 @@ def evaluate(bp, now, trigger=TICK, inputs=KIDS, states=None, live=None, live_no
     return ctx, calls
 
 
-def _svcs(calls, prefix=""):
-    return [c[0] for c in calls if c[0].startswith(prefix)]
+def offs(bp, now, **kw):
+    """The fan.turn_off calls of one run."""
+    _, calls = evaluate(bp, now, **kw)
+    assert all(c[0] == "fan.turn_off" for c in calls), calls
+    return calls
 
 
-def _writes(calls):
-    return [c for c in calls if not c[0].startswith("persistent_notification.")]
+OFF_KIDS = [("fan.turn_off", KIDS_FAN, {})]
+OFF_MASTER = [("fan.turn_off", MASTER_FAN, {})]
 
 
 # =========================================================================================
 # 1. Structure
 # =========================================================================================
 
-def test_metadata_v100_automation(bp):
-    assert bp["blueprint"]["name"] == "Bedroom Fan Daytime v1.0.0"
-    assert "**Version: 1.0.0**" in bp["blueprint"]["description"]
+def test_metadata_v110_automation(bp):
+    assert bp["blueprint"]["name"] == "Bedroom Fan Daytime v1.1.0"
+    assert "**Version: 1.1.0**" in bp["blueprint"]["description"]
     assert bp["blueprint"]["domain"] == "automation"
 
 
-def test_only_fan_is_required_and_every_other_input_has_a_default(bp):
+def test_inputs_fan_required_and_defaults(bp):
     inputs = bp["blueprint"]["input"]
     assert set(inputs) == INPUT_NAMES
     required = {k for k, v in inputs.items() if "default" not in (v or {})}
     assert required == {"fan"}
     for key, default in INPUT_DEFAULTS.items():
         assert inputs[key]["default"] == default, key
-    domains = {
-        "fan": ("fan", False), "activity_sensors": ("binary_sensor", True),
-        "nap_toggle": ("input_boolean", False), "nap_since_helper": ("input_datetime", False),
-        "nap_start_button": ("event", False), "nap_end_buttons": ("event", True),
-        "gate_entity": ("light", False),
-    }
-    for key, (domain, multiple) in domains.items():
-        sel = inputs[key]["selector"]["entity"]
-        assert sel.get("domain") == domain, key
-        assert bool(sel.get("multiple", False)) is multiple, key
+    fan_sel = inputs["fan"]["selector"]["entity"]
+    assert fan_sel.get("domain") == "fan" and not fan_sel.get("multiple", False)
+    assert "time" in inputs["day_start"]["selector"] and "time" in inputs["day_end"]["selector"]
+    num = inputs["max_run_minutes"]["selector"]["number"]
+    assert num["min"] == 15 and num["max"] == 600
 
 
 def test_every_input_passes_through_top_level_variables(bp):
     top = bp["variables"]
+    assert set(top) == INPUT_NAMES
     for name in INPUT_NAMES:
         assert isinstance(top.get(name), _Input) and top[name].name == name, name
 
@@ -395,76 +310,27 @@ def test_mode_queued_max_10_silent(bp):
     assert bp["max_exceeded"] == "silent"
 
 
-def test_trigger_roster_ids_and_restored_guard(bp):
+def test_triggers_tick_and_ha_start_only(bp):
     triggers = bp.get("triggers") or bp.get("trigger")
-    by_id = {t["id"]: t for t in triggers}
-    assert [t["id"] for t in triggers] == ["tick", "ha_start", "nap_toggle", "nap_start", "nap_end", "gate_on"]
     plat = lambda t: t.get("platform", t.get("trigger"))
-    assert plat(by_id["tick"]) == "time_pattern" and str(by_id["tick"]["minutes"]) == "/1"
-    assert plat(by_id["ha_start"]) == "homeassistant" and by_id["ha_start"]["event"] == "start"
-    for tid, name in (("nap_toggle", "nap_toggle"), ("nap_start", "nap_start_button"),
-                      ("nap_end", "nap_end_buttons"), ("gate_on", "gate_entity")):
-        t = by_id[tid]
-        assert plat(t) == "state", tid
-        assert isinstance(t["entity_id"], _Input) and t["entity_id"].name == name, tid
-    for tid in ("nap_toggle", "nap_start", "nap_end"):
-        assert "to" not in by_id[tid] and "from" not in by_id[tid], tid
-    assert by_id["gate_on"]["to"] == "on" and "from" not in by_id["gate_on"]
-    conditions = bp.get("conditions") or bp.get("condition")
-    assert len(conditions) == 1
-    assert _norm(_templates_of(conditions)[0]) == _norm(GLOBAL_CONDITION)
+    assert [t["id"] for t in triggers] == ["tick", "ha_start"]
+    tick, start = triggers
+    assert plat(tick) == "time_pattern" and str(tick["minutes"]) == "/1"
+    assert plat(start) == "homeassistant" and start["event"] == "start"
+    assert not any(plat(t) == "state" for t in triggers)
+    assert not (bp.get("conditions") or bp.get("condition")), "no global condition is needed"
 
 
-def _global_ok(bp, trigger):
-    conditions = bp.get("conditions") or bp.get("condition")
-    env = _strict_env(at(12), [])
-    return _truthy(env.from_string(_templates_of(conditions)[0]).render(trigger=trigger, this=THIS))
-
-
-def test_rendered_restored_guard(bp):
-    assert _global_ok(bp, TICK) and _global_ok(bp, HA_START) and _global_ok(bp, MANUAL)
-    assert _global_ok(bp, button("nap_start", BTN_OFF, "short_release", at(12, 40)))
-    assert not _global_ok(bp, button("nap_start", BTN_OFF, "short_release", at(12, 40), restored=True))
-    assert not _global_ok(bp, button("nap_end", BTN_UP, "short_release", at(12, 40), from_none=True))
-    restored_toggle = toggle_flip("off", "on", at(12, 40))
-    restored_toggle["from_state"].attributes["restored"] = True
-    assert not _global_ok(bp, restored_toggle)
-
-
-def test_fan_turn_off_is_the_only_fan_service(bp, text):
-    services = [_svc(s) for s in _service_steps(_actions(bp))]
-    assert {s for s in services if s.startswith("fan.")} == {"fan.turn_off"}
+def test_fan_turn_off_is_the_only_service(bp, text):
+    steps = _service_steps(_actions(bp))
+    assert [_svc(s) for s in steps] == ["fan.turn_off"], "exactly one service step: fan.turn_off"
+    step = steps[0]
+    assert _norm(_target(step)) == "{{ fan }}"
+    assert step.get("continue_on_error") is True
     raw = set(re.findall(r"\bfan\.(turn_on|turn_off|toggle|set_[a-z_]+|increase_speed|decrease_speed|oscillate)\b", text))
     assert raw == {"turn_off"}, raw
-    off_steps = [s for s in _service_steps(_actions(bp)) if _svc(s) == "fan.turn_off"]
-    assert len(off_steps) == 1
-    step = off_steps[0]
-    target = _target(step)
-    assert _norm(target) == "{{ fan }}" or (isinstance(target, _Input) and target.name == "fan")
-    assert step.get("continue_on_error") is True
-
-
-def test_service_allowlist(bp, text):
-    services = {_svc(s) for s in _service_steps(_actions(bp))}
-    assert services == ALLOWED_SERVICES
-    assert not re.search(r"\b(homeassistant|script|automation)\.[a-z_]+", text)
-    for s in _service_steps(_actions(bp)):
-        svc = _svc(s)
-        if svc.startswith("input_boolean."):
-            assert _norm(_target(s)) == "{{ nap_toggle }}", s
-        if svc.startswith("input_datetime."):
-            assert _norm(_target(s)) == "{{ nap_since_helper }}", s
-
-
-def test_helper_writes_target_only_the_nap_helpers(bp, text):
-    helper_steps = [s for s in _service_steps(_actions(bp))
-                    if _svc(s).split(".")[0] in ("input_boolean", "input_datetime")]
-    assert {_svc(s) for s in helper_steps} == {
-        "input_boolean.turn_on", "input_boolean.turn_off", "input_datetime.set_datetime"}
-    for s in helper_steps:
-        assert _norm(_target(s)) in ("{{ nap_toggle }}", "{{ nap_since_helper }}"), s
-    # no literal helper entity anywhere in the blueprint (R1-09)
-    assert not re.search(r"\binput_(boolean|datetime|number|select|text)\.(?!turn_on\b|turn_off\b|set_datetime\b)[a-z0-9_]+", text)
+    assert len(re.findall(r"fan\.turn_on|set_direction|set_percentage", text)) == 0
+    assert not re.search(r"\b(homeassistant|script|automation|input_[a-z]+|persistent_notification|notify)\.[a-z_]+", text)
 
 
 def test_no_wait_delay_repeat_or_wait_for_trigger(bp, text):
@@ -473,490 +339,202 @@ def test_no_wait_delay_repeat_or_wait_for_trigger(bp, text):
     assert not re.search(r"^\s*-?\s*(wait_template|delay|wait_for_trigger|repeat)\s*:", text, re.M)
 
 
-def _fan_option(bp):
-    for step in _actions(bp):
-        for opt in (step.get("choose") or []) if isinstance(step, dict) else []:
-            if any(_svc(s) == "fan.turn_off" for s in _service_steps(opt["sequence"])):
-                return opt
-    raise AssertionError("no choose option issues fan.turn_off")
+def test_action_is_variables_then_one_choose(bp):
+    acts = _actions(bp)
+    assert len(acts) == 2
+    assert "variables" in acts[0]
+    step = acts[1]
+    assert set(step) == {"choose"}, step
+    assert len(step["choose"]) == 1 and not step.get("default")
 
 
 def test_turn_off_branch_rechecks_live_state(bp):
-    opt = _fan_option(bp)
+    opt = _actions(bp)[1]["choose"][0]
     cond = _norm(" and ".join(_templates_of(opt["conditions"])))
-    assert "off_due" in cond
+    assert cond.startswith("{{ off_due and"), cond
     assert "is_state(fan, 'on')" in cond
-    # rendered: the snapshot says off_due; the live state decides
-    base = dict(fan="on", stairs_at=at(10, 0))
-    ctx, calls = evaluate(bp, at(13, 0), **base)
-    assert ctx["off_due"] is True and _svcs(calls, "fan.") == ["fan.turn_off"]
-    _, calls = evaluate(bp, at(13, 0), live=world(**{**base, "fan": "off"}), **base)
-    assert _svcs(calls, "fan.") == [], "the fan went off meanwhile"
-    _, calls = evaluate(bp, at(13, 0), live=world(**{**base, "stairs": "on"}), **base)
-    assert _svcs(calls, "fan.") == [], "somebody came upstairs meanwhile"
-    _, calls = evaluate(bp, at(13, 0), live=world(**{**base, "prot": "on"}), **base)
-    assert _svcs(calls, "fan.") == [], "the kids-room PIR fired meanwhile"
+    assert "as_timestamp(now())" in cond
 
 
-def test_nap_start_writes_since_before_toggle(bp):
-    idx = _top_step_with_service(bp, "input_boolean.turn_on")
-    seq = _service_steps(_actions(bp)[idx])
-    names = [_svc(s) for s in seq]
-    assert names.index("input_datetime.set_datetime") < names.index("input_boolean.turn_on")
-    set_step = seq[names.index("input_datetime.set_datetime")]
-    assert _norm(set_step["data"]["timestamp"]) == "{{ now_ts }}"
+HA_GLOBALS = {"now", "states", "is_state", "as_timestamp", "today_at"}
 
 
-def test_nap_lifecycle_steps_precede_the_fan_step(bp):
-    acts = _actions(bp)
-    assert "variables" in acts[0]
-    start = _top_step_with_service(bp, "input_boolean.turn_on")
-    fallback = _top_step_with_service(bp, "input_datetime.set_datetime", "timestamp", "{{ effective_since_ts }}")
-    end = _top_step_with_service(bp, "input_boolean.turn_off")
-    fan = _top_step_with_service(bp, "fan.turn_off")
-    notice = _top_step_with_service(bp, "persistent_notification.create")
-    assert 0 < start < fallback < end < fan < notice
-
-
-def _gate_of(bp, idx):
-    step = _actions(bp)[idx]
-    assert "choose" in step and len(step["choose"]) == 1 and not step.get("default"), step
-    return [_norm(t) for t in _templates_of(step["choose"][0]["conditions"])]
-
-
-def test_each_action_step_is_gated_on_its_predicate(bp):
-    assert _gate_of(bp, _top_step_with_service(bp, "input_boolean.turn_on")) == ["{{ nap_start_due }}"]
-    assert _gate_of(bp, _top_step_with_service(
-        bp, "input_datetime.set_datetime", "timestamp", "{{ effective_since_ts }}")) == ["{{ since_fallback_due }}"]
-    assert _gate_of(bp, _top_step_with_service(bp, "input_boolean.turn_off")) == ["{{ nap_end_due }}"]
-    fan_cond = _norm(" and ".join(_gate_of(bp, _top_step_with_service(bp, "fan.turn_off"))))
-    assert fan_cond.startswith("{{ off_due and"), fan_cond
-
-
-HA_GLOBALS = {"now", "states", "is_state", "state_attr", "expand", "as_timestamp", "today_at", "namespace"}
-
-
-def test_variables_step_defines_every_name_before_use(bp):
-    """Design delta-2 R1-01: each key may use only inputs, trigger/this, HA globals and keys
-    defined ABOVE it in the same step."""
+def test_variables_step_order_and_names_defined_before_use(bp):
+    assert list(_vars_step(bp)) == VAR_ORDER
     known = set(INPUT_NAMES) | {"trigger", "this"} | HA_GLOBALS
     env = Environment()
     for name, tmpl in _vars_step(bp).items():
         used = meta.find_undeclared_variables(env.parse(str(tmpl)))
         assert used <= known, f"{name} uses {sorted(used - known)} before definition"
         known.add(name)
-    order = list(_vars_step(bp))
-    assert order[0] == "is_real_trigger"
-    for a, b in [("trig_to", "gesture"), ("gesture", "since_fallback_due"),
-                 ("since_fallback_due", "effective_since_ts"), ("effective_since_ts", "nap_stale"),
-                 ("effective_since_ts", "nap_cap"), ("nap_stale", "nap_end_due"), ("nap_cap", "nap_end_due"),
-                 ("nap_forced", "nap_end_due"), ("nap_start_due", "exempt"), ("exempt", "off_due"),
-                 ("vacant", "off_due")]:
-        assert order.index(a) < order.index(b), (a, b)
-
-
-def test_trigger_to_state_only_through_the_trig_to_guard(bp, text):
-    vars_ = _vars_step(bp)
-    for name, tmpl in vars_.items():
-        if name != "trig_to":
-            assert "trigger.to_state" not in str(tmpl), name
-    assert text.count("trigger.to_state") == str(vars_["trig_to"]).count("trigger.to_state")
-    assert ("trigger is defined and trigger.to_state is defined and trigger.to_state is not none"
-            in _norm(vars_["trig_to"]))
-
-
-def test_rendered_full_action_sequence(bp):
-    # R1-01/R2-01: a dashboard off->on at 16:00 with since 11:00 writes since = 16:00 and does
-    # NOT end the nap in the same run (the stale since would otherwise trip the cap)
-    t = at(16, 0, 1)
-    ctx, calls = evaluate(bp, t, trigger=toggle_flip("off", "on", at(16, 0)),
-                          toggle="on", toggle_at=at(16, 0), since=at(11, 0))
-    assert ctx["since_fallback_due"] is True
-    assert ctx["effective_since_ts"] == at(16, 0).timestamp()
-    assert ctx["nap_cap"] is False and ctx["nap_end_due"] is False
-    assert _writes(calls) == [("input_datetime.set_datetime", SINCE, {"timestamp": at(16, 0).timestamp()})]
-    # a fresh helper (never written, 1970) behaves the same
-    ctx, calls = evaluate(bp, t, trigger=toggle_flip("off", "on", at(16, 0)),
-                          toggle="on", toggle_at=at(16, 0), since=None)
-    assert ctx["nap_end_due"] is False
-    assert _writes(calls) == [("input_datetime.set_datetime", SINCE, {"timestamp": at(16, 0).timestamp()})]
-    # R1-02: a tick (no trigger.to_state), ha_start and a manual Run render without error
-    for trig in (TICK, HA_START, MANUAL):
-        ctx, _ = evaluate(bp, at(13, 0), trigger=trig)
-        assert ctx["trig_to"] is None and ctx["gesture"] == ""
-    assert evaluate(bp, at(13, 0))[0]["is_real_trigger"] is True
-    assert evaluate(bp, at(13, 0), trigger=HA_START)[0]["is_real_trigger"] is False
-    assert evaluate(bp, at(13, 0), trigger=MANUAL)[0]["is_real_trigger"] is False
-
-
-def test_config_notice_fixed_id_state_driven(bp):
-    create = [s for s in _service_steps(_actions(bp)) if _svc(s) == "persistent_notification.create"]
-    dismiss = [s for s in _service_steps(_actions(bp)) if _svc(s) == "persistent_notification.dismiss"]
-    assert len(create) == 1 and len(dismiss) == 1
-    assert _norm(create[0]["data"]["notification_id"]) == NOTICE_ID
-    assert _norm(dismiss[0]["data"]["notification_id"]) == NOTICE_ID
-    rendered_id = "bedroom_fan_daytime_config_automation_kids_room_fan_daytime_v1_0_0"
-
-    def notices(calls):
-        return [(c[0], c[2].get("notification_id")) for c in calls if c[0].startswith("persistent_notification.")]
-
-    bad = {**KIDS, "nap_since_helper": []}
-    _, calls = evaluate(bp, at(13, 0), inputs=bad)
-    assert notices(calls) == [("persistent_notification.create", rendered_id)]
-    _, calls = evaluate(bp, at(13, 0))
-    assert notices(calls) == [("persistent_notification.dismiss", rendered_id)]
-    _, calls = evaluate(bp, at(13, 0), inputs={**bad, "enable_notifications": False})
-    assert notices(calls) == [("persistent_notification.dismiss", rendered_id)]
-    # decided by the worker (recorded): ha_start / manual Run and the night write nothing at all
-    for trig in (HA_START, MANUAL):
-        _, calls = evaluate(bp, at(13, 0), trigger=trig, inputs=bad)
-        assert calls == [], trig
-    _, calls = evaluate(bp, at(20, 0), inputs=bad)
-    assert calls == []
 
 
 def test_instants_are_timestamps(text, bp):
-    offenders = re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\.strftime\(", text)
-    assert offenders == [], offenders
+    assert not re.search(r"\.strftime\(", text)
     assert not re.search(r"\b\w+_dt\b", text), "datetime-typed variables must not cross steps"
     assert "as_timestamp(today_at(day_start))" in _norm(_var_template(bp, "day_start_ts"))
     assert "as_timestamp(today_at(day_end))" in _norm(_var_template(bp, "day_end_ts"))
-    assert re.search(r"state_attr\(\s*\w+\s*,\s*'timestamp'\s*\)\s*\|\s*float\(0\)", _var_template(bp, "since_ts"))
-    assert "as_timestamp(states(" not in text
+    assert "last_changed" in _var_template(bp, "on_since_ts")
+    assert "last_updated" not in text
+    assert "trigger.to_state" not in text and "trigger.from_state" not in text
+
+
+def test_every_variable_renders_to_a_plain_literal(bp):
+    """No State object (or datetime) is stored in a variable: each key re-parses to a
+    bool, a number or a short string."""
+    for kw in (dict(), dict(fan="off"), dict(fan="unavailable"), dict(drop=(KIDS_FAN,))):
+        for trig in (TICK, HA_START, MANUAL):
+            ctx, _ = evaluate(bp, at(12, 0), trigger=trig, **kw)
+            for name in VAR_ORDER:
+                assert isinstance(ctx[name], (bool, int, float, str)), (name, ctx[name], kw)
+            assert isinstance(ctx["fan_state"], str) and isinstance(ctx["on_since_ts"], (int, float))
+            for name in ("is_real_trigger", "in_day", "fan_on", "from_night", "run_expired", "off_due"):
+                assert isinstance(ctx[name], bool), (name, ctx[name])
 
 
 # =========================================================================================
-# 2. Rendered behaviour
+# 2. Rendered behaviour — acceptance examples
 # =========================================================================================
 
-def test_rendered_day_window(bp):
-    for t, inside in ((at(7, 59), False), (at(8, 0), True), (at(17, 59), True), (at(18, 0), False)):
-        ctx, _ = evaluate(bp, t)
-        assert ctx["in_day"] is inside, t
-        assert ctx["wrap_ts"] == at(17, 55).timestamp()
-    # ex 8: no fan command 18:00-08:00 even with a running fan in an empty upstairs
-    for t in (at(18, 0), at(19, 29), at(23, 0), at(3, 0), at(7, 59)):
-        _, calls = evaluate(bp, t, fan="on", fan_touch=at(0, 0, day=-1) if t.hour < 8 else at(12, 0))
-        assert _svcs(calls, "fan.") == [], t
+def test_predicates_rendered(bp):
+    ctx, _ = evaluate(bp, at(12, 0), on_since=at(10, 0))
+    assert ctx["is_real_trigger"] is True
+    assert ctx["now_ts"] == at(12, 0).timestamp()
+    assert ctx["day_start_ts"] == at(8, 0).timestamp()
+    assert ctx["day_end_ts"] == at(18, 0).timestamp()
+    assert ctx["in_day"] is True
+    assert ctx["fan_state"] == "on" and ctx["fan_on"] is True
+    assert ctx["on_since_ts"] == at(10, 0).timestamp()
+    assert ctx["from_night"] is False and ctx["run_expired"] is True and ctx["off_due"] is True
+    for t, inside in ((at(7, 59, 59), False), (at(8, 0), True), (at(17, 59, 59), True), (at(18, 0), False)):
+        assert evaluate(bp, t)[0]["in_day"] is inside, t
 
 
-def test_rendered_activity_and_vacancy(bp):
-    night_write = at(19, 29, day=-1)
-    # ex 1: morning sweep, both instances
-    ctx, calls = evaluate(bp, at(8, 0), fan_touch=night_write, stairs_at=at(7, 40), prot_at=at(2, 0))
-    assert ctx["vacant"] is True and ctx["off_due"] is True
-    assert [c for c in calls if c[0] == "fan.turn_off"] == [("fan.turn_off", KIDS_FAN, {})]
-    _, calls = evaluate(bp, at(8, 0), inputs=MASTER, master_touch=night_write, stairs_at=at(7, 40))
-    assert [c for c in calls if c[0] == "fan.turn_off"] == [("fan.turn_off", MASTER_FAN, {})]
-    # ex 2: occupied morning
-    for t, off in ((at(8, 0), False), (at(8, 17), False), (at(8, 18), True)):
-        _, calls = evaluate(bp, t, fan_touch=night_write, stairs_at=at(7, 58))
-        assert (_svcs(calls, "fan.") == ["fan.turn_off"]) is off, t
-    # a sensor reading on is occupied now, however old its last change
-    ctx, calls = evaluate(bp, at(12, 0), stairs="on", stairs_at=at(9, 0))
-    assert ctx["occupied_now"] is True and ctx["vacant"] is False and _svcs(calls, "fan.") == []
-    # ex 3: hand-started master fan; its own change is activity
-    for t, off in ((at(14, 19), False), (at(14, 20), True)):
-        _, calls = evaluate(bp, t, inputs=MASTER, master_touch=at(14, 0), stairs_at=at(10, 0))
-        assert (_svcs(calls, "fan.") == ["fan.turn_off"]) is off, t
-    for t, off in ((at(14, 40), False), (at(14, 41), True)):
-        _, calls = evaluate(bp, t, inputs=MASTER, master_touch=at(14, 21), stairs_at=at(10, 0))
-        assert (_svcs(calls, "fan.") == ["fan.turn_off"]) is off, t
-    # ex 10: an availability flap delays the off
-    ctx, calls = evaluate(bp, at(8, 22), fan="unavailable", fan_touch=at(8, 21), stairs_at=at(7, 0))
-    assert ctx["fan_avail"] is False and _svcs(calls, "fan.") == []
-    for t, off in ((at(8, 42), False), (at(8, 43), True)):
-        _, calls = evaluate(bp, t, fan_touch=at(8, 23), stairs_at=at(7, 0))
-        assert (_svcs(calls, "fan.") == ["fan.turn_off"]) is off, t
-    # ex 11: the season flip restarts the fan (13:00:04) -> activity
-    for t, off in ((at(13, 20), False), (at(13, 20, 4), True)):
-        _, calls = evaluate(bp, t, fan_touch=at(13, 0, 4), stairs_at=at(9, 0))
-        assert (_svcs(calls, "fan.") == ["fan.turn_off"]) is off, t
-    # an absent sensor contributes 0 (the others still count)
-    ctx, _ = evaluate(bp, at(12, 0), stairs_at=at(11, 0), drop=(PROT,))
-    assert ctx["sensor_ts"] == at(11, 0).timestamp()
-    # ex 15: an unavailable sensor contributes the instant it dropped; the fan goes off
-    ctx, calls = evaluate(bp, at(9, 20), stairs="unavailable", stairs_at=at(9, 0), prot_at=at(2, 0))
-    assert ctx["sensor_ts"] == at(9, 0).timestamp() and ctx["occupied_now"] is False
-    assert _svcs(calls, "fan.") == ["fan.turn_off"]
-    _, calls = evaluate(bp, at(9, 19), stairs="unavailable", stairs_at=at(9, 0), prot_at=at(2, 0))
-    assert _svcs(calls, "fan.") == []
-    # activity_ts is the latest of the sensors, the fan touch and the toggle change
-    ctx, _ = evaluate(bp, at(12, 0), stairs_at=at(9, 0), fan_touch=at(10, 0), toggle_at=at(11, 0))
-    assert ctx["activity_ts"] == at(11, 0).timestamp()
+def test_ex1_night_fan_off_at_0800(bp):
+    assert offs(bp, at(8, 0), on_since=NIGHT_WRITE) == OFF_KIDS
+    ctx, calls = evaluate(bp, at(7, 59), on_since=NIGHT_WRITE)
+    assert ctx["off_due"] is False and calls == []
+    ctx, _ = evaluate(bp, at(8, 0), on_since=NIGHT_WRITE)
+    assert ctx["from_night"] is True
 
 
-def test_rendered_exempt_and_off_due(bp):
-    # ex 4: nap on -> the running fan is left exactly as it is
-    nap = dict(toggle="on", toggle_at=at(12, 40), since=at(12, 40), stairs_at=at(12, 41))
-    ctx, calls = evaluate(bp, at(13, 30), **nap)
-    assert ctx["nap_on"] is True and ctx["exempt"] is True and ctx["off_due"] is False
-    assert _svcs(calls, "fan.") == []
-    # ex 5: a parent's hold during the nap (fan touched 13:00) -> still left alone
-    _, calls = evaluate(bp, at(13, 30), fan_touch=at(13, 0), **nap)
-    assert _svcs(calls, "fan.") == []
-    # ex 4/5: after the nap end at 14:30 the toggle change is activity -> off at 14:50
-    for t, off in ((at(14, 49), False), (at(14, 50), True)):
-        _, calls = evaluate(bp, t, fan_touch=at(13, 0), toggle="off", toggle_at=at(14, 30),
-                            since=at(12, 40), stairs_at=at(12, 41))
-        assert (_svcs(calls, "fan.") == ["fan.turn_off"]) is off, t
-    # ex 8 (R1-03): a stale toggle at the 08:00 tick does not exempt; nap end AND fan off
-    ctx, calls = evaluate(bp, at(8, 0), toggle="on", toggle_at=at(19, 0, day=-1), since=at(19, 0, day=-1),
-                          fan_touch=at(19, 29, day=-1), stairs_at=at(7, 40), prot_at=at(2, 0))
-    assert ctx["nap_stale"] is True and ctx["exempt"] is False and ctx["off_due"] is True
-    assert _svcs(_writes(calls)) == ["input_boolean.turn_off", "fan.turn_off"]
-    # ex 12: the cap ends the nap; the fan is still exempt in that run
-    ctx, calls = evaluate(bp, at(15, 30), toggle="on", toggle_at=at(12, 30), since=at(12, 30), stairs_at=at(12, 0))
-    assert ctx["nap_cap"] is True and ctx["exempt"] is True
-    assert _svcs(_writes(calls)) == ["input_boolean.turn_off"]
-    # ex 16: a nap-helper error disables the exemption; the off proceeds
-    ctx, calls = evaluate(bp, at(13, 30), inputs={**KIDS, "nap_since_helper": []}, **nap)
-    assert ctx["has_nap"] is False and ctx["exempt"] is False and ctx["off_due"] is True
-    assert _svcs(calls, "fan.") == ["fan.turn_off"]
-    # fan unavailable / unknown -> no command
-    for st in ("unavailable", "unknown"):
-        ctx, calls = evaluate(bp, at(13, 0), fan=st, stairs_at=at(9, 0))
-        assert ctx["off_due"] is False and _svcs(calls, "fan.") == [], st
-    # fan already off -> no command
-    ctx, calls = evaluate(bp, at(13, 0), fan="off", stairs_at=at(9, 0))
-    assert ctx["off_due"] is False and _svcs(calls, "fan.") == []
-    # not a real trigger -> no command, no write of any kind
+def test_ex2_fan_on_0750_is_from_night(bp):
+    ctx, calls = evaluate(bp, at(8, 0), on_since=at(7, 50))
+    assert ctx["from_night"] is True and ctx["run_expired"] is False
+    assert calls == OFF_KIDS
+    # a fan turned on exactly at 08:00 is a day run: off two hours later
+    assert offs(bp, at(8, 1), on_since=at(8, 0)) == []
+    assert offs(bp, at(9, 59), on_since=at(8, 0)) == []
+    assert offs(bp, at(10, 0), on_since=at(8, 0)) == OFF_KIDS
+
+
+def test_ex3_day_run_off_after_two_hours(bp):
+    for t in (at(10, 1), at(11, 0), at(11, 59), at(11, 59, 59)):
+        assert offs(bp, t, on_since=at(10, 0)) == [], t
+    assert offs(bp, at(12, 0), on_since=at(10, 0)) == OFF_KIDS
+    # a later tick still switches it off (e.g. the 12:00 command did not land)
+    assert offs(bp, at(12, 5), on_since=at(10, 0)) == OFF_KIDS
+
+
+def test_ex4_late_start_runs_into_the_evening(bp):
+    assert offs(bp, at(17, 59), on_since=at(16, 30)) == []
+    for t in (at(18, 0), at(18, 29), at(18, 30), at(19, 29), at(23, 59), at(3, 0, day=1), at(7, 59, day=1)):
+        ctx, calls = evaluate(bp, t, on_since=at(16, 30))
+        assert ctx["off_due"] is False and calls == [], t
+    # the next morning it is a night fan: off at 08:00
+    assert offs(bp, at(8, 0, day=1), on_since=at(16, 30)) == OFF_KIDS
+
+
+def test_ex5_speed_change_does_not_restart_or_trigger(bp):
+    # on 17:00, speed changed 17:30 (last_updated moves, last_changed does not)
+    for t in (at(17, 30), at(17, 59)):
+        assert offs(bp, t, on_since=at(17, 0), touched=at(17, 30)) == [], t
+    ctx, _ = evaluate(bp, at(17, 59), on_since=at(17, 0), touched=at(17, 30))
+    assert ctx["on_since_ts"] == at(17, 0).timestamp()
+    # the 2 h counts from the switch-on, not from the speed change
+    assert offs(bp, at(12, 0), on_since=at(10, 0), touched=at(11, 30)) == OFF_KIDS
+
+
+def test_ex6_cutoff_resume_restarts_the_run(bp):
+    # on 10:00, cutoff off 11:00 (fan reads off -> nothing), resume 11:03
+    assert offs(bp, at(11, 1), fan="off", on_since=at(11, 0)) == []
+    assert offs(bp, at(12, 0), on_since=at(11, 3)) == []
+    assert offs(bp, at(13, 2), on_since=at(11, 3)) == []
+    assert offs(bp, at(13, 3), on_since=at(11, 3)) == OFF_KIDS
+
+
+def test_ex7_tuya_flap_only_delays(bp):
+    ctx, calls = evaluate(bp, at(10, 31), fan="unavailable", on_since=at(10, 30))
+    assert ctx["fan_on"] is False and calls == []
+    assert offs(bp, at(12, 31), on_since=at(10, 32)) == []
+    assert offs(bp, at(12, 32), on_since=at(10, 32)) == OFF_KIDS
+
+
+def test_ex8_off_unavailable_unknown_absent_issue_nothing(bp):
+    for st in ("off", "unavailable", "unknown"):
+        for t in (at(8, 0), at(12, 0), at(17, 59)):
+            ctx, calls = evaluate(bp, t, fan=st, on_since=NIGHT_WRITE)
+            assert ctx["fan_on"] is False and ctx["off_due"] is False and calls == [], (st, t)
+            assert ctx["fan_state"] == st
+    ctx, calls = evaluate(bp, at(12, 0), drop=(KIDS_FAN,))
+    assert ctx["fan_state"] == "absent" and ctx["fan_on"] is False and ctx["on_since_ts"] == 0
+    assert ctx["off_due"] is False and calls == []
+
+
+def test_ex9_ha_start_and_manual_run_issue_nothing(bp):
     for trig in (HA_START, MANUAL):
-        ctx, calls = evaluate(bp, at(13, 0), trigger=trig, stairs_at=at(9, 0))
-        assert ctx["is_real_trigger"] is False and ctx["off_due"] is False and calls == [], trig
+        for kw in (dict(on_since=NIGHT_WRITE), dict(on_since=at(9, 0))):
+            ctx, calls = evaluate(bp, at(12, 0), trigger=trig, **kw)
+            assert ctx["is_real_trigger"] is False and ctx["off_due"] is False, trig
+            assert ctx["in_day"] is True and ctx["fan_on"] is True
+            assert ctx["from_night"] or ctx["run_expired"]
+            assert calls == [], trig
+    assert evaluate(bp, at(12, 0), on_since=at(9, 0))[0]["is_real_trigger"] is True
+    # a trigger with an unexpected id is not a real trigger either
+    other = {"id": "something_else", "platform": "event"}
+    assert evaluate(bp, at(12, 0), trigger=other, on_since=at(9, 0))[1] == []
 
 
-def test_rendered_nap_start(bp):
-    def press(ev, t=at(12, 40)):
-        return button("nap_start", BTN_OFF, ev, t)
-
-    # ex 4: Off tap with the gate lit -> since = now, then toggle on; the fan is untouched
-    ctx, calls = evaluate(bp, at(12, 40), trigger=press("short_release"), gate="on", stairs_at=at(12, 39))
-    assert ctx["nap_start_due"] is True and ctx["exempt"] is True
-    assert _writes(calls) == [("input_datetime.set_datetime", SINCE, {"timestamp": at(12, 40).timestamp()}),
-                              ("input_boolean.turn_on", TOGGLE, {})]
-    # the fan is never started or changed: the same run with a vacant room and a running fan
-    _, calls = evaluate(bp, at(12, 40), trigger=press("short_release"), gate="on", stairs_at=at(9, 0),
-                        fan="on", fan_touch=at(9, 0))
-    assert _svcs(calls, "fan.") == []
-    # ex 20 and the negatives
-    negatives = [
-        dict(trigger=press("initial_press"), gate="on"),
-        dict(trigger=press("long_press"), gate="on"),
-        dict(trigger=press("short_release"), gate="off"),
-        dict(trigger=press("short_release", at(7, 50)), gate="on", now=at(7, 50)),
-        dict(trigger=press("short_release", at(17, 55)), gate="on", now=at(17, 55)),
-        dict(trigger=press("short_release"), gate="on", toggle="on", toggle_at=at(12, 0), since=at(12, 0)),
-        dict(trigger=press("short_release"), gate="on", inputs={**KIDS, "nap_toggle": []}),
-        dict(trigger=press("short_release"), gate="on", inputs=MASTER),
-    ]
-    for case in negatives:
-        now = case.pop("now", at(12, 40))
-        ctx, calls = evaluate(bp, now, stairs_at=now - timedelta(minutes=1), **case)
-        assert ctx["nap_start_due"] is False, case
-        assert not any(c[0] in ("input_datetime.set_datetime", "input_boolean.turn_on") for c in calls), case
-    # 17:54 is still a valid start (wrap is 17:55)
-    ctx, _ = evaluate(bp, at(17, 54), trigger=press("short_release", at(17, 54)), gate="on", stairs_at=at(17, 53))
-    assert ctx["nap_start_due"] is True
-    # N's own start: the toggle transition that follows finds since within 60 s -> no rewrite
-    ctx, calls = evaluate(bp, at(12, 40, 2), trigger=toggle_flip("off", "on", at(12, 40, 1)),
-                          toggle="on", toggle_at=at(12, 40, 1), since=at(12, 40), gate="on")
-    assert ctx["since_fallback_due"] is False and _writes(calls) == []
+def test_ex10_live_recheck(bp):
+    base = dict(on_since=at(9, 0))
+    ctx, calls = evaluate(bp, at(12, 0), **base)
+    assert ctx["off_due"] is True and calls == OFF_KIDS
+    for st in ("off", "unavailable", "unknown"):
+        _, calls = evaluate(bp, at(12, 0), live=world(fan=st, on_since=at(11, 59)), **base)
+        assert calls == [], f"the fan read {st} meanwhile"
+    _, calls = evaluate(bp, at(12, 0), live=world(drop=(KIDS_FAN,)), **base)
+    assert calls == [], "the fan left the state machine meanwhile"
+    ctx, calls = evaluate(bp, at(17, 59), live_now=at(18, 0, 30), **base)
+    assert ctx["off_due"] is True and calls == [], "the live clock crossed 18:00"
+    ctx, calls = evaluate(bp, at(17, 59, 59), live_now=at(18, 0), **base)
+    assert calls == [], "18:00 itself is outside the window"
 
 
-def test_rendered_nap_end(bp):
-    nap = dict(toggle="on", toggle_at=at(12, 40), since=at(12, 40), stairs_at=at(14, 29))
-
-    def up(ev="short_release", ent=BTN_UP):
-        return button("nap_end", ent, ev, at(14, 30))
-
-    # ex 4: + short_release with the gate dark -> toggle off only
-    ctx, calls = evaluate(bp, at(14, 30), trigger=up(), gate="off", **nap)
-    assert ctx["nap_end_due"] is True
-    assert _writes(calls) == [("input_boolean.turn_off", TOGGLE, {})]
-    ctx, _ = evaluate(bp, at(14, 30), trigger=up(ent=BTN_DOWN), gate="off", **nap)
-    assert ctx["nap_end_due"] is True
-    # + short_release with the gate lit -> no end; other gestures -> no end
-    ctx, _ = evaluate(bp, at(14, 30), trigger=up(), gate="on", **nap)
-    assert ctx["nap_end_due"] is False
-    for ev in ("initial_press", "long_press", "repeat", "long_release"):
-        ctx, _ = evaluate(bp, at(14, 30), trigger=up(ev), gate="off", **nap)
-        assert ctx["nap_end_due"] is False, ev
-    # the gate turning on ends it
-    ctx, calls = evaluate(bp, at(14, 30), trigger=gate_lit(at(14, 30)), gate="on", **nap)
-    assert ctx["nap_end_due"] is True and _svcs(_writes(calls)) == ["input_boolean.turn_off"]
-    # ex 12: cap boundary (since 12:30, 3 h)
-    capped = dict(toggle="on", toggle_at=at(12, 30), since=at(12, 30), stairs_at=at(12, 0))
-    assert evaluate(bp, at(15, 29), **capped)[0]["nap_end_due"] is False
-    assert evaluate(bp, at(15, 30), **capped)[0]["nap_end_due"] is True
-    # ex 12: forced end at 17:55 (since 15:10)
-    forced = dict(toggle="on", toggle_at=at(15, 10), since=at(15, 10), stairs_at=at(15, 0))
-    ctx, _ = evaluate(bp, at(17, 54), **forced)
-    assert ctx["nap_forced"] is False and ctx["nap_end_due"] is False
-    ctx, calls = evaluate(bp, at(17, 55), **forced)
-    assert ctx["nap_forced"] is True and ctx["nap_end_due"] is True
-    assert _svcs(_writes(calls)) == ["input_boolean.turn_off"]
-    # ex 8: stale since (yesterday 19:00) at 08:00 -> end
-    ctx, _ = evaluate(bp, at(8, 0), toggle="on", toggle_at=at(19, 0, day=-1), since=at(19, 0, day=-1))
-    assert ctx["nap_stale"] is True and ctx["nap_end_due"] is True
-    # since unset (helper present, never written) -> end at the first real tick, not at ha_start
-    ctx, calls = evaluate(bp, at(13, 0), toggle="on", toggle_at=at(12, 59), since=None)
-    assert ctx["nap_end_due"] is True and "input_boolean.turn_off" in _svcs(calls)
-    ctx, calls = evaluate(bp, at(13, 0), trigger=HA_START, toggle="on", toggle_at=at(12, 59), since=None)
-    assert ctx["nap_end_due"] is False and calls == []
-    # at 03:00 a since of 23:30 is not stale (the 08:00 boundary is today's)
-    ctx, _ = evaluate(bp, at(3, 0), toggle="on", toggle_at=at(23, 30, day=-1), since=at(23, 30, day=-1))
-    assert ctx["nap_stale"] is False
-    ctx, _ = evaluate(bp, at(2, 0), toggle="on", toggle_at=at(23, 30, day=-1), since=at(23, 30, day=-1))
-    assert ctx["nap_end_due"] is False
-    # ex 8: a toggle switched on at 19:00 -> no fan writes, cap off at 22:00
-    evening = dict(toggle="on", toggle_at=at(19, 0), since=at(19, 0), fan="on", fan_touch=at(12, 0),
-                   stairs_at=at(12, 0))
-    ctx, calls = evaluate(bp, at(21, 59), **evening)
-    assert ctx["nap_end_due"] is False and _writes(calls) == []
-    ctx, calls = evaluate(bp, at(22, 0), **evening)
-    assert _writes(calls) == [("input_boolean.turn_off", TOGGLE, {})]
-    # no toggle on -> never an end
-    ctx, calls = evaluate(bp, at(14, 30), trigger=up(), gate="off", stairs_at=at(14, 29))
-    assert ctx["nap_end_due"] is False and _writes(calls) == []
+def test_ex11_instances_independent(bp):
+    # kids day run expired, master off -> only the kids fan
+    kw = dict(fan="on", on_since=at(10, 0), master="off", master_since=at(10, 0))
+    assert offs(bp, at(12, 0), inputs=KIDS, **kw) == OFF_KIDS
+    assert offs(bp, at(12, 0), inputs=MASTER, **kw) == []
+    # master run expired, kids started later -> only the master fan
+    kw = dict(fan="on", on_since=at(11, 0), master="on", master_since=at(10, 0))
+    assert offs(bp, at(12, 0), inputs=KIDS, **kw) == []
+    assert offs(bp, at(12, 0), inputs=MASTER, **kw) == OFF_MASTER
+    # both night fans at 08:00, each instance switches only its own
+    kw = dict(fan="on", on_since=NIGHT_WRITE, master="on", master_since=NIGHT_WRITE)
+    assert offs(bp, at(8, 0), inputs=KIDS, **kw) == OFF_KIDS
+    assert offs(bp, at(8, 0), inputs=MASTER, **kw) == OFF_MASTER
+    # the master fan absent does not affect the kids instance
+    assert offs(bp, at(12, 0), inputs=KIDS, on_since=at(10, 0), drop=(MASTER_FAN,)) == OFF_KIDS
 
 
-def test_rendered_since_fallback(bp):
-    # ex 18: a dashboard flip on at 16:00 with since from an earlier nap -> since = 16:00
-    flip = toggle_flip("off", "on", at(16, 0))
-    ctx, calls = evaluate(bp, at(16, 0, 1), trigger=flip, toggle="on", toggle_at=at(16, 0), since=at(11, 0))
-    assert ctx["since_fallback_due"] is True
-    assert _writes(calls) == [("input_datetime.set_datetime", SINCE, {"timestamp": at(16, 0).timestamp()})]
-    # since within 60 s of the flip -> no write
-    ctx, calls = evaluate(bp, at(16, 0, 1), trigger=flip, toggle="on", toggle_at=at(16, 0), since=at(15, 59, 30))
-    assert ctx["since_fallback_due"] is False and _writes(calls) == []
-    # the forced end comes first (17:55 < 19:00 cap) from the persisted 16:00
-    ctx, _ = evaluate(bp, at(17, 55), toggle="on", toggle_at=at(16, 0), since=at(16, 0), stairs_at=at(15, 0))
-    assert ctx["nap_forced"] is True and ctx["nap_cap"] is False and ctx["nap_end_due"] is True
-    # a flip off by hand ends the nap with no other write
-    ctx, calls = evaluate(bp, at(14, 0, 1), trigger=toggle_flip("on", "off", at(14, 0)),
-                          toggle="off", toggle_at=at(14, 0), since=at(12, 40), fan="on", fan_touch=at(9, 0),
-                          stairs_at=at(9, 0))
-    assert ctx["since_fallback_due"] is False and _writes(calls) == []
-    # an attribute-only toggle update (on -> on) never writes the since
-    ctx, _ = evaluate(bp, at(14, 0, 1), trigger=toggle_flip("on", "on", at(14, 0)),
-                      toggle="on", toggle_at=at(12, 40), since=at(11, 0))
-    assert ctx["since_fallback_due"] is False
-    # a replayed restore (from_state restored) is stopped by the global condition
-    replay = toggle_flip("off", "on", at(16, 0))
-    replay["from_state"].attributes["restored"] = True
-    assert not _global_ok(bp, replay)
-
-
-def test_rendered_restart_mid_nap(bp):
-    # ex 9: toggle and since restored; the ha_start run and a manual Run issue nothing
-    for since in (at(12, 40), at(9, 0)):
-        for trig in (HA_START, MANUAL):
-            _, calls = evaluate(bp, at(13, 0), trigger=trig, toggle="on", toggle_at=at(12, 40), since=since,
-                                fan="on", fan_touch=at(9, 0), stairs_at=at(9, 0))
-            assert calls == [], (since, trig)
-    # first tick after boot: a live nap continues (exempt); an over-cap since ends at that tick
-    ctx, calls = evaluate(bp, at(13, 1), toggle="on", toggle_at=at(12, 40), since=at(12, 40),
-                          fan="on", fan_touch=at(9, 0), stairs_at=at(9, 0))
-    assert ctx["exempt"] is True and _writes(calls) == []
-    ctx, calls = evaluate(bp, at(13, 1), toggle="on", toggle_at=at(9, 0), since=at(9, 0), stairs_at=at(12, 0))
-    assert ctx["nap_cap"] is True and _svcs(_writes(calls)) == ["input_boolean.turn_off"]
-    # button, toggle and gate replays at boot are guarded
-    assert not _global_ok(bp, button("nap_start", BTN_OFF, "short_release", at(13, 0), from_none=True))
-    assert not _global_ok(bp, button("nap_end", BTN_UP, "short_release", at(13, 0), restored=True))
-    g = gate_lit(at(13, 0))
-    g["from_state"] = None
-    assert not _global_ok(bp, g)
-
-
-def test_rendered_cutoff_hold_and_resume(bp):
-    # ex 6: cutoff by day; the PIR clear (13:12) and the resume (13:15) are activity
-    _, calls = evaluate(bp, at(13, 10, 30), fan="off", fan_touch=at(13, 10), prot="on", prot_at=at(13, 10),
-                        stairs_at=at(13, 9))
-    assert _writes(calls) == []
-    for t in (at(13, 12, 30), at(13, 14)):
-        _, calls = evaluate(bp, t, fan="off", fan_touch=at(13, 10), prot_at=at(13, 12), stairs_at=at(13, 11))
-        assert _writes(calls) == [], t
-    for m in range(16, 35):
-        _, calls = evaluate(bp, at(13, m), fan="on", fan_touch=at(13, 15), prot_at=at(13, 12), stairs_at=at(13, 11))
-        assert _writes(calls) == [], m
-    _, calls = evaluate(bp, at(13, 35), fan="on", fan_touch=at(13, 15), prot_at=at(13, 12), stairs_at=at(13, 11))
-    assert _writes(calls) == [("fan.turn_off", KIDS_FAN, {})]
-    # ex 7 (1-min vacancy fixture): the cut has not landed (fan still reads on), vacancy is
-    # satisfied inside the hold -> N's off is allowed and is an off, never an on
-    one = {**KIDS, "vacancy_minutes": 1}
-    _, calls = evaluate(bp, at(13, 13, 30), inputs=one, fan="on", fan_touch=at(13, 5), prot_at=at(13, 12),
-                        stairs_at=at(13, 0))
-    assert _writes(calls) == [("fan.turn_off", KIDS_FAN, {})]
-    # the resume turns the fan on at 13:15 -> activity -> off again only after the timeout
-    _, calls = evaluate(bp, at(13, 15, 30), inputs=one, fan="on", fan_touch=at(13, 15), prot_at=at(13, 12),
-                        stairs_at=at(13, 0))
-    assert _writes(calls) == []
-    _, calls = evaluate(bp, at(13, 16), inputs=one, fan="on", fan_touch=at(13, 15), prot_at=at(13, 12),
-                        stairs_at=at(13, 0))
-    assert _writes(calls) == [("fan.turn_off", KIDS_FAN, {})]
-    # while the cutoff PIR reads on, nothing (occupied)
-    _, calls = evaluate(bp, at(13, 16), inputs=one, fan="on", fan_touch=at(13, 5), prot="on", prot_at=at(13, 10),
-                        stairs_at=at(13, 0))
-    assert _writes(calls) == []
-
-
-def test_rendered_config_error(bp):
-    nap = dict(toggle="on", toggle_at=at(12, 40), since=at(12, 40), stairs_at=at(12, 41))
-    vacant = dict(fan="on", fan_touch=at(9, 0), stairs_at=at(9, 0))
-    ok_ctx, _ = evaluate(bp, at(13, 30), **vacant)
-    assert ok_ctx["config_error"] is False and ok_ctx["off_due"] is True
-    # ex 16: nap_toggle without nap_since_helper (and the reverse) -> error, nap lifecycle off
-    for inputs in ({**KIDS, "nap_since_helper": []}, {**KIDS, "nap_toggle": []}):
-        ctx, calls = evaluate(bp, at(13, 30), inputs=inputs, **{**nap, **vacant})
-        assert ctx["config_error"] is True and ctx["has_nap"] is False
-        assert ctx["off_due"] is True and _svcs(calls, "fan.") == ["fan.turn_off"]
-    # ex 16: activity_sensors empty -> error, but valid helpers + an active nap stay exempt
-    ctx, calls = evaluate(bp, at(13, 30), inputs={**KIDS, "activity_sensors": []}, **{**vacant, **nap})
-    assert ctx["config_error"] is True and ctx["has_nap"] is True and ctx["exempt"] is True
-    assert _svcs(calls, "fan.") == []
-    ctx, calls = evaluate(bp, at(13, 30), inputs={**KIDS, "activity_sensors": []}, **vacant)
-    assert ctx["config_error"] is True and ctx["off_due"] is True and _svcs(calls, "fan.") == ["fan.turn_off"]
-    # R1-04 delta / R1-06: the fan absent from the state machine
-    ctx, calls = evaluate(bp, at(13, 30), drop=(KIDS_FAN,), **nap)
-    assert ctx["fan_avail"] is False and ctx["off_due"] is False and ctx["config_error"] is True
-    assert ctx["has_nap"] is True and ctx["exempt"] is True
-    assert _svcs(calls, "fan.") == []
-    # R1-11: a configured activity sensor absent -> contributes 0, error, off unaffected
-    ctx, calls = evaluate(bp, at(13, 30), drop=(PROT,), **vacant)
-    assert ctx["config_error"] is True and ctx["off_due"] is True and _svcs(calls, "fan.") == ["fan.turn_off"]
-    ctx, calls = evaluate(bp, at(13, 30), drop=(PROT,), **{**vacant, **nap})
-    assert ctx["has_nap"] is True and ctx["exempt"] is True and _svcs(calls, "fan.") == []
-    # ex 17: the since helper deleted -> notice, no lifecycle writes, no exemption
-    ctx, calls = evaluate(bp, at(12, 40), trigger=button("nap_start", BTN_OFF, "short_release", at(12, 40)),
-                          gate="on", drop=(SINCE,), **vacant)
-    assert ctx["config_error"] is True and ctx["has_nap"] is False and ctx["nap_start_due"] is False
-    assert not any(c[0].startswith(("input_boolean.", "input_datetime.")) for c in calls)
-    assert "persistent_notification.create" in _svcs(calls)
-    ctx, calls = evaluate(bp, at(13, 30), drop=(SINCE,), **{**nap, **vacant})
-    assert ctx["exempt"] is False and _svcs(calls, "fan.") == ["fan.turn_off"]
-    # ex 17: the toggle deleted -> notice, no crash; also an unavailable helper
-    ctx, calls = evaluate(bp, at(14, 0), drop=(TOGGLE,), **vacant)  # notices are hourly (code gate R2-02)
-    assert ctx["config_error"] is True and ctx["has_nap"] is False
-    assert "persistent_notification.create" in _svcs(calls)
-    ctx, _ = evaluate(bp, at(13, 30), toggle="unavailable", **vacant)
-    assert ctx["config_error"] is True and ctx["has_nap"] is False
-    # a configuration error never turns off_due false
-    for kw in (dict(inputs={**KIDS, "nap_toggle": []}),
-               dict(inputs={**KIDS, "activity_sensors": [STAIRS, "binary_sensor.gone"]}),
-               dict(drop=(SINCE,))):
-        ctx, _ = evaluate(bp, at(13, 30), **{**vacant, **kw})
-        assert ctx["config_error"] is True and ctx["off_due"] is True, kw
-
-
-def test_rendered_master_instance_has_no_nap(bp):
-    ctx, calls = evaluate(bp, at(14, 0), inputs=MASTER, master_touch=at(9, 0), stairs_at=at(9, 0),
-                          toggle="on", toggle_at=at(13, 0), since=at(13, 0))
-    assert ctx["has_nap"] is False and ctx["nap_on"] is False and ctx["exempt"] is False
-    assert ctx["config_error"] is False
-    assert _writes(calls) == [("fan.turn_off", MASTER_FAN, {})]
-    # the kids toggle never counts as master activity
-    assert ctx["toggle_ts"] == 0
+def test_max_run_minutes_and_window_inputs_are_honoured(bp):
+    short = {**KIDS, "max_run_minutes": 15}
+    assert offs(bp, at(10, 14), inputs=short, on_since=at(10, 0)) == []
+    assert offs(bp, at(10, 15), inputs=short, on_since=at(10, 0)) == OFF_KIDS
+    late = {**KIDS, "day_start": "09:00:00", "day_end": "17:00:00"}
+    assert offs(bp, at(8, 30), inputs=late, on_since=NIGHT_WRITE) == []
+    assert offs(bp, at(9, 0), inputs=late, on_since=at(8, 30)) == OFF_KIDS
+    assert offs(bp, at(17, 0), inputs=late, on_since=at(10, 0)) == []
 
 
 # =========================================================================================
@@ -975,71 +553,11 @@ def test_instance_values():
     kids = json.loads(KIDS_INSTANCE.read_text())
     master = json.loads(MASTER_INSTANCE.read_text())
     assert kids["id"] == "bedroom_fan_daytime_kids"
-    assert kids["alias"] == "Kids room — fan daytime v1.0.0"
+    assert kids["alias"] == "Kids room — fan daytime v1.1.0"
     assert master["id"] == "bedroom_fan_daytime_master"
-    assert master["alias"] == "Master bedroom — fan daytime v1.0.0"
+    assert master["alias"] == "Master bedroom — fan daytime v1.1.0"
     for inst in (kids, master):
         assert inst["use_blueprint"]["path"] == HA_PATH
         assert inst["trace"]["stored_traces"] == 60
-    assert kids["use_blueprint"]["input"] == {
-        "fan": KIDS_FAN,
-        "activity_sensors": [STAIRS, PROT],
-        "nap_toggle": TOGGLE,
-        "nap_since_helper": SINCE,
-        "nap_start_button": BTN_OFF,
-        "nap_end_buttons": [BTN_UP, BTN_DOWN],
-        "gate_entity": GATE,
-    }
-    assert master["use_blueprint"]["input"] == {"fan": MASTER_FAN, "activity_sensors": [STAIRS]}
-
-
-
-# =========================================================================================
-# Code-gate post-board fixes (board-20260924-214705, all P2)
-# =========================================================================================
-
-def test_fan_branch_rechecks_the_day_window_live(bp):
-    """R2-01: helper steps before the fan step may carry the run past 18:00."""
-    base = dict(fan="on", stairs_at=at(17, 30))
-    ctx, calls = evaluate(bp, at(17, 59), **base)
-    assert ctx["off_due"] is True and _svcs(calls, "fan.") == ["fan.turn_off"]
-    _, calls = evaluate(bp, at(17, 59), live_now=at(18, 0, 30), **base)
-    assert _svcs(calls, "fan.") == [], "no fan write after 18:00 even if the snapshot said due"
-
-
-def test_config_notice_upkeep_is_hourly_not_every_tick(bp):
-    """R2-02: create/dismiss only on the full hour (or a non-tick trigger), not 600 times a day."""
-    bad = {**KIDS, "nap_since_helper": []}
-    _, calls = evaluate(bp, at(13, 1), inputs=bad)
-    assert [c for c in calls if c[0].startswith("persistent_notification.")] == []
-    _, calls = evaluate(bp, at(13, 1))
-    assert [c for c in calls if c[0].startswith("persistent_notification.")] == []
-    _, calls = evaluate(bp, at(14, 0), inputs=bad)
-    assert [c[0] for c in calls if c[0].startswith("persistent_notification.")] == ["persistent_notification.create"]
-
-
-def _press(trigger_id, entity, from_state_value, to_state_value, event_type, when):
-    frm = S(entity, from_state_value, {"event_type": "short_release"}, last_changed=when - timedelta(hours=1))
-    to = S(entity, to_state_value, {"event_type": event_type}, last_changed=when)
-    return {"id": trigger_id, "platform": "state", "entity_id": entity, "from_state": frm, "to_state": to}
-
-
-def test_only_a_fresh_button_press_starts_or_ends_a_nap(bp):
-    """R1-01 / R2-03: an availability flap or an attribute-only update re-exposes the old
-    event_type; only a new event (timestamp state changed, from a real state) counts."""
-    t = at(12, 40)
-    fresh = _press("nap_start", BTN_OFF, (t - timedelta(hours=1)).isoformat(), t.isoformat(), "short_release", t)
-    flap = _press("nap_start", BTN_OFF, "unavailable", (t - timedelta(hours=1)).isoformat(), "short_release", t)
-    attr_only = _press("nap_start", BTN_OFF, t.isoformat(), t.isoformat(), "short_release", t)
-    to_unknown = _press("nap_start", BTN_OFF, (t - timedelta(hours=1)).isoformat(), "unknown", "short_release", t)
-    assert evaluate(bp, t, trigger=fresh, gate="on", stairs_at=at(12, 39))[0]["nap_start_due"] is True
-    for trig in (flap, attr_only, to_unknown):
-        ctx, calls = evaluate(bp, t, trigger=trig, gate="on", stairs_at=at(12, 39))
-        assert ctx["nap_start_due"] is False, trig["from_state"]
-        assert not any(c[0] in ("input_datetime.set_datetime", "input_boolean.turn_on") for c in calls)
-    nap = dict(toggle="on", toggle_at=at(12, 40), since=at(12, 40), stairs_at=at(14, 29))
-    t2 = at(14, 30)
-    end_flap = _press("nap_end", BTN_UP, "unavailable", (t2 - timedelta(hours=1)).isoformat(), "short_release", t2)
-    end_fresh = _press("nap_end", BTN_UP, (t2 - timedelta(hours=1)).isoformat(), t2.isoformat(), "short_release", t2)
-    assert evaluate(bp, t2, trigger=end_flap, gate="off", **nap)[0]["nap_end_due"] is False
-    assert evaluate(bp, t2, trigger=end_fresh, gate="off", **nap)[0]["nap_end_due"] is True
+    assert kids["use_blueprint"]["input"] == {"fan": KIDS_FAN}
+    assert master["use_blueprint"]["input"] == {"fan": MASTER_FAN}
