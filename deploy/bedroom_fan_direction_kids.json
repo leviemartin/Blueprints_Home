@@ -1,0 +1,23 @@
+{
+  "id": "bedroom_fan_direction_kids",
+  "alias": "Kids room — fan direction v1.0.0",
+  "description": "",
+  "use_blueprint": {
+    "path": "leviemartin/bedroom_fan_direction.yaml",
+    "input": {
+      "fan": "fan.ceiling_fan_light_v2",
+      "season_toggle": "input_boolean.samuel_fan_winter_mode",
+      "weather_entity": "weather.home_sm",
+      "outdoor_sensor": [
+        "sensor.openweathermap_temperature"
+      ],
+      "notify_services": [
+        "notify.mobile_app_martin_fold"
+      ],
+      "fan_name": "kids fan"
+    }
+  },
+  "trace": {
+    "stored_traces": 60
+  }
+}

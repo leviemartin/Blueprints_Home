@@ -32,7 +32,7 @@ never changes speed or direction. One instance per room: kids room and master be
 | **C**, the safety cutoff | Authoritative and unchanged. Turns the kids fan off on height-gated motion and resumes it after 3 clear minutes. |
 | **D**, the Hue dimmer v4.0 | Unchanged. Fan holds, scenes, the Off/+/− buttons. |
 | **P**, pre-cool v1.2.1 | Unchanged. Night fan writes at 19:29; fans are left alone at wake. |
-| **S**, seasonal direction v1 | Unchanged. A season flip stops the fan, lets it coast, reverses it and restarts it. |
+| **S**, seasonal direction v1 | **Deleted.** Direction advisory is now `bedroom_fan_direction` v1.0.0, which sends no fan command; nothing in Home Assistant reverses the fan. |
 | **T**, nightlight v1.3.0 | Unchanged blueprint. Its instance no longer sets `nap_toggle`, so it paints the fixed 12:30–15:30 nap window (the v1.2.0 behaviour). |
 
 The only concurrency is N's `fan.turn_off` against the other writers. An off can never cancel

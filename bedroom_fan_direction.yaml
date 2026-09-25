@@ -1,0 +1,504 @@
+blueprint:
+  name: "Bedroom Fan Direction v1.0.0"
+  description: >
+    **Version: 1.0.0** — evening season decision and direction advice for one
+    bedroom ceiling fan. Advisory only: this blueprint never sends a command to
+    the fan. Its only writes are the season toggle and notifications.
+
+    **Season decision.** At Decide Time (default 18:00) and the three following
+    quarter hours it reads tonight's forecast low between Night Start and Night
+    End (hourly forecast first, then tomorrow's daily low, then the live outdoor
+    reading). A low at or below Cold Night sets the season toggle to winter; a
+    low at or above Warm Night sets it to summer; anything in between keeps the
+    toggle as it is. The toggle changes at most once per evening, and never after
+    it was flipped by hand since Decide Time. Forecast values are used only as
+    validated numbers (°C, fresh, within −40…45 °C, enough distinct hourly
+    points covering the night).
+
+    **Advice.** When the fan's reported direction differs from the one the
+    toggle implies (summer = forward, winter = reverse by default), or cannot be
+    read, it creates a persistent notice and pushes the same text to the listed
+    notify services: at Decide Time, and again later that evening only on a
+    tick that changed the toggle (at most two per evening). You change the
+    direction yourself while the fan is off. The notice is dismissed on the next
+    quarter hour that finds the direction matching.
+
+    A Home Assistant start and a manual Run evaluate everything and issue nothing.
+
+    **Requirements:** a fan entity that reports `direction`, an input_boolean
+    season toggle (off = summer, on = winter) and a weather entity with an hourly
+    forecast.
+  domain: automation
+  input:
+    fan:
+      name: Ceiling Fan
+      description: The fan whose reported direction is checked. Read only; it is never commanded. Required.
+      selector:
+        entity:
+          domain: fan
+    season_toggle:
+      name: Season Toggle
+      description: input_boolean holding the season (off = summer, on = winter). Written at most once per evening. Required.
+      selector:
+        entity:
+          domain: input_boolean
+    weather_entity:
+      name: Weather Entity
+      description: Weather entity with an hourly forecast (a daily forecast is used as backstop when supported). Required.
+      selector:
+        entity:
+          domain: weather
+    outdoor_sensor:
+      name: Outdoor Temperature Sensor (optional)
+      description: Live outdoor temperature in °C, used only when no forecast is usable. The first entry is used.
+      default: []
+      selector:
+        entity:
+          domain: sensor
+          multiple: true
+    notify_services:
+      name: Push Notify Services
+      description: >-
+        Full notify service names (e.g. notify.mobile_app_phone). Entries that do not look like
+        `notify.<name>` are ignored. The persistent notice is created before the push, so a missing
+        service never loses it. Leave empty for persistent notices only.
+      default: []
+      selector:
+        text:
+          multiple: true
+    fan_name:
+      name: Fan Name
+      description: Name used in the notice text (letters, digits, space, _ and -, at most 32 characters; anything else reads "the fan").
+      default: "the fan"
+      selector:
+        text:
+    summer_direction:
+      name: Summer Direction
+      description: Direction the fan should have while the toggle is off.
+      default: forward
+      selector:
+        select:
+          options:
+            - forward
+            - reverse
+    winter_direction:
+      name: Winter Direction
+      description: Direction the fan should have while the toggle is on.
+      default: reverse
+      selector:
+        select:
+          options:
+            - forward
+            - reverse
+    outdoor_cold:
+      name: Cold Night
+      description: A night low at or below this sets the toggle to winter.
+      default: 8.0
+      selector:
+        number:
+          min: -10
+          max: 20
+          step: 0.5
+          unit_of_measurement: "°C"
+    outdoor_warm:
+      name: Warm Night
+      description: A night low at or above this sets the toggle to summer. Must exceed Cold Night.
+      default: 14.0
+      selector:
+        number:
+          min: 0
+          max: 30
+          step: 0.5
+          unit_of_measurement: "°C"
+    decide_time:
+      name: Decide Time
+      description: >-
+        First of the four evening evaluations (then +15, +30 and +45 min). Valid only between
+        12:00 and 21:00; outside that range no season decision is made and a persistent notice
+        reports the misconfiguration.
+      default: "18:00:00"
+      selector:
+        time:
+    night_start:
+      name: Night Start
+      description: Start of the night window whose forecast low decides the season (today).
+      default: "19:30:00"
+      selector:
+        time:
+    night_end:
+      name: Night End
+      description: End of the night window (tomorrow morning).
+      default: "07:15:00"
+      selector:
+        time:
+    write_toggle:
+      name: Write Season Toggle
+      description: Off evaluates and advises without ever writing the season toggle (used for checks).
+      default: true
+      selector:
+        boolean:
+
+mode: single
+max_exceeded: silent
+
+# =============================================
+# TOP-LEVEL VARIABLES — !input pass-through
+# =============================================
+variables:
+  fan: !input fan
+  season_toggle: !input season_toggle
+  weather_entity: !input weather_entity
+  outdoor_sensor: !input outdoor_sensor
+  notify_services: !input notify_services
+  fan_name: !input fan_name
+  summer_direction: !input summer_direction
+  winter_direction: !input winter_direction
+  outdoor_cold: !input outdoor_cold
+  outdoor_warm: !input outdoor_warm
+  decide_time: !input decide_time
+  night_start: !input night_start
+  night_end: !input night_end
+  write_toggle: !input write_toggle
+
+trigger:
+  - platform: time_pattern
+    minutes: "/1"
+    id: tick
+  # Re-evaluates only: is_tick is false on this run, so it issues nothing.
+  - platform: homeassistant
+    event: start
+    id: ha_start
+
+action:
+  # =============================================
+  # STEP 1: CLOCK, WEATHER USABILITY, PUSH TARGETS. HA renders each key in file order and
+  # hands the next one the literal_eval'd result, so only strings, numbers, booleans and
+  # lists are stored; instants are unix timestamps.
+  # =============================================
+  - variables:
+      is_tick: "{{ trigger is defined and trigger.id is defined and trigger.id == 'tick' }}"
+      now_ts: "{{ as_timestamp(now()) }}"
+      decide_start_ts: "{{ as_timestamp(today_at(decide_time)) }}"
+      decide_ok: >-
+        {{ as_timestamp(today_at('12:00:00')) <= (decide_start_ts | float)
+           <= as_timestamp(today_at('21:00:00')) }}
+      # The four Stage A ticks: decide_time and the next three quarter hours.
+      stage_a_ticks: >-
+        {% set d = decide_start_ts | float %}
+        {{ [d, d + 900, d + 1800, d + 2700] }}
+      stage_a_index: >-
+        {% set ns = namespace(k=-1) %}
+        {% for t in stage_a_ticks %}
+          {% if ns.k < 0 and (t | float) <= (now_ts | float) < (t | float) + 60 %}
+            {% set ns.k = loop.index0 %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.k }}
+      stage_a_due: "{{ is_tick and decide_ok and (stage_a_index | int) >= 0 }}"
+      first_tick: "{{ stage_a_due and (stage_a_index | int) == 0 }}"
+      decide_misconfig_due: "{{ is_tick and not decide_ok and (stage_a_index | int) == 0 }}"
+      quarter_tick: "{{ is_tick and now().minute % 15 == 0 }}"
+      night_start_ts: "{{ as_timestamp(today_at(night_start)) }}"
+      night_end_ts: "{{ as_timestamp(today_at(night_end) + timedelta(days=1)) }}"
+      # Either forecast is eligible only from an available °C entity refreshed within 3 h.
+      weather_ok: >-
+        {{ states[weather_entity] is not none
+           and states(weather_entity) not in ['unavailable', 'unknown']
+           and state_attr(weather_entity, 'temperature_unit') == '°C'
+           and (now_ts | float) - as_timestamp(states[weather_entity].last_updated) <= 10800 }}
+      # FORECAST_DAILY is bit 1 of supported_features; get_forecasts raises for a missing type.
+      weather_daily_supported: >-
+        {{ (state_attr(weather_entity, 'supported_features') | int(0)) | bitwise_and(1) > 0 }}
+      # Push targets: only well-formed notify service names are dispatched.
+      notify_list: "{{ (notify_services if (notify_services is iterable and notify_services is not string) else ([notify_services] if notify_services else [])) | select('match', '^notify[.][a-z0-9_]+$') | list }}"
+      fan_name_safe: "{{ fan_name if (fan_name is string and fan_name is match('^[A-Za-z0-9 _-]{1,32}$')) else 'the fan' }}"
+      # Declared here so the fetch inside the choose below updates this outer variable
+      # (block scoping, HA >= 2025.4); a failed fetch leaves it empty.
+      hourly_resp: {}
+
+  # =============================================
+  # STEP 2: HOURLY FORECAST (Stage A ticks only, usable weather only)
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ stage_a_due and weather_ok }}"
+        sequence:
+          - service: weather.get_forecasts
+            continue_on_error: true
+            target:
+              entity_id: "{{ weather_entity }}"
+            data:
+              type: hourly
+            response_variable: hourly_resp
+
+  # =============================================
+  # STEP 3: HOURLY NIGHT LOW. Rows are reduced to [timestamp, °C] pairs before they cross a
+  # key: a NaN or inf left in the list would make the whole list unparsable.
+  # =============================================
+  - variables:
+      hourly_list_safe: >-
+        {% set r = hourly_resp if hourly_resp is defined else none %}
+        {% set fc = r[weather_entity].forecast
+             if r is mapping and weather_entity in r
+                and r[weather_entity] is mapping
+                and r[weather_entity].forecast is defined
+                and r[weather_entity].forecast is iterable
+                and r[weather_entity].forecast is not string
+                and r[weather_entity].forecast is not mapping
+             else [] %}
+        {% set ns = namespace(rows=[]) %}
+        {% for f in fc %}
+          {% set ts = (f.datetime | default(none)) if f is mapping else none %}
+          {% set tp = (f.temperature | default(none)) if f is mapping else none %}
+          {% set when = as_datetime(ts, none) if ts is string else none %}
+          {% if when is not none and tp is number and tp is not boolean and -40 <= tp <= 45 %}
+            {% set ns.rows = ns.rows + [[as_timestamp(when), tp | float]] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.rows }}
+      # Valid only with >= 10 distinct in-window timestamps whose earliest is within 90 min of
+      # night start and whose latest is within 90 min of night end.
+      night_low_hourly: >-
+        {% set ns = namespace(ts=[], temps=[]) %}
+        {% for row in hourly_list_safe %}
+          {% if (night_start_ts | float) <= row[0] <= (night_end_ts | float) %}
+            {% set ns.ts = ns.ts + [row[0]] %}
+            {% set ns.temps = ns.temps + [row[1]] %}
+          {% endif %}
+        {% endfor %}
+        {% set distinct = ns.ts | unique | list %}
+        {% if distinct | length >= 10
+              and (distinct | min) <= (night_start_ts | float) + 5400
+              and (distinct | max) >= (night_end_ts | float) - 5400 %}
+          {{ ns.temps | min }}
+        {% else %}
+          None
+        {% endif %}
+      daily_due: "{{ stage_a_due and weather_ok and night_low_hourly is none and weather_daily_supported }}"
+      daily_resp: {}
+
+  # =============================================
+  # STEP 4: DAILY BACKSTOP (only after the hourly low failed)
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ daily_due }}"
+        sequence:
+          - service: weather.get_forecasts
+            continue_on_error: true
+            target:
+              entity_id: "{{ weather_entity }}"
+            data:
+              type: daily
+            response_variable: daily_resp
+
+  # =============================================
+  # STEP 5: NIGHT LOW, SEASON TARGET, TOGGLE WRITE DECISION
+  # =============================================
+  - variables:
+      daily_list_safe: >-
+        {% set r = daily_resp if daily_resp is defined else none %}
+        {% set fc = r[weather_entity].forecast
+             if r is mapping and weather_entity in r
+                and r[weather_entity] is mapping
+                and r[weather_entity].forecast is defined
+                and r[weather_entity].forecast is iterable
+                and r[weather_entity].forecast is not string
+                and r[weather_entity].forecast is not mapping
+             else [] %}
+        {% set ns = namespace(rows=[]) %}
+        {% for f in fc %}
+          {% set ts = (f.datetime | default(none)) if f is mapping else none %}
+          {% set tl = (f.templow | default(none)) if f is mapping else none %}
+          {% set when = as_datetime(ts, none) if ts is string else none %}
+          {% if when is not none and tl is number and tl is not boolean and -40 <= tl <= 45 %}
+            {% set ns.rows = ns.rows + [[as_timestamp(when) | timestamp_custom('%Y-%m-%d'), tl | float]] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.rows }}
+      # The low of the entry whose local date is tomorrow (tonight's low), never today's row.
+      night_low_daily: >-
+        {% set tomorrow = ((now_ts | float) + 86400) | timestamp_custom('%Y-%m-%d') %}
+        {% set ns = namespace(v=none) %}
+        {% for row in daily_list_safe %}
+          {% if ns.v is none and row[0] == tomorrow %}
+            {% set ns.v = row[1] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.v }}
+      # Live reading: first entry, finite, −40…45, °C, refreshed within 2 h.
+      outdoor_now: >-
+        {% set lst = (outdoor_sensor if (outdoor_sensor is iterable and outdoor_sensor is not string) else ([outdoor_sensor] if outdoor_sensor else [])) | list %}
+        {% set e = lst[0] if lst | length > 0 else none %}
+        {% set v = (states(e) | float(none)) if (e is string and states[e] is not none) else none %}
+        {% if v is not none and -40 <= v <= 45
+              and state_attr(e, 'unit_of_measurement') == '°C'
+              and (now_ts | float) - as_timestamp(states[e].last_updated) < 7200 %}
+          {{ v }}
+        {% else %}
+          None
+        {% endif %}
+      night_low: >-
+        {% if night_low_hourly is not none %}{{ night_low_hourly }}
+        {% elif night_low_daily is not none %}{{ night_low_daily }}
+        {% elif outdoor_now is not none %}{{ outdoor_now }}
+        {% else %}None{% endif %}
+      night_low_source: >-
+        {% if night_low_hourly is not none %}hourly
+        {% elif night_low_daily is not none %}daily
+        {% elif outdoor_now is not none %}live
+        {% else %}none{% endif %}
+      toggle_state: "{{ states(season_toggle) }}"
+      toggle_known: "{{ toggle_state in ['on', 'off'] }}"
+      toggle_changed_ts: "{{ as_timestamp(states[season_toggle].last_changed) if states[season_toggle] is not none else 0 }}"
+      # Cold is tested first, so a warm threshold at or below the cold one never yields both.
+      season_target: >-
+        {% if night_low is none %}hold
+        {% elif (night_low | float) <= (outdoor_cold | float) %}winter
+        {% elif (night_low | float) >= (outdoor_warm | float) %}summer
+        {% else %}hold{% endif %}
+      # Latch: a toggle changed since today's decide_time (by Stage A or by hand) is left alone
+      # for the rest of the evening.
+      toggle_write_due: >-
+        {{ stage_a_due and write_toggle and toggle_known and season_target != 'hold'
+           and ((season_target == 'winter') != (toggle_state == 'on'))
+           and (toggle_changed_ts | float) < (decide_start_ts | float) }}
+      forecast_degraded: "{{ stage_a_due and night_low_source in ['live', 'none'] }}"
+
+  # =============================================
+  # STEP 6: STAGE A — the season toggle, and the forecast notice
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ toggle_write_due and season_target == 'winter' }}"
+        sequence:
+          - service: input_boolean.turn_on
+            continue_on_error: true
+            target:
+              entity_id: "{{ season_toggle }}"
+      - conditions:
+          - condition: template
+            value_template: "{{ toggle_write_due and season_target == 'summer' }}"
+        sequence:
+          - service: input_boolean.turn_off
+            continue_on_error: true
+            target:
+              entity_id: "{{ season_toggle }}"
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ stage_a_due and forecast_degraded }}"
+        sequence:
+          - service: persistent_notification.create
+            continue_on_error: true
+            data:
+              notification_id: "bedroom_fan_direction_forecast_{{ this.entity_id }}"
+              title: "Bedroom fan direction — forecast"
+              message: >-
+                {% if night_low_source == 'live' %}No usable forecast for tonight: the season was
+                decided on the live outdoor reading of {{ (night_low | float) | round(1) }} °C.{% else %}No
+                usable forecast or outdoor reading for tonight: no season decision was made.{% endif %}
+      - conditions:
+          - condition: template
+            value_template: "{{ stage_a_due }}"
+        sequence:
+          - service: persistent_notification.dismiss
+            continue_on_error: true
+            data:
+              notification_id: "bedroom_fan_direction_forecast_{{ this.entity_id }}"
+      - conditions:
+          - condition: template
+            value_template: "{{ decide_misconfig_due }}"
+        sequence:
+          - service: persistent_notification.create
+            continue_on_error: true
+            data:
+              notification_id: "bedroom_fan_direction_forecast_{{ this.entity_id }}"
+              title: "Bedroom fan direction — settings"
+              message: >-
+                Decide Time is outside 12:00–21:00, so no season decision is made. Set it
+                between 12:00 and 21:00.
+
+  # =============================================
+  # STEP 7: DIRECTION CHECK, read after the toggle write
+  # =============================================
+  - variables:
+      toggle_now: "{{ states(season_toggle) }}"
+      toggle_now_known: "{{ toggle_now in ['on', 'off'] }}"
+      toggle_changed_now: "{{ toggle_write_due and toggle_now != toggle_state }}"
+      season: "{{ 'winter' if toggle_now == 'on' else ('summer' if toggle_now == 'off' else '') }}"
+      target_direction: >-
+        {% set d = winter_direction if season == 'winter' else (summer_direction if season == 'summer' else '') %}
+        {{ d if d in ['forward', 'reverse'] else '' }}
+      fan_state: "{{ states[fan].state if states[fan] is not none else 'absent' }}"
+      fan_available: "{{ fan_state not in ['unavailable', 'unknown', 'absent'] }}"
+      fan_direction: >-
+        {% set d = state_attr(fan, 'direction') %}
+        {{ d if d in ['forward', 'reverse'] else '' }}
+      direction_ok: "{{ toggle_now_known and target_direction != '' and fan_direction != '' and fan_direction == target_direction }}"
+      advice_reason: >-
+        {% if not toggle_now_known or target_direction == '' %}
+        {% elif direction_ok %}ok
+        {% elif not fan_available %}fan_unavailable
+        {% elif fan_direction == '' %}direction_unknown
+        {% else %}differs{% endif %}
+      # At the first tick, and again later only on a tick that changed the toggle; the latch
+      # allows one change per evening, so at most two advices.
+      advice_due: >-
+        {{ (first_tick or (stage_a_due and toggle_changed_now))
+           and advice_reason in ['differs', 'direction_unknown', 'fan_unavailable'] }}
+      dismiss_due: "{{ quarter_tick and direction_ok }}"
+      night_low_known: "{{ night_low is not none }}"
+      fan_state_word: "{{ fan_state if fan_state in ['on', 'off', 'unavailable', 'unknown', 'absent'] else 'unknown' }}"
+      fan_direction_word: "{{ fan_direction if fan_direction != '' else 'unknown' }}"
+
+  # =============================================
+  # STEP 8: ADVICE. The persistent notice is created first; the push loop is the last step
+  # (HA re-raises a missing service despite continue_on_error, so nothing may follow it).
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ advice_due }}"
+        sequence:
+          - service: persistent_notification.create
+            continue_on_error: true
+            data:
+              notification_id: "bedroom_fan_direction_advice_{{ this.entity_id }}"
+              title: "Bedroom fan direction"
+              message: >-
+                {% if night_low_known %}Night low {{ (night_low | float) | round(1) }} °C{% else %}Night
+                low unknown{% endif %}{% if advice_reason == 'differs' %}: set {{ fan_name_safe }} to
+                {{ target_direction }} ({{ season }}) while it is off. It now reads
+                {{ fan_direction_word }}.{% elif advice_reason == 'direction_unknown' %}: {{ fan_name_safe }}
+                reports no direction (state {{ fan_state_word }}). Check it is set to
+                {{ target_direction }} ({{ season }}) while it is off.{% else %}: {{ fan_name_safe }} is
+                {{ fan_state_word }}; its direction cannot be checked. It should be
+                {{ target_direction }} ({{ season }}) tonight.{% endif %}
+          - repeat:
+              for_each: "{{ notify_list }}"
+              sequence:
+                - service: "{{ repeat.item }}"
+                  continue_on_error: true
+                  data:
+                    title: "Bedroom fan direction"
+                    message: >-
+                      {% if night_low_known %}Night low {{ (night_low | float) | round(1) }} °C{% else %}Night
+                      low unknown{% endif %}{% if advice_reason == 'differs' %}: set {{ fan_name_safe }} to
+                      {{ target_direction }} ({{ season }}) while it is off. It now reads
+                      {{ fan_direction_word }}.{% elif advice_reason == 'direction_unknown' %}: {{ fan_name_safe }}
+                      reports no direction (state {{ fan_state_word }}). Check it is set to
+                      {{ target_direction }} ({{ season }}) while it is off.{% else %}: {{ fan_name_safe }} is
+                      {{ fan_state_word }}; its direction cannot be checked. It should be
+                      {{ target_direction }} ({{ season }}) tonight.{% endif %}
+      - conditions:
+          - condition: template
+            value_template: "{{ dismiss_due }}"
+        sequence:
+          - service: persistent_notification.dismiss
+            continue_on_error: true
+            data:
+              notification_id: "bedroom_fan_direction_advice_{{ this.entity_id }}"
