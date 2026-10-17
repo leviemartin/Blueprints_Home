@@ -117,7 +117,11 @@ def test_required_multiple_motion_input(bp, text):
     inputs = bp["blueprint"]["input"]
     item = inputs["motion_sensors"]
     assert item["selector"] == {
-        "entity": {"domain": "binary_sensor", "device_class": "motion", "multiple": True}
+        "entity": {
+            "domain": "binary_sensor",
+            "device_class": ["motion", "occupancy"],
+            "multiple": True,
+        }
     }
     assert "default" not in item
     assert "motion_sensor" not in inputs

@@ -36,11 +36,11 @@ blueprint:
           multiple: true
     motion_sensors:
       name: Motion Sensors
-      description: Select one or more motion sensors (binary_sensor) for this room.
+      description: Select one or more motion or occupancy sensors (binary_sensor) for this room.
       selector:
         entity:
           domain: binary_sensor
-          device_class: motion
+          device_class: [motion, occupancy]
           multiple: true
     illuminance_entity:
       name: Lux Sensor (Optional)
