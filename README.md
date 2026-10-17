@@ -77,25 +77,52 @@ There is deliberately no import-by-URL path for this blueprint: every install go
 ## Circadian Living Room Lights Blueprint
 
 ### Overview
-A comprehensive lighting automation for the Living Room that adapts to human presence, circadian rhythms (Sun Elevation), and specific family routines. It utilizes the Aqara FP2 (or any lux+presence sensor) for high-precision control.
+Living room lighting that follows presence, the sun and the family routine (v3.0.0). Two presence sensors count as one room: the Aqara FP2 (`presence_fp2`, also the lux sensor) and the Aqara FP300 on the couch (`presence_fp300`). Either sensor on turns the lights on; they go off only when both sensors are clear.
 
 ### Features
 *   **☀️ Native Circadian Algorithm:** Automatically shifts Color Temperature (Kelvin) based on the Sun's elevation without external integrations.
 *   **🛋️ Hue Infuse Support:** Optimized for Philips Hue Infuse ceiling lights, supporting independent control of main and backlight entities.
 *   **✨ Native Hue Effects:** Supports triggering native effects like **Candlelight** and **Fireplace** during Evening and Night profiles.
 *   **🍽️ Routine Overrides:** Dedicated time slots for **Dinner** (Bright/Neutral) and **Toddler Prep** (Warm Amber/Dim) to override the sun cycle.
-*   **💡 Daylight Harvesting:**
-    *   **Auto-ON:** Lights turn on if you enter and it's dark (<150 lux) OR if you are sitting and the sun sets.
-    *   **Auto-OFF:** Lights turn off if the sun comes out (>400 lux) for 5 minutes.
+*   **Dual presence (v3.0.0):** Either sensor on turns the lights on. The lights go off only after both sensors are clear (off, unavailable or unknown) for `presence_timeout` (default 5 min).
+*   **Late-night quick off:** Between 23:00 and 06:30 (`late_night_start` / `late_night_end`, crossing midnight) the lights go off 1 min (`late_night_timeout`) after both sensors are clear. A both-clear countdown whose 1-min mark passed before 23:00 finishes on `presence_timeout` (up to 4 min later than the late-night delay); a clear that began just before 23:00 can still turn off at its 1-min mark just after 23:00. A countdown whose 1-min mark falls at or after 06:30 also finishes on `presence_timeout`; there is no extra trigger at the window edges. The Night profile (22:00-06:00, 20 %) is independent of the late-night window.
+*   **Dog on the bench:** The FP300 counts like the FP2 at all hours, so the dog lying on its bench keeps the FP300, and so the lights, on, also at night. This is accepted and still being tested; there is no cap or zone exclusion.
+*   **FP300 offline push:** An FP300 that is unavailable or unknown counts as clear, so the lights follow the FP2 alone. After 30 min offline, one push goes to each `notify_targets` entry (full `notify.<name>` services, others ignored; empty, the default, disables it). The push runs after the light calls, also while the override is on. A target that does not exist aborts the run at the push step; check it exists after editing.
+*   **Daylight Harvesting:** FP2 illuminance only; FP300 lux is not read.
+    *   **Auto-ON:** lights turn on when someone is present and the FP2 reads below 150 lx (`lux_on_threshold`), or when you are already sitting there and it gets darker than that.
+    *   **Auto-OFF:** lights turn off when the FP2 reads above 400 lx (`lux_off_threshold`) for 5 min (`lux_off_duration`).
+    *   These are the blueprint defaults; each instance can set its own values (per instance).
 *   **✨ Seamless Transitions:** Uses long transitions (30s) for color shifts and fast transitions (2s) for presence, ensuring a premium feel.
 
+### Requirements
+*   Aqara FP2: occupancy `binary_sensor` and its illuminance sensor
+*   Aqara FP300: occupancy `binary_sensor`, set up as below
+*   Hue bulbs and/or Hue Infuse ceiling lights; `sun.sun`
+*   Optional: an override switch or `input_boolean`; `notify.*` services for the offline push
+
+### FP300 setup (Zigbee2MQTT)
+Set by hand in Zigbee2MQTT; the blueprint writes no device settings.
+*   Presence source: mmWave + PIR.
+*   `absence_delay_timer`: 60 s.
+
+At night this gives about 2 min from the last motion on the couch to lights off (60 s absence delay plus the 1 min `late_night_timeout`), when the FP2 is already clear.
+
 ### Installation
-1. Click the button below to import this blueprint into your Home Assistant instance:
+1. Update the blueprint and the living room instance with the deploy script, dry-run first:
+
+   `bash scripts/deploy-blueprint.sh --dry-run circadian_livingroom.yaml leviemartin/circadian_livingroom.yaml deploy/circadian_livingroom_1767031159524.json`
+
+   `bash scripts/deploy-blueprint.sh circadian_livingroom.yaml leviemartin/circadian_livingroom.yaml deploy/circadian_livingroom_1767031159524.json`
+
+   The script needs `hass-cli` and `jq` on PATH, PyYAML in the interpreter named by `PYTHON` (default `python3`), and Home Assistant credentials in `~/.config/hass-cli/env` (never in this repo). v3.0.0 removes `presence_entity`: an instance must set `presence_fp2` and `presence_fp300` before it is updated, or the dry-run refuses it.
+2. Or import it by hand:
 
 [![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fleviemartin%2FBlueprints_Home%2Fmain%2Fcircadian_livingroom.yaml)
 
-2. Or manually copy this URL into the Blueprints configuration:
+Or manually copy this URL into the Blueprints configuration:
 `https://raw.githubusercontent.com/leviemartin/Blueprints_Home/main/circadian_livingroom.yaml`
+
+Full contract: `requirements_circadian.md`.
 
 ---
 
