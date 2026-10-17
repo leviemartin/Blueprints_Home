@@ -1,7 +1,7 @@
 blueprint:
-  name: "Circadian Living Room Lights v2.2.0"
+  name: "Circadian Living Room Lights v3.0.0"
   description: >
-    **Version: 2.2.0 - HA 2026.3 Compatibility**
+    **Version: 3.0.0 - Dual presence (FP2 + FP300)**
     
     A comprehensive lighting automation for the Living Room that adapts to human presence, 
     circadian rhythms, and specific family routines. Optimized for Philips Hue Infuse and Bulbs.
@@ -14,7 +14,10 @@ blueprint:
     - **Manual Override:** Pause automation via a Switch or Input Boolean (e.g., for Movie Night).
     - **Daylight Harvesting:** Auto-Off if naturally bright (>400 lux).
     - **Flicker Protection:** Hybrid Lux logic prevents rapid toggling.
-    - **Presence Timeout:** Configurable delay before turning off lights.
+    - **Dual Presence:** Either FP2 or FP300 on turns lights on.
+    - **Presence Timeout:** Lights turn off only after both sensors are clear for presence_timeout,
+      or late_night_timeout inside the late-night window.
+    - **FP300 Offline:** After 30 min unavailable or unknown, push to each notify target.
     
   domain: automation
   input:
@@ -43,21 +46,46 @@ blueprint:
           min: 0.1
           max: 1.0
           step: 0.05
-    presence_entity:
-      name: Presence Sensor
+    presence_fp2:
+      name: Presence Sensor (FP2)
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: occupancy
+    presence_fp300:
+      name: Presence Sensor (FP300)
       selector:
         entity:
           domain: binary_sensor
           device_class: occupancy
     presence_timeout:
       name: Presence Timeout
-      description: "Wait this long after motion clears before turning off lights (Default: 5 min)."
+      description: "Wait this long after both presence sensors are clear before turning off lights (Default: 5 min)."
       default: 5
       selector:
         number:
           min: 0
           max: 60
           unit_of_measurement: min
+    late_night_timeout:
+      name: Late-Night Timeout
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 60
+          step: 1
+          unit_of_measurement: min
+    late_night_start:
+      name: Late-Night Start
+      default: "23:00:00"
+      selector:
+        time:
+    late_night_end:
+      name: Late-Night End
+      default: "06:30:00"
+      selector:
+        time:
     illuminance_entity:
       name: Illuminance (Lux) Sensor
       selector:
@@ -247,24 +275,62 @@ blueprint:
           step: 100
           unit_of_measurement: K
 
+    notify_targets:
+      name: Mobile Push Targets
+      description: >-
+        List of notify services to push high-priority events to. Enter the full service name
+        including the `notify.` prefix (e.g. notify.mobile_app_martin_fold); entries that do not
+        look like `notify.<name>` are ignored. A target that does not exist aborts the run at the
+        push step (HA does not suppress a missing action), so check it exists after editing. Leave
+        empty to disable push. Events that push: FP300 unavailable or unknown for 30 min.
+      default: []
+      selector:
+        text:
+          multiple: true
+
 mode: restart
 max_exceeded: silent
 
+trigger_variables:
+  late_night_timeout: !input late_night_timeout
+
 trigger:
-  # 1. Presence Detected
+  # Either sensor can turn the room on.
   - platform: state
-    entity_id: !input presence_entity
+    entity_id: !input presence_fp2
     to: "on"
-    id: "presence_on"
-  
-  # 2. Presence Cleared (With Timeout)
+    id: "presence_on_fp2"
   - platform: state
-    entity_id: !input presence_entity
-    to: "off"
-    for: 
+    entity_id: !input presence_fp300
+    to: "on"
+    id: "presence_on_fp300"
+
+  # Each clear transition re-arms its timer and updates last_changed.
+  - platform: state
+    entity_id: !input presence_fp2
+    to: ["off", "unavailable", "unknown"]
+    for:
       minutes: !input presence_timeout
-    id: "presence_off"
-  
+    id: "presence_off_long_fp2"
+  - platform: state
+    entity_id: !input presence_fp300
+    to: ["off", "unavailable", "unknown"]
+    for:
+      minutes: !input presence_timeout
+    id: "presence_off_long_fp300"
+  - platform: state
+    entity_id: !input presence_fp2
+    to: ["off", "unavailable", "unknown"]
+    for:
+      minutes: "{{ [1, [60, late_night_timeout | int(1)] | min] | max }}"
+    id: "presence_off_short_fp2"
+  - platform: state
+    entity_id: !input presence_fp300
+    to: ["off", "unavailable", "unknown"]
+    for:
+      minutes: "{{ [1, [60, late_night_timeout | int(1)] | min] | max }}"
+    id: "presence_off_short_fp300"
+
   # 3. Periodic Update (Circadian Shift)
   - platform: time_pattern
     minutes: "/5"
@@ -290,6 +356,19 @@ trigger:
     to: "off"
     id: "override_resume"
 
+  - platform: state
+    entity_id: !input presence_fp300
+    to: "unavailable"
+    for:
+      minutes: 30
+    id: "fp300_unavailable_30m"
+  - platform: state
+    entity_id: !input presence_fp300
+    to: "unknown"
+    for:
+      minutes: 30
+    id: "fp300_unknown_30m"
+
 variables:
   # Inputs
   hue_list_bulbs: !input hue_bulbs
@@ -298,7 +377,13 @@ variables:
   all_target_lights: "{{ hue_list_bulbs + hue_list_ceiling }}"
   
   sensor_lux: !input illuminance_entity
-  sensor_presence: !input presence_entity
+  presence_fp2: !input presence_fp2
+  presence_fp300: !input presence_fp300
+  presence_timeout: !input presence_timeout
+  late_night_timeout: !input late_night_timeout
+  late_night_start: !input late_night_start
+  late_night_end: !input late_night_end
+  notify_targets: !input notify_targets
   entity_override: !input override_entity
   threshold_on: !input lux_on_threshold
   val_max_k: !input max_kelvin
@@ -330,14 +415,39 @@ action:
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ entity_override != [] and is_state(entity_override, 'on') }}"
+            value_template: "{{ entity_override != [] and is_state(entity_override, 'on') and trigger.id | default('') not in ['fp300_unavailable_30m', 'fp300_unknown_30m'] }}"
         sequence:
           - stop: "Manual Override is ON. Automation halted."
 
   # 2. Calculate Common Logic Variables
   - variables:
       current_lux: "{{ states(sensor_lux) | float(0) }}"
-      is_presence_on: "{{ is_state(sensor_presence, 'on') }}"
+      is_presence_on: "{{ (presence_fp2 is string and presence_fp2 | length > 0 and is_state(presence_fp2, 'on')) or (presence_fp300 is string and presence_fp300 | length > 0 and is_state(presence_fp300, 'on')) }}"
+      late_night_minutes: "{{ [1, [60, late_night_timeout | int(1)] | min] | max }}"
+      in_late_window: >
+        {% set t = now().strftime('%H:%M:%S') %}
+        {% if late_night_start < late_night_end %}
+          {{ late_night_start <= t and t < late_night_end }}
+        {% elif late_night_start > late_night_end %}
+          {{ late_night_start <= t or t < late_night_end }}
+        {% else %}{{ false }}{% endif %}
+      presence_off_ok: >
+        {% set tid = trigger.id | default('') %}
+        {% set short_ids = ['presence_off_short_fp2', 'presence_off_short_fp300'] %}
+        {% set off_ids = ['presence_off_long_fp2', 'presence_off_long_fp300'] + short_ids %}
+        {% if tid not in off_ids or (tid in short_ids and not in_late_window) %}{{ false }}
+        {% else %}
+          {% set other = presence_fp300 if tid in ['presence_off_long_fp2', 'presence_off_short_fp2'] else presence_fp2 %}
+          {% set minutes = late_night_minutes if tid in short_ids else presence_timeout %}
+          {% if not (other is string and other | length > 0) %}{{ true }}
+          {% else %}
+            {% set st = states[other] %}
+            {% set lc = st.last_changed if (st is not none and st.last_changed is defined) else none %}
+            {{ states(other) in ['off', 'unavailable', 'unknown'] and lc is not none
+               and as_timestamp(now()) - as_timestamp(lc) >= (minutes | float(0)) * 60 }}
+          {% endif %}
+        {% endif %}
+      notify_list: "{{ (notify_targets if (notify_targets is iterable and notify_targets is not string) else ([notify_targets] if notify_targets else [])) | select('match', '^notify[.][a-z0-9_]+$') | list }}"
       
       # Determine Current Mode based on Time
       mode: >
@@ -382,8 +492,8 @@ action:
       - conditions:
           - condition: or
             conditions:
-              - condition: trigger
-                id: "presence_off"
+              - condition: template
+                value_template: "{{ presence_off_ok }}"
               - condition: trigger
                 id: "lux_high"
         sequence:
@@ -406,7 +516,7 @@ action:
               - condition: and
                 conditions:
                   - condition: trigger
-                    id: "presence_on"
+                    id: ["presence_on_fp2", "presence_on_fp300"]
                   - condition: template
                     value_template: "{{ current_lux < threshold_on }}"
               - condition: trigger
@@ -515,3 +625,20 @@ action:
                           color_temp_kelvin: "{{ target_kelvin }}"
                           brightness_pct: "{{ ceiling_bri }}"
                           transition: 30
+
+  # ponytail: mode restart can interrupt pushes; use a queued script if delivery must be durable.
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id | default('') in ['fp300_unavailable_30m', 'fp300_unknown_30m'] }}"
+        sequence:
+          - repeat:
+              for_each: "{{ notify_list }}"
+              sequence:
+                - service: "{{ repeat.item }}"
+                  continue_on_error: true
+                  data:
+                    title: "Living Room Lights - FP300 offline"
+                    message: >-
+                      {{ presence_fp300 }} has been {{ 'unavailable' if trigger.id == 'fp300_unavailable_30m' else 'unknown' }} for 30 min.
+                      The lights follow the FP2 alone until it returns.

@@ -84,6 +84,7 @@ def test_snapshot_keeps_v2_inputs_and_live_lux():
     assert (inp["lux_on_threshold"], inp["lux_off_threshold"]) == (394, 611)
 
 
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="v3.0.0 drops presence_entity; card 2026-10-16-circadian-v3-instance-migration migrates the live instance and removes this test")
 def test_live_dry_run_pins_four_stale_keys():
     """Holds for the v2.2.0 blueprint only: the v3.0.0 card marks it xfail, the migration card (2026-10-16-circadian-v3-instance-migration) removes it."""
     r = dry(str(BP), HA_PATH, str(SNAPSHOT))
