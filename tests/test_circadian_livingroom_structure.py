@@ -1,5 +1,4 @@
 """Contract tests; HA owns state-trigger for timers (not simulated here)."""
-import ast
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -376,17 +375,3 @@ def test_lux_unavailable_not_newly_broken(bp):
     for tid in ("lux_high", "lux_low"):
         assert triggers(bp)[tid]["entity_id"].name == "illuminance_entity"
     assert bp["variables"]["sensor_lux"].name == "illuminance_entity"
-
-
-def test_deploy_dry_run_pin_is_xfailed_for_the_migration_card():
-    tree = ast.parse((ROOT / "tests/test_circadian_livingroom_deploy.py").read_text())
-    markers = [(node.name, dec) for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
-               for dec in node.decorator_list if isinstance(dec, ast.Call)
-               and isinstance(dec.func, ast.Attribute) and dec.func.attr == "xfail"]
-    assert len(markers) == 1
-    name, marker = markers[0]
-    assert name == "test_live_dry_run_pins_four_stale_keys"
-    kwargs = {kw.arg: kw.value for kw in marker.keywords}
-    assert ast.literal_eval(kwargs["strict"]) is True
-    assert isinstance(kwargs["raises"], ast.Name) and kwargs["raises"].id == "AssertionError"
-    assert "2026-10-16-circadian-v3-instance-migration" in ast.literal_eval(kwargs["reason"])

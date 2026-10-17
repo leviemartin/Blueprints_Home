@@ -1,0 +1,40 @@
+{
+  "id": "1767031159524",
+  "alias": "Circadian Living Room Lights v3.0.0",
+  "description": "",
+  "use_blueprint": {
+    "path": "leviemartin/circadian_livingroom.yaml",
+    "input": {
+      "presence_fp2": "binary_sensor.presence_sensor_fp2_e863_presence_sensor_1",
+      "presence_fp300": "binary_sensor.living_room_main_fp300_couch_occupancy_sensor",
+      "illuminance_entity": "sensor.presence_sensor_fp2_e863_light_sensor_light_level",
+      "min_kelvin": 2000,
+      "time_dinner": "17:45:00",
+      "time_toddler": "18:45:00",
+      "time_night": "23:30:00",
+      "dinner_bri": 90,
+      "dinner_kelvin": 2300,
+      "toddler_bri": 85,
+      "evening_kelvin": 2000,
+      "evening_bri": 70,
+      "lux_off_threshold": 611,
+      "lux_on_threshold": 394,
+      "toddler_kelvin": 2100,
+      "night_kelvin": 2000,
+      "hue_bulbs": [
+        "light.living_3",
+        "light.living_4",
+        "light.studio_3"
+      ],
+      "hue_ceiling": [
+        "light.hue_infuse_ceiling_1",
+        "light.hue_infuse_ceiling_2"
+      ],
+      "max_kelvin": 4000,
+      "night_bri": 29,
+      "notify_targets": [
+        "notify.mobile_app_martin_fold"
+      ]
+    }
+  }
+}
