@@ -1,10 +1,13 @@
 blueprint:
-  name: "Adjacent Room Circadian Lights v1.0.0"
+  name: "Adjacent Room Circadian Lights v2.0.0"
   description: >
-    **Version: 1.0.0 - HA 2026.3 Compatibility**
+    **Version: 2.0.0 - HA 2026.3 Compatibility**
 
     Motion-triggered circadian lighting for adjacent rooms (hallway, bathroom, etc.)
     that matches the Living Room color temperature exactly for seamless room-to-room transitions.
+
+    List one or more motion sensors: any sensor on turns the lights on; dim/off stages
+    run only once every listed sensor has been clear for that stage's minutes.
 
     **Features:**
     - **Identical Circadian Formula:** Same time profiles and sun elevation calculation as the Living Room blueprint.
@@ -17,8 +20,9 @@ blueprint:
     **Designed for:** Philips Hue Ambiance Panel (tunable white) + Aqara PIR motion sensor.
     Works with any standard motion sensor and tunable white light.
 
-    **Safety:** Includes a watchdog that turns off lights if the motion sensor becomes
-    unavailable, preventing lights from staying on indefinitely.
+    **Safety:** The watchdog turns off lights when every listed sensor has been
+    unavailable/unknown for 30 minutes, or when a sensor has been dead for 30 minutes
+    and every other sensor has been clear for the off time.
 
   domain: automation
   input:
@@ -30,13 +34,14 @@ blueprint:
         entity:
           domain: light
           multiple: true
-    motion_sensor:
-      name: Motion Sensor
-      description: Select the motion sensor (binary_sensor) for this room.
+    motion_sensors:
+      name: Motion Sensors
+      description: Select one or more motion sensors (binary_sensor) for this room.
       selector:
         entity:
           domain: binary_sensor
           device_class: motion
+          multiple: true
     illuminance_entity:
       name: Lux Sensor (Optional)
       description: "Optional: Select a lux sensor. Leave empty to always turn on with motion."
@@ -265,13 +270,13 @@ max_exceeded: silent
 trigger:
   # 1. Motion Detected
   - platform: state
-    entity_id: !input motion_sensor
+    entity_id: !input motion_sensors
     to: "on"
     id: "motion_on"
 
   # 2. Stage 1 Warning (motion off for X minutes)
   - platform: state
-    entity_id: !input motion_sensor
+    entity_id: !input motion_sensors
     to: "off"
     for:
       minutes: !input time_to_stage1
@@ -279,7 +284,7 @@ trigger:
 
   # 3. Stage 2 Warning (motion off for X minutes)
   - platform: state
-    entity_id: !input motion_sensor
+    entity_id: !input motion_sensors
     to: "off"
     for:
       minutes: !input time_to_stage2
@@ -287,7 +292,7 @@ trigger:
 
   # 4. Turn Off (motion off for X minutes)
   - platform: state
-    entity_id: !input motion_sensor
+    entity_id: !input motion_sensors
     to: "off"
     for:
       minutes: !input time_to_off
@@ -300,7 +305,7 @@ trigger:
 
   # 6. Safety Watchdog: Motion sensor unavailable for 30 min → turn off lights
   - platform: state
-    entity_id: !input motion_sensor
+    entity_id: !input motion_sensors
     to: "unavailable"
     for:
       minutes: 30
@@ -308,7 +313,7 @@ trigger:
 
   # 7. Safety Watchdog: Motion sensor unknown for 30 min → turn off lights
   - platform: state
-    entity_id: !input motion_sensor
+    entity_id: !input motion_sensors
     to: "unknown"
     for:
       minutes: 30
@@ -317,7 +322,10 @@ trigger:
 variables:
   # Inputs
   light_list: !input target_lights
-  sensor_motion: !input motion_sensor
+  sensor_motion: !input motion_sensors
+  mins_stage1: !input time_to_stage1
+  mins_stage2: !input time_to_stage2
+  mins_off: !input time_to_off
   sensor_lux: !input illuminance_entity
   entity_override: !input override_entity
   threshold_on: !input lux_on_threshold
@@ -360,7 +368,55 @@ action:
   # 2. Calculate Common Logic Variables (IDENTICAL to circadian_livingroom.yaml)
   - variables:
       current_lux: "{{ states(sensor_lux) | float(0) if lux_enabled else 0 }}"
-      is_motion_on: "{{ is_state(sensor_motion, 'on') }}"
+      is_motion_on: "{{ sensor_motion | select('is_state', 'on') | list | count > 0 }}"
+      clear_stage1: >
+        {% set ns = namespace(ok=true) %}
+        {% for entity in sensor_motion %}
+          {% set s = states[entity] %}
+          {% if s is none or s.state not in ['off', 'unavailable', 'unknown']
+                or s.last_changed > now() - timedelta(minutes=mins_stage1 | float) %}
+            {% set ns.ok = false %}
+          {% endif %}
+        {% else %}
+          {% set ns.ok = false %}
+        {% endfor %}
+        {{ ns.ok }}
+      clear_stage2: >
+        {% set ns = namespace(ok=true) %}
+        {% for entity in sensor_motion %}
+          {% set s = states[entity] %}
+          {% if s is none or s.state not in ['off', 'unavailable', 'unknown']
+                or s.last_changed > now() - timedelta(minutes=mins_stage2 | float) %}
+            {% set ns.ok = false %}
+          {% endif %}
+        {% else %}
+          {% set ns.ok = false %}
+        {% endfor %}
+        {{ ns.ok }}
+      clear_off: >
+        {% set ns = namespace(ok=true) %}
+        {% for entity in sensor_motion %}
+          {% set s = states[entity] %}
+          {% if s is none or s.state not in ['off', 'unavailable', 'unknown']
+                or s.last_changed > now() - timedelta(minutes=mins_off | float) %}
+            {% set ns.ok = false %}
+          {% endif %}
+        {% else %}
+          {% set ns.ok = false %}
+        {% endfor %}
+        {{ ns.ok }}
+      all_dead_30: >
+        {% set ns = namespace(ok=true) %}
+        {% for entity in sensor_motion %}
+          {% set s = states[entity] %}
+          {% if s is none or s.state not in ['unavailable', 'unknown']
+                or s.last_changed > now() - timedelta(minutes=30) %}
+            {% set ns.ok = false %}
+          {% endif %}
+        {% else %}
+          {% set ns.ok = false %}
+        {% endfor %}
+        {{ ns.ok }}
 
       # Determine Current Mode based on Time
       mode: >
@@ -399,10 +455,18 @@ action:
       - conditions:
           - condition: or
             conditions:
-              - condition: trigger
-                id: "stage_off"
-              - condition: trigger
-                id: "sensor_watchdog"
+              - condition: and
+                conditions:
+                  - condition: trigger
+                    id: "stage_off"
+                  - condition: template
+                    value_template: "{{ clear_off }}"
+              - condition: and
+                conditions:
+                  - condition: trigger
+                    id: "sensor_watchdog"
+                  - condition: template
+                    value_template: "{{ clear_off or all_dead_30 }}"
         sequence:
           - service: light.turn_off
             target:
@@ -417,6 +481,8 @@ action:
           - condition: template
             value_template: >
               {{ expand(light_list) | selectattr('state', 'eq', 'on') | list | count > 0 }}
+          - condition: template
+            value_template: "{{ clear_stage1 }}"
         sequence:
           - service: light.turn_on
             target:
@@ -433,6 +499,8 @@ action:
           - condition: template
             value_template: >
               {{ expand(light_list) | selectattr('state', 'eq', 'on') | list | count > 0 }}
+          - condition: template
+            value_template: "{{ clear_stage2 }}"
         sequence:
           - service: light.turn_on
             target:
