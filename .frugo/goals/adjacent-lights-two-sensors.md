@@ -1,7 +1,7 @@
 ---
 goal: adjacent-lights-two-sensors
 title: Adjacent room lights with two motion sensors
-status: active
+status: done
 ---
 
 ## Aim
