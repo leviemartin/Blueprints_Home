@@ -1,0 +1,29 @@
+{
+  "alias": "[Front Hall]",
+  "description": "",
+  "id": "1773750307485",
+  "use_blueprint": {
+    "input": {
+      "dinner_bri": 90,
+      "dinner_kelvin": 2300,
+      "evening_bri": 70,
+      "evening_kelvin": 2000,
+      "illuminance_entity": "sensor.frontdoor_hall_illuminance",
+      "max_kelvin": 4000,
+      "min_kelvin": 2000,
+      "motion_sensor": "binary_sensor.frontdoor_hall_motion",
+      "night_bri": 30,
+      "night_kelvin": 2000,
+      "target_lights": [
+        "light.hue_aurelle_panel_1"
+      ],
+      "time_night": "23:30:00",
+      "time_to_off": 8,
+      "time_to_stage1": 3,
+      "time_to_stage2": 6,
+      "toddler_bri": 80,
+      "toddler_kelvin": 2100
+    },
+    "path": "leviemartin/adjacent_room_lights.yaml"
+  }
+}

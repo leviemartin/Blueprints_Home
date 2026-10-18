@@ -1,0 +1,82 @@
+{
+  "action": [
+    {
+      "choose": [
+        {
+          "conditions": [
+            {
+              "after": "sunset",
+              "before": "sunrise",
+              "condition": "sun"
+            }
+          ],
+          "sequence": [
+            {
+              "action": "hue.activate_scene",
+              "data": {},
+              "target": {
+                "entity_id": "scene.attic_stairs_relax"
+              }
+            }
+          ]
+        },
+        {
+          "conditions": [
+            {
+              "after": "sunrise",
+              "before": "sunset",
+              "condition": "sun"
+            }
+          ],
+          "sequence": [
+            {
+              "action": "hue.activate_scene",
+              "data": {},
+              "target": {
+                "entity_id": "scene.attic_stairs_bright"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "wait_for_trigger": [
+        {
+          "device_id": "95a12359f35a9879907f6d77ef92717d",
+          "domain": "binary_sensor",
+          "entity_id": "acfc1427cae87b4d1bece359d962ed95",
+          "for": {
+            "hours": 0,
+            "minutes": 3,
+            "seconds": 0
+          },
+          "platform": "device",
+          "type": "no_motion"
+        }
+      ]
+    },
+    {
+      "action": "light.turn_off",
+      "data": {},
+      "metadata": {},
+      "target": {
+        "device_id": "ba955faf530e4c6c55f1f9ae0ea5a321"
+      }
+    }
+  ],
+  "alias": "8.2 Attic Stairs Motion",
+  "condition": [],
+  "description": "",
+  "id": "1727114932689",
+  "mode": "single",
+  "trigger": [
+    {
+      "device_id": "b837839b270ea7cb33297b15f9999073",
+      "domain": "binary_sensor",
+      "entity_id": "5ee87d9f8c9f4b4959af90d059f8c984",
+      "platform": "device",
+      "type": "motion"
+    }
+  ]
+}

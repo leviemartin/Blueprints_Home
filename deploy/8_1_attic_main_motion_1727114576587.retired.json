@@ -1,0 +1,85 @@
+{
+  "action": [
+    {
+      "choose": [
+        {
+          "conditions": [
+            {
+              "after": "sunset",
+              "before": "sunrise",
+              "condition": "sun"
+            }
+          ],
+          "sequence": [
+            {
+              "action": "hue.activate_scene",
+              "data": {},
+              "target": {
+                "entity_id": "scene.attic_relax"
+              }
+            }
+          ]
+        },
+        {
+          "conditions": [
+            {
+              "after": "sunrise",
+              "before": "sunset",
+              "condition": "sun"
+            }
+          ],
+          "sequence": [
+            {
+              "action": "hue.activate_scene",
+              "data": {},
+              "target": {
+                "entity_id": "scene.attic_bright"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "wait_for_trigger": [
+        {
+          "device_id": "95a12359f35a9879907f6d77ef92717d",
+          "domain": "binary_sensor",
+          "entity_id": "acfc1427cae87b4d1bece359d962ed95",
+          "for": {
+            "hours": 0,
+            "minutes": 3,
+            "seconds": 0
+          },
+          "platform": "device",
+          "type": "no_motion"
+        }
+      ]
+    },
+    {
+      "action": "light.turn_off",
+      "data": {},
+      "metadata": {},
+      "target": {
+        "device_id": [
+          "c728df20585bd1f127744574a0b8730b",
+          "70ddcd041339e200a0a7a94dedf93ff2"
+        ]
+      }
+    }
+  ],
+  "alias": "8.1 Attic_Main Motion",
+  "condition": [],
+  "description": "",
+  "id": "1727114576587",
+  "mode": "single",
+  "trigger": [
+    {
+      "device_id": "95a12359f35a9879907f6d77ef92717d",
+      "domain": "binary_sensor",
+      "entity_id": "acfc1427cae87b4d1bece359d962ed95",
+      "platform": "device",
+      "type": "motion"
+    }
+  ]
+}

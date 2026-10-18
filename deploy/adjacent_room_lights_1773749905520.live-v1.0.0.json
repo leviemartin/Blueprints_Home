@@ -1,0 +1,28 @@
+{
+  "alias": "[Kitchen] Adjacent Room Circadian Lights v1.0.0",
+  "description": "",
+  "id": "1773749905520",
+  "use_blueprint": {
+    "input": {
+      "dinner_bri": 90,
+      "dinner_kelvin": 2300,
+      "evening_bri": 70,
+      "evening_kelvin": 2000,
+      "max_kelvin": 4000,
+      "min_kelvin": 2000,
+      "motion_sensor": "binary_sensor.kitchen_motion_sensor",
+      "night_bri": 30,
+      "night_kelvin": 2000,
+      "target_lights": [
+        "light.kitchen_1"
+      ],
+      "time_night": "23:30:00",
+      "time_to_off": 8,
+      "time_to_stage1": 3,
+      "time_to_stage2": 6,
+      "toddler_bri": 80,
+      "toddler_kelvin": 2100
+    },
+    "path": "leviemartin/adjacent_room_lights.yaml"
+  }
+}

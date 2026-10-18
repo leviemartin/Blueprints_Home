@@ -1,0 +1,22 @@
+{
+  "alias": "[Attic] Adjacent Room Circadian Lights v2.0.0",
+  "description": "",
+  "id": "1792275807786",
+  "use_blueprint": {
+    "input": {
+      "motion_sensors": [
+        "binary_sensor.attic_atticlaudry_occupancy",
+        "binary_sensor.attic_atticdoor_occupancy"
+      ],
+      "target_lights": [
+        "light.attic_2",
+        "light.attic_3",
+        "light.attic_stairs"
+      ],
+      "time_to_off": 5,
+      "time_to_stage1": 2,
+      "time_to_stage2": 4
+    },
+    "path": "leviemartin/adjacent_room_lights.yaml"
+  }
+}
