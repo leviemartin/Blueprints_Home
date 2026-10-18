@@ -1,0 +1,296 @@
+input_boolean:
+  livingroom_music_hands_off:
+    name: Livingroom music Hands-off
+    icon: mdi:hand-back-right
+  livingroom_music_ha_session:
+    name: Livingroom music HA paused this
+
+timer:
+  livingroom_music_empty:
+    duration: "00:15:00"
+  livingroom_music_phone:
+    duration: "00:10:00"
+    restore: true
+
+script:
+  livingroom_music_fresh_start:
+    alias: Livingroom music fresh start
+    description: Load Lazy Sunday shuffled at the fixed starting volume.
+    mode: single
+    sequence:
+      - &may_start
+        condition: and
+        conditions:
+          - condition: state
+            entity_id: input_boolean.livingroom_music_hands_off
+            state: "off"
+          - condition: template
+            value_template: >-
+              {{ is_state('timer.livingroom_music_phone', 'idle')
+                 and not (is_state('media_player.sonos', 'playing')
+                   and state_attr('media_player.sonos', 'source') == 'Spotify Connect'
+                   and ((state_attr('media_player.sonos', 'media_content_id') or '') | string).startswith('x-sonos-vli:')) }}
+          - condition: template
+            value_template: >-
+              {{ states('media_player.lg_webos_tv_oled65c9pla') in ['off', 'standby', 'unknown', 'unavailable']
+                 and states('media_player.marantz_cinema_50') in ['off', 'standby', 'unknown', 'unavailable']
+                 and states('alarm_control_panel.house_alarm') not in ['armed_away', 'armed_night', 'arming', 'pending', 'triggered'] }}
+          - condition: time
+            after: "07:30:00"
+            before: "22:00:00"
+          - condition: template
+            value_template: >-
+              {{ states('media_player.sonos') not in ['unknown', 'unavailable']
+                 and states('media_player.bedroom') not in ['unknown', 'unavailable'] }}
+      - action: media_player.volume_set
+        target:
+          entity_id:
+            - media_player.sonos
+            - media_player.bedroom
+        data:
+          volume_level: 0.15
+      - *may_start
+      - action: media_player.play_media
+        target:
+          entity_id: media_player.sonos
+        data:
+          media_content_id: spotify:playlist:37i9dQZF1DWTc452KG008d
+          media_content_type: playlist
+          enqueue: replace
+      - *may_start
+      - action: media_player.shuffle_set
+        target:
+          entity_id: media_player.sonos
+        data:
+          shuffle: true
+
+automation:
+  - id: livingroom_music_start
+    alias: Livingroom music start
+    description: Start on occupancy or blocker clearance; reconnect only resumes HA-paused content.
+    mode: single
+    triggers:
+      - trigger: template
+        id: occupied
+        value_template: >-
+          {{ is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on')
+             or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on') }}
+      - trigger: template
+        id: unblocked
+        value_template: >-
+          {{ states('media_player.lg_webos_tv_oled65c9pla') in ['off', 'standby', 'unknown', 'unavailable']
+             and states('media_player.marantz_cinema_50') in ['off', 'standby', 'unknown', 'unavailable']
+             and states('alarm_control_panel.house_alarm') not in ['armed_away', 'armed_night', 'arming', 'pending', 'triggered'] }}
+      - trigger: homeassistant
+        id: restart
+        event: start
+      - trigger: state
+        id: reconnect
+        entity_id:
+          - media_player.sonos
+          - media_player.bedroom
+        from:
+          - unavailable
+          - unknown
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on')
+             or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on') }}
+      - *may_start
+      - condition: template
+        value_template: "{{ not is_state('media_player.sonos', 'playing') }}"
+    actions:
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.livingroom_music_ha_session
+                state: "on"
+              - condition: state
+                entity_id: media_player.sonos
+                state: paused
+            sequence:
+              - action: media_player.media_play
+                target:
+                  entity_id: media_player.sonos
+        default:
+          - condition: template
+            value_template: "{{ trigger.id != 'reconnect' }}"
+          - action: script.livingroom_music_fresh_start
+
+  - id: livingroom_music_pause
+    alias: Livingroom music pause
+    description: Pause on vacancy, AV use, alarm or quiet hours, including delayed HA playback.
+    mode: single
+    triggers:
+      - trigger: event
+        id: empty
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.livingroom_music_empty
+      - trigger: template
+        id: blocked
+        value_template: >-
+          {{ states('media_player.lg_webos_tv_oled65c9pla') not in ['off', 'standby', 'unknown', 'unavailable']
+             or states('media_player.marantz_cinema_50') not in ['off', 'standby', 'unknown', 'unavailable']
+             or states('alarm_control_panel.house_alarm') in ['armed_away', 'armed_night', 'arming', 'pending', 'triggered'] }}
+      - trigger: time
+        id: quiet
+        at: "22:00:00"
+      - trigger: state
+        id: started
+        entity_id: media_player.sonos
+        to: playing
+    conditions:
+      - condition: state
+        entity_id: input_boolean.livingroom_music_hands_off
+        state: "off"
+      - condition: state
+        entity_id: media_player.sonos
+        state: playing
+      - condition: template
+        # ponytail: infer HA playback within 30 seconds; add explicit attribution if needed.
+        value_template: >-
+          {% set last = state_attr('script.livingroom_music_fresh_start', 'last_triggered') %}
+          {% set resumed = state_attr('automation.livingroom_music_start', 'last_triggered') %}
+          {{ trigger.id != 'started'
+             or is_state('script.livingroom_music_fresh_start', 'on')
+             or (is_state('automation.livingroom_music_start', 'on')
+                 and (state_attr('automation.livingroom_music_start', 'current') or 0) > 0)
+             or (resumed is not none and 0 <= (now() - resumed).total_seconds() <= 30)
+             or (last is not none and 0 <= (now() - last).total_seconds() <= 30) }}
+      - condition: template
+        value_template: >-
+          {{ trigger.id != 'started'
+             or states('media_player.lg_webos_tv_oled65c9pla') not in ['off', 'standby', 'unknown', 'unavailable']
+             or states('media_player.marantz_cinema_50') not in ['off', 'standby', 'unknown', 'unavailable']
+             or states('alarm_control_panel.house_alarm') in ['armed_away', 'armed_night', 'arming', 'pending', 'triggered']
+             or now().strftime('%H:%M:%S') < '07:30:00'
+             or now().strftime('%H:%M:%S') >= '22:00:00' }}
+    actions:
+      - variables:
+          was_phone: >-
+            {{ state_attr('media_player.sonos', 'source') == 'Spotify Connect'
+               and ((state_attr('media_player.sonos', 'media_content_id') or '') | string).startswith('x-sonos-vli:') }}
+      - action: media_player.media_pause
+        target:
+          entity_id: media_player.sonos
+      - condition: template
+        value_template: >-
+          {{ trigger.id in ['empty', 'blocked'] and not was_phone }}
+      - condition: time
+        after: "07:30:00"
+        before: "22:00:00"
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.livingroom_music_ha_session
+
+  - id: livingroom_music_empty_timer
+    alias: Livingroom music empty timer
+    description: Cancel on occupancy and give each new vacancy a full fifteen minutes.
+    mode: queued
+    triggers:
+      - trigger: template
+        id: empty
+        value_template: >-
+          {{ not (is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on')
+             or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on')) }}
+      - trigger: template
+        id: occupied
+        value_template: >-
+          {{ is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on')
+             or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on') }}
+      - trigger: homeassistant
+        id: restart
+        event: start
+      - trigger: state
+        id: playing
+        entity_id: media_player.sonos
+        to: playing
+    actions:
+      - choose:
+          - conditions: "{{ trigger.id == 'occupied' }}"
+            sequence:
+              - action: timer.cancel
+                target:
+                  entity_id: timer.livingroom_music_empty
+          - conditions: "{{ trigger.id == 'empty' }}"
+            sequence:
+              - action: timer.start
+                target:
+                  entity_id: timer.livingroom_music_empty
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ trigger.id in ['restart', 'playing']
+                     and not (is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on')
+                       or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on')) }}
+              - condition: state
+                entity_id: timer.livingroom_music_empty
+                state: idle
+            sequence:
+              - action: timer.start
+                target:
+                  entity_id: timer.livingroom_music_empty
+
+  - id: livingroom_music_phone
+    alias: Livingroom music phone session
+    description: Retain phone ownership for ten minutes after playback stops.
+    mode: queued
+    triggers:
+      - trigger: state
+        id: changed
+        entity_id: media_player.sonos
+    actions:
+      - choose:
+          - conditions: "{{ trigger.to_state is not none and trigger.to_state.state == 'playing' }}"
+            sequence:
+              - action: timer.cancel
+                target:
+                  entity_id: timer.livingroom_music_phone
+              - condition: template
+                value_template: "{{ trigger.from_state is none or trigger.from_state.state != 'playing' }}"
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.livingroom_music_ha_session
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ (trigger.to_state is none or trigger.to_state.state != 'playing')
+                     and trigger.from_state is not none
+                     and trigger.from_state.state == 'playing'
+                     and trigger.from_state.attributes.get('source') == 'Spotify Connect'
+                     and ((trigger.from_state.attributes.get('media_content_id') or '') | string).startswith('x-sonos-vli:') }}
+            sequence:
+              - action: timer.start
+                target:
+                  entity_id: timer.livingroom_music_phone
+
+  - id: livingroom_music_hands_off_reset
+    alias: Livingroom music Hands-off reset
+    description: Return control each morning without starting playback.
+    triggers:
+      - trigger: time
+        id: morning
+        at: "06:00:00"
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.livingroom_music_hands_off
+
+  - id: livingroom_music_quiet_reset
+    alias: Livingroom music quiet reset
+    description: Forget the paused track so the next daytime start uses the fixed volume.
+    # ponytail: downtime across this reset can retain ownership; add a date helper if needed.
+    triggers:
+      - trigger: time
+        id: quiet
+        at: "22:00:00"
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.livingroom_music_ha_session
+
+# ponytail: morning and Hands-off release wait for a start edge; add triggers if requested.
+# ponytail: vacancy expiry during Hands-off waits for a new vacancy edge to pause.
+# ponytail: already-playing blocked restarts wait for a blocker edge; add a restart pause if requested.
