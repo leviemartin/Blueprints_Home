@@ -1,7 +1,7 @@
 ---
 goal: livingroom-fp300-dual-presence
 title: 'Circadian living room: add FP300 couch sensor'
-status: active
+status: done
 ---
 
 ## Aim
