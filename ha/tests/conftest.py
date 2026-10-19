@@ -22,6 +22,7 @@ PACKAGES = {
     "livingroom_music": {
         "binary_sensor.presence_sensor_fp2_e863_presence_sensor_1": ("off", "Presence-Sensor-FP2-E863 Presence Sensor 1"),
         "binary_sensor.living_room_main_fp300_couch_occupancy_sensor": ("off", "FP300_Couch Occupancy Sensor"),
+        "event.kitchen_button_1": ("2026-10-20T08:00:00.000+00:00", "Music Remote button 1"),
         "event.kitchen_button_2": ("2026-10-20T08:00:00.000+00:00", "Music Remote button 2"),
         "event.kitchen_button_3": ("2026-10-20T08:00:00.000+00:00", "Music Remote button 3"),
         "event.kitchen_button_4": ("2026-10-20T08:00:00.000+00:00", "Music Remote button 4"),
@@ -34,7 +35,7 @@ PACKAGES = {
 }
 DOMAINS = {
     "automation", "script", "input_boolean", "input_number",
-    "input_select", "timer", "input_datetime",
+    "input_select", "timer", "input_datetime", "input_text",
 }
 
 
@@ -125,6 +126,7 @@ def services(hass, caplog):
             "media_next_track", "volume_mute", "join", "unjoin",
         )),
         ("sonos", ("snapshot", "restore")),
+        ("notify", ("mobile_app_martin_fold", "mobile_app_savannah_s25_ultra")),
     ):
         for name in names:
             hass.services.async_register(domain, name, record)

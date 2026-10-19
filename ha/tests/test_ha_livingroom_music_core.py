@@ -30,14 +30,14 @@ pytestmark = [
 
 @pytest.fixture
 def boot(hass, freezer, load_package, services, monkeypatch):
-    async def load(time="12:00:00.5", owned=False, hands=False, **kwargs):
+    async def load(time="12:00:00.5", owned=False, hands=False, extra=(), **kwargs):
         # Remove HA's random daily-trigger jitter so exact boundaries are testable.
         monkeypatch.setattr("homeassistant.helpers.event.randint", lambda a, b: 0)
         freezer.move_to(f"2026-10-20T{time}+02:00")
         result = await load_package(
             "livingroom_music",
             restore=[State(OWNED, "on" if owned else "off"),
-                     State(HANDS, "on" if hands else "off")],
+                     State(HANDS, "on" if hands else "off"), *extra],
             **kwargs,
         )
         await settle(hass)
@@ -84,10 +84,11 @@ async def direct(hass):
 async def test_package_loads(hass, boot, services):
     package = await boot()
     assert set(package) <= {"automation", "script", "input_boolean", "input_number",
-                            "input_select", "timer", "input_datetime"}
+                            "input_select", "timer", "input_datetime", "input_text"}
     assert {a["id"] for a in package["automation"]} == {
         f"livingroom_music_{name}" for name in
-        ("start", "pause", "empty_timer", "phone", "hands_off_reset", "quiet_reset", "remote")
+        ("start", "pause", "empty_timer", "phone", "hands_off_reset", "quiet_reset", "remote",
+         "approval_answer", "kids_end", "volume_restore_retry")
     }
     assert hass.states.get(f"script.{SCRIPT}").state == "off"
     assert hass.states.is_state(HANDS, "off")
@@ -100,7 +101,9 @@ async def test_package_loads(hass, boot, services):
 def test_package_text_rules():
     text = (REPO / "ha/packages/livingroom_music.yaml").read_text()
     levels = [line for line in text.splitlines() if "volume_level" in line]
-    assert [line.strip() for line in levels] == ['volume_level: "{{ level }}"']
+    assert sorted(line.strip() for line in levels) == sorted([
+        'volume_level: "{{ level }}"', *['volume_level: "{{ restore_level }}"'] * 2,
+    ])
     assert all(word not in text for word in (
         "pixel_9_pro_xl", "spotcast", "music_assistant", "sonos.snapshot", "sonos.restore",
     ))

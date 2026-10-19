@@ -5,13 +5,48 @@ input_boolean:
   livingroom_music_ha_session:
     name: Livingroom music HA paused this
 
+  livingroom_music_kids:
+    name: Livingroom music kids
+  livingroom_music_approved:
+    name: Livingroom music approved
+    initial: false
+  livingroom_music_approval_sending:
+    name: Livingroom music approval sending
+    initial: false
+  livingroom_music_restore_sonos:
+    name: Livingroom music restore Sonos
+  livingroom_music_restore_bedroom:
+    name: Livingroom music restore bedroom
+
 input_number:
   livingroom_music_volume_step:
     name: Livingroom music volume step
     min: 0
-    max: 4
+    max: 5
     step: 1
     initial: 2
+
+  livingroom_music_pre_kids_step:
+    name: Livingroom music pre kids step
+    min: 0
+    max: 4
+    step: 1
+  livingroom_music_kids_session:
+    name: Livingroom music kids session
+    min: 0
+    max: 999999
+    step: 1
+  livingroom_music_approval_session:
+    name: Livingroom music approval session
+    min: 0
+    max: 999999
+    step: 1
+
+input_text:
+  livingroom_music_approval_id:
+    name: Livingroom music approval id
+    max: 64
+    initial: ""
 
 timer:
   livingroom_music_empty:
@@ -20,11 +55,24 @@ timer:
     duration: "00:10:00"
     restore: true
 
+  livingroom_music_kids:
+    duration: "00:30:00"
+  livingroom_music_cooldown:
+    duration: "00:30:00"
+  livingroom_music_approval:
+    duration: "00:02:00"
+  livingroom_music_restore_retry:
+    duration: "00:00:30"
+
 script:
   livingroom_music_fresh_start:
     alias: Livingroom music fresh start
     description: Load Lazy Sunday shuffled at the fixed starting volume.
     mode: single
+    fields:
+      keep_volume:
+        description: Preserve the level already restored by kids cleanup.
+        default: false
     sequence:
       - &may_start
         condition: and
@@ -50,9 +98,11 @@ script:
             value_template: >-
               {{ states('media_player.sonos') not in ['unknown', 'unavailable']
                  and states('media_player.bedroom') not in ['unknown', 'unavailable'] }}
-      - action: script.livingroom_music_volume
-        data:
-          step: 2
+      - if: "{{ not (keep_volume | default(false) | bool) }}"
+        then:
+          - action: script.livingroom_music_volume
+            data:
+              step: 2
       - *may_start
       - action: media_player.play_media
         target:
@@ -78,18 +128,36 @@ script:
         description: Optional absolute ladder index for a fresh start.
       delta:
         description: Optional one-step direction from the remote.
+      restore:
+        default: false
+      session:
+        description: Optional kids session binding for a press or grant.
     sequence:
+      - if:
+          condition: "template"
+          value_template: "{{ restore | default(false) | bool }}"
+        then:
+          - action: "script.turn_on"
+            target:
+              entity_id: "script.livingroom_music_volume_reset"
+            data:
+              variables:
+                queued: true
+          - stop: "Reset started in queue order."
       - variables:
           cur: "{{ states('input_number.livingroom_music_volume_step') | float(-1) }}"
           s: >-
             {% if step is defined %}
               {{ step | float(-1) }}
             {% elif delta is defined %}
-              {{ cur + (delta | int) if cur in [0, 1, 2, 3, 4] else -1 }}
+              {{ cur + (delta | int) if cur in [0, 1, 2, 3, 4, 5] else -1 }}
             {% else %}
               {{ cur }}
             {% endif %}
-          level: "{{ [0.05, 0.10, 0.15, 0.20, 0.25][s | int] if s in [0, 1, 2, 3, 4] else none }}"
+          level: "{{ [0.05, 0.10, 0.15, 0.20, 0.25, 0.30][s | int] if s in [0, 1, 2, 3, 4, 5] else none }}"
+          kids_was_on: "{{ is_state('input_boolean.livingroom_music_kids', 'on') }}"
+          end_was_off: "{{ is_state('script.livingroom_music_kids_end', 'off') }}"
+          k0: "{{ states('input_number.livingroom_music_kids_session') | int(-1) }}"
       - &volume_hands_off
         condition: state
         entity_id: input_boolean.livingroom_music_hands_off
@@ -100,25 +168,42 @@ script:
           {{ states('media_player.sonos') not in ['unknown', 'unavailable']
              and states('media_player.bedroom') not in ['unknown', 'unavailable'] }}
       - condition: template
-        value_template: "{{ s in [0, 1, 2, 3, 4] }}"
+        value_template: "{{ s in [0, 1, 2, 3, 4, 5] }}"
+      - condition: template
+        value_template: "{{ s <= 4 or (is_state('input_boolean.livingroom_music_kids', 'on') and is_state('timer.livingroom_music_kids', 'active') and is_state('input_boolean.livingroom_music_approved', 'on') and (states('input_number.livingroom_music_approval_session') | int(-2)) == (states('input_number.livingroom_music_kids_session') | int(-1)) and (is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on') or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on'))) }}"
+      - condition: template
+        value_template: "{{ session is not defined or (session | int(-2)) == (states('input_number.livingroom_music_kids_session') | int(-1)) }}"
       - &volume_start_guard
         condition: or
         conditions:
           - condition: template
-            value_template: "{{ step is not defined }}"
+            value_template: "{{ step is not defined and s <= 4 }}"
           - *may_start
+      - variables:
+          write: "{{ (step is defined or delta is defined) and is_state('script.livingroom_music_kids_end', 'off') and not (kids_was_on and is_state('input_boolean.livingroom_music_kids', 'off')) and (session is not defined or (session | int(-2)) == (states('input_number.livingroom_music_kids_session') | int(-1))) }}"
       - if:
           - condition: template
-            value_template: "{{ step is defined or delta is defined }}"
+            value_template: "{{ write }}"
         then:
           - action: input_number.set_value
             target:
               entity_id: input_number.livingroom_music_volume_step
             data:
               value: "{{ s }}"
+      - if:
+          condition: "template"
+          value_template: "{{ write and is_state('input_boolean.livingroom_music_kids', 'off') and (is_state('script.livingroom_music_kids_end', 'on') or (states('input_number.livingroom_music_kids_session') | int(-1)) != k0) }}"
+        then:
+          - action: "input_number.set_value"
+            target:
+              entity_id: "input_number.livingroom_music_volume_step"
+            data:
+              value: "{{ (states('input_number.livingroom_music_pre_kids_step') | float(-1)) if (states('input_number.livingroom_music_pre_kids_step') | float(-1)) in [0, 1, 2, 3, 4] else 2 }}"
       - *volume_hands_off
       - *volume_available
       - *volume_start_guard
+      - condition: template
+        value_template: "{{ (session is not defined or (session | int(-2)) == (states('input_number.livingroom_music_kids_session') | int(-1))) and (level <= 0.25 or (is_state('input_boolean.livingroom_music_kids', 'on') and is_state('timer.livingroom_music_kids', 'active') and is_state('input_boolean.livingroom_music_approved', 'on') and (states('input_number.livingroom_music_approval_session') | int(-2)) == (states('input_number.livingroom_music_kids_session') | int(-1)) and (is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on') or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on')))) }}"
       - action: media_player.volume_set
         target:
           entity_id:
@@ -126,8 +211,508 @@ script:
             - media_player.bedroom
         data:
           volume_level: "{{ level }}"
+      - if:
+          condition: "template"
+          value_template: "{{ not end_was_off or is_state('script.livingroom_music_kids_end', 'on') }}"
+        then:
+          - action: "input_boolean.turn_on"
+            target:
+              entity_id:
+                - "input_boolean.livingroom_music_restore_sonos"
+                - "input_boolean.livingroom_music_restore_bedroom"
+          - action: "script.turn_on"
+            target:
+              entity_id: "script.livingroom_music_volume_reset"
+            data:
+              variables:
+                queued: true
+      - if:
+          condition: "template"
+          value_template: "{{ not kids_was_on and end_was_off and level <= 0.25 and is_state('script.livingroom_music_kids_end', 'off') }}"
+        then:
+          - *volume_available
+          - action: "input_boolean.turn_off"
+            target:
+              entity_id:
+                - "input_boolean.livingroom_music_restore_sonos"
+                - "input_boolean.livingroom_music_restore_bedroom"
+          - action: "timer.cancel"
+            target:
+              entity_id: "timer.livingroom_music_restore_retry"
+
+  livingroom_music_volume_reset:
+    alias: "Livingroom music volume reset"
+    description: "Retry each owed speaker independently until its reset succeeds."
+    mode: "restart"
+    fields:
+      queued:
+        default: false
+    sequence:
+      - variables:
+          p: "{{ states('input_number.livingroom_music_pre_kids_step') | float(-1) }}"
+          restore_level: "{{ [0.05, 0.10, 0.15, 0.20, 0.25][p | int] if p in [0, 1, 2, 3, 4] else 0.15 }}"
+      - if:
+          condition: "template"
+          value_template: "{{ is_state('input_boolean.livingroom_music_restore_sonos', 'on') or is_state('input_boolean.livingroom_music_restore_bedroom', 'on') }}"
+        then:
+          - action: "timer.start"
+            target:
+              entity_id: "timer.livingroom_music_restore_retry"
+      - parallel:
+          - sequence:
+              - if:
+                  - condition: "state"
+                    entity_id: "input_boolean.livingroom_music_restore_sonos"
+                    state: "on"
+                  - condition: "template"
+                    value_template: "{{ states('media_player.sonos') not in ['unknown', 'unavailable'] }}"
+                then:
+                  - action: "media_player.volume_set"
+                    target:
+                      entity_id: "media_player.sonos"
+                    data:
+                      volume_level: "{{ restore_level }}"
+                  - condition: "template"
+                    value_template: "{{ states('media_player.sonos') not in ['unknown', 'unavailable'] and ((queued | default(false) | bool) or is_state('script.livingroom_music_volume', 'off')) }}"
+                  - action: "input_boolean.turn_off"
+                    target:
+                      entity_id: "input_boolean.livingroom_music_restore_sonos"
+          - sequence:
+              - if:
+                  - condition: "state"
+                    entity_id: "input_boolean.livingroom_music_restore_bedroom"
+                    state: "on"
+                  - condition: "template"
+                    value_template: "{{ states('media_player.bedroom') not in ['unknown', 'unavailable'] }}"
+                then:
+                  - action: "media_player.volume_set"
+                    target:
+                      entity_id: "media_player.bedroom"
+                    data:
+                      volume_level: "{{ restore_level }}"
+                  - condition: "template"
+                    value_template: "{{ states('media_player.bedroom') not in ['unknown', 'unavailable'] and ((queued | default(false) | bool) or is_state('script.livingroom_music_volume', 'off')) }}"
+                  - action: "input_boolean.turn_off"
+                    target:
+                      entity_id: "input_boolean.livingroom_music_restore_bedroom"
+        continue_on_error: true
+      - if:
+          condition: "template"
+          value_template: "{{ is_state('input_boolean.livingroom_music_restore_sonos', 'off') and is_state('input_boolean.livingroom_music_restore_bedroom', 'off') }}"
+        then:
+          - action: "timer.cancel"
+            target:
+              entity_id: "timer.livingroom_music_restore_retry"
+  livingroom_music_clear_pushes:
+    alias: "Livingroom music clear pushes"
+    description: "Clear the approval notification from both phones."
+    mode: "queued"
+    sequence:
+      - parallel:
+          - sequence:
+              - action: "notify.mobile_app_martin_fold"
+                data:
+                  message: "clear_notification"
+                  data:
+                    tag: "livingroom_music_approval"
+          - sequence:
+              - action: "notify.mobile_app_savannah_s25_ultra"
+                data:
+                  message: "clear_notification"
+                  data:
+                    tag: "livingroom_music_approval"
+  livingroom_music_kids_start:
+    alias: "Livingroom music kids start"
+    description: "Start thirty minutes of shuffled Pairilijst after the cooldown."
+    mode: "single"
+    sequence:
+      - variables:
+          fresh_was_running: "{{ is_state('script.livingroom_music_fresh_start', 'on') }}"
+      - wait_template: "{{ is_state('script.livingroom_music_fresh_start', 'off') }}"
+        timeout: "00:00:30"
+        continue_on_timeout: false
+      - *may_start
+      - condition: "template"
+        value_template: "{{ is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on') or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on') }}"
+      - condition: "state"
+        entity_id: "input_boolean.livingroom_music_kids"
+        state: "off"
+      - condition: "state"
+        entity_id: "script.livingroom_music_kids_end"
+        state: "off"
+      - condition: "state"
+        entity_id: "timer.livingroom_music_cooldown"
+        state: "idle"
+      - if:
+          condition: "template"
+          value_template: "{{ not is_state('media_player.sonos', 'playing') and not fresh_was_running }}"
+        then:
+          - action: "script.livingroom_music_fresh_start"
+      - variables:
+          s: "{{ states('input_number.livingroom_music_volume_step') | float(-1) }}"
+      - action: "input_number.set_value"
+        target:
+          entity_id: "input_number.livingroom_music_pre_kids_step"
+        data:
+          value: "{{ s if s in [0, 1, 2, 3, 4] else 2 }}"
+      - action: "input_boolean.turn_off"
+        target:
+          entity_id: "input_boolean.livingroom_music_approved"
+      - action: "input_number.set_value"
+        target:
+          entity_id: "input_number.livingroom_music_kids_session"
+        data:
+          value: "{{ ((states('input_number.livingroom_music_kids_session') | int(-1)) + 1) % 1000000 }}"
+      - action: "input_boolean.turn_on"
+        target:
+          entity_id: "input_boolean.livingroom_music_kids"
+      - action: "timer.start"
+        target:
+          entity_id: "timer.livingroom_music_kids"
+      - *may_start
+      - action: "media_player.play_media"
+        target:
+          entity_id: "media_player.sonos"
+        data:
+          media_content_id: "spotify:playlist:4IzLPBPewQ4PCOF3qMYgDT"
+          media_content_type: "playlist"
+          enqueue: "replace"
+      - *may_start
+      - action: "media_player.shuffle_set"
+        target:
+          entity_id: "media_player.sonos"
+        data:
+          shuffle: true
+      - action: "media_player.repeat_set"
+        target:
+          entity_id: "media_player.sonos"
+        data:
+          repeat: "all"
+  livingroom_music_kids_end:
+    alias: "Livingroom music kids end"
+    description: "Revoke approval and restore each speaker before ending playback."
+    mode: "single"
+    sequence:
+      - variables:
+          pending: "{{ is_state('timer.livingroom_music_approval', 'active') }}"
+      - action: "input_boolean.turn_on"
+        target:
+          entity_id:
+            - "input_boolean.livingroom_music_restore_sonos"
+            - "input_boolean.livingroom_music_restore_bedroom"
+      - action: "timer.start"
+        target:
+          entity_id: "timer.livingroom_music_restore_retry"
+      - action: "input_boolean.turn_off"
+        target:
+          entity_id: "input_boolean.livingroom_music_kids"
+      - action: "input_boolean.turn_off"
+        target:
+          entity_id: "input_boolean.livingroom_music_approved"
+      - action: "input_number.set_value"
+        target:
+          entity_id: "input_number.livingroom_music_kids_session"
+        data:
+          value: "{{ ((states('input_number.livingroom_music_kids_session') | int(-1)) + 1) % 1000000 }}"
+      - action: "input_boolean.turn_off"
+        target:
+          entity_id: "input_boolean.livingroom_music_approval_sending"
+      - action: "script.turn_off"
+        target:
+          entity_id: "script.livingroom_music_approval_request"
+      - action: "timer.cancel"
+        target:
+          entity_id: "timer.livingroom_music_approval"
+      - action: "input_text.set_value"
+        target:
+          entity_id: "input_text.livingroom_music_approval_id"
+        data:
+          value: ""
+      - if:
+          condition: "template"
+          value_template: "{{ pending }}"
+        then:
+          - action: "script.turn_on"
+            target:
+              entity_id: "script.livingroom_music_clear_pushes"
+      - action: "timer.cancel"
+        target:
+          entity_id: "timer.livingroom_music_kids"
+      - action: "timer.start"
+        target:
+          entity_id: "timer.livingroom_music_cooldown"
+      - action: "input_boolean.turn_off"
+        target:
+          entity_id: "input_boolean.livingroom_music_ha_session"
+      - action: "input_number.set_value"
+        target:
+          entity_id: "input_number.livingroom_music_volume_step"
+        data:
+          value: "{{ (states('input_number.livingroom_music_pre_kids_step') | float(-1)) if (states('input_number.livingroom_music_pre_kids_step') | float(-1)) in [0, 1, 2, 3, 4] else 2 }}"
+      - action: "script.livingroom_music_volume"
+        data:
+          restore: true
+        continue_on_error: true
+      - wait_template: "{{ is_state('script.livingroom_music_volume_reset', 'off') }}"
+        timeout: "00:00:10"
+        continue_on_timeout: true
+      - choose:
+          - conditions:
+              - condition: "state"
+                entity_id: "media_player.sonos"
+                state: "playing"
+              - condition: "template"
+                value_template: "{{ is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on') or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on') }}"
+              - *may_start
+            sequence:
+              - action: "script.livingroom_music_fresh_start"
+                data:
+                  keep_volume: true
+                continue_on_error: true
+          - conditions:
+              - condition: "state"
+                entity_id: "media_player.sonos"
+                state: "playing"
+              - condition: "state"
+                entity_id: "input_boolean.livingroom_music_hands_off"
+                state: "off"
+              - condition: "template"
+                value_template: "{{ not (is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on') or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on')) or states('media_player.lg_webos_tv_oled65c9pla') not in ['off', 'standby', 'unknown', 'unavailable'] or states('media_player.marantz_cinema_50') not in ['off', 'standby', 'unknown', 'unavailable'] or states('alarm_control_panel.house_alarm') in ['armed_away', 'armed_night', 'arming', 'pending', 'triggered'] or now().strftime('%H:%M:%S') < '07:30:00' or now().strftime('%H:%M:%S') >= '22:00:00' }}"
+              - condition: "template"
+                value_template: "{{ not (state_attr('media_player.sonos', 'source') == 'Spotify Connect' and ((state_attr('media_player.sonos', 'media_content_id') or '') | string).startswith('x-sonos-vli:')) }}"
+            sequence:
+              - action: "media_player.media_pause"
+                target:
+                  entity_id: "media_player.sonos"
+                continue_on_error: true
+  livingroom_music_approval_request:
+    alias: "Livingroom music approval request"
+    description: "Ask both phones for permission to use the final kids volume step."
+    mode: "single"
+    sequence:
+      - *may_start
+      - condition: "state"
+        entity_id: "input_boolean.livingroom_music_kids"
+        state: "on"
+      - condition: "state"
+        entity_id: "script.livingroom_music_kids_end"
+        state: "off"
+      - condition: "state"
+        entity_id: "timer.livingroom_music_kids"
+        state: "active"
+      - condition: "state"
+        entity_id: "input_boolean.livingroom_music_approved"
+        state: "off"
+      - condition: "template"
+        value_template: "{{ states('input_number.livingroom_music_volume_step') | float(-1) == 4 }}"
+      - condition: "state"
+        entity_id: "timer.livingroom_music_approval"
+        state: "idle"
+      - action: "input_text.set_value"
+        target:
+          entity_id: "input_text.livingroom_music_approval_id"
+        data:
+          value: "{{ context.id }}"
+      - action: "input_number.set_value"
+        target:
+          entity_id: "input_number.livingroom_music_approval_session"
+        data:
+          value: "{{ states('input_number.livingroom_music_kids_session') | int(-1) }}"
+      - action: "input_boolean.turn_on"
+        target:
+          entity_id: "input_boolean.livingroom_music_approval_sending"
+      - action: "timer.start"
+        target:
+          entity_id: "timer.livingroom_music_approval"
+      # Run sends in order, yielding before the sending flag is cleared.
+      - parallel:
+          - sequence:
+              - action: "notify.mobile_app_martin_fold"
+                data:
+                  title: "Kids music volume"
+                  message: "The kids ask for louder music. Approve or Deny within 2 minutes."
+                  data:
+                    tag: "livingroom_music_approval"
+                    actions:
+                      - action: "{{ 'LRM_APPROVE_' ~ context.id }}"
+                        title: "Approve"
+                      - action: "{{ 'LRM_DENY_' ~ context.id }}"
+                        title: "Deny"
+              - action: "notify.mobile_app_savannah_s25_ultra"
+                data:
+                  title: "Kids music volume"
+                  message: "The kids ask for louder music. Approve or Deny within 2 minutes."
+                  data:
+                    tag: "livingroom_music_approval"
+                    actions:
+                      - action: "{{ 'LRM_APPROVE_' ~ context.id }}"
+                        title: "Approve"
+                      - action: "{{ 'LRM_DENY_' ~ context.id }}"
+                        title: "Deny"
+      - action: "input_boolean.turn_off"
+        target:
+          entity_id: "input_boolean.livingroom_music_approval_sending"
+      - if:
+          condition: "template"
+          value_template: "{{ not is_state('timer.livingroom_music_approval', 'active') }}"
+        then:
+          - action: "script.turn_on"
+            target:
+              entity_id: "script.livingroom_music_clear_pushes"
 
 automation:
+  - id: "livingroom_music_approval_answer"
+    alias: "Livingroom music approval answer"
+    description: "Accept the first current answer, or deny failed and expired requests."
+    mode: "queued"
+    max: 10
+    variables:
+      # Capture before the queued actions can outlive notification delivery.
+      sending_at_trigger: "{{ is_state('input_boolean.livingroom_music_approval_sending', 'on') }}"
+    triggers:
+      - trigger: "event"
+        id: "answer"
+        event_type: "mobile_app_notification_action"
+      - trigger: "event"
+        id: "timeout"
+        event_type: "timer.finished"
+        event_data:
+          entity_id: "timer.livingroom_music_approval"
+      - trigger: "state"
+        id: "failed"
+        entity_id: "script.livingroom_music_approval_request"
+        to: "off"
+    actions:
+      - choose:
+          - conditions: "{{ trigger.id == 'answer' }}"
+            sequence:
+              - variables:
+                  a: "{{ trigger.event.data.action | string }}"
+                  rid: "{{ states('input_text.livingroom_music_approval_id') }}"
+              - condition: "template"
+                value_template: "{{ is_state('timer.livingroom_music_approval', 'active') and rid not in ['', 'unknown', 'unavailable'] and (states('input_number.livingroom_music_approval_session') | int(-2)) == (states('input_number.livingroom_music_kids_session') | int(-1)) and (a == 'LRM_DENY_' ~ rid or (a == 'LRM_APPROVE_' ~ rid and not sending_at_trigger and is_state('input_boolean.livingroom_music_approval_sending', 'off'))) }}"
+              - action: "timer.cancel"
+                target:
+                  entity_id: "timer.livingroom_music_approval"
+              - action: "input_text.set_value"
+                target:
+                  entity_id: "input_text.livingroom_music_approval_id"
+                data:
+                  value: ""
+              - action: "script.turn_on"
+                target:
+                  entity_id: "script.livingroom_music_clear_pushes"
+              - if:
+                  - condition: "template"
+                    value_template: "{{ a == 'LRM_APPROVE_' ~ rid and not sending_at_trigger and is_state('input_boolean.livingroom_music_approval_sending', 'off') }}"
+                  - *may_start
+                  - condition: "state"
+                    entity_id: "input_boolean.livingroom_music_kids"
+                    state: "on"
+                  - condition: "state"
+                    entity_id: "script.livingroom_music_kids_end"
+                    state: "off"
+                  - condition: "state"
+                    entity_id: "timer.livingroom_music_kids"
+                    state: "active"
+                  - condition: "template"
+                    value_template: "{{ (states('input_number.livingroom_music_approval_session') | int(-2)) == (states('input_number.livingroom_music_kids_session') | int(-1)) }}"
+                then:
+                  - action: "input_boolean.turn_on"
+                    target:
+                      entity_id: "input_boolean.livingroom_music_approved"
+                  - variables:
+                      grant_session: "{{ states('input_number.livingroom_music_kids_session') | int(-1) }}"
+                  - if:
+                      condition: "template"
+                      value_template: "{{ states('input_number.livingroom_music_volume_step') | float(-1) == 4 }}"
+                    then:
+                      - action: "script.livingroom_music_volume"
+                        data:
+                          step: 5
+                          session: "{{ grant_session }}"
+          - conditions: "{{ trigger.id == 'timeout' }}"
+            sequence:
+              - action: "input_text.set_value"
+                target:
+                  entity_id: "input_text.livingroom_music_approval_id"
+                data:
+                  value: ""
+              - action: "script.turn_on"
+                target:
+                  entity_id: "script.livingroom_music_clear_pushes"
+          - conditions: "{{ trigger.id == 'failed' }}"
+            sequence:
+              - condition: "state"
+                entity_id: "input_boolean.livingroom_music_approval_sending"
+                state: "on"
+              - action: "input_boolean.turn_off"
+                target:
+                  entity_id: "input_boolean.livingroom_music_approval_sending"
+              - action: "timer.cancel"
+                target:
+                  entity_id: "timer.livingroom_music_approval"
+              - action: "input_text.set_value"
+                target:
+                  entity_id: "input_text.livingroom_music_approval_id"
+                data:
+                  value: ""
+              - action: "script.turn_on"
+                target:
+                  entity_id: "script.livingroom_music_clear_pushes"
+  - id: "livingroom_music_kids_end"
+    alias: "Livingroom music kids end"
+    description: "End used kids time on expiry, Hands-off or restart."
+    mode: "single"
+    triggers:
+      - trigger: "event"
+        id: "done"
+        event_type: "timer.finished"
+        event_data:
+          entity_id: "timer.livingroom_music_kids"
+      - trigger: "state"
+        id: "hands"
+        entity_id: "input_boolean.livingroom_music_hands_off"
+        to: "on"
+      - trigger: "homeassistant"
+        id: "restart"
+        event: "start"
+    conditions:
+      - condition: "state"
+        entity_id: "input_boolean.livingroom_music_kids"
+        state: "on"
+      - condition: "template"
+        value_template: "{{ trigger.id in ['done', 'hands'] or is_state('timer.livingroom_music_kids', 'idle') }}"
+    actions:
+      - action: "script.livingroom_music_kids_end"
+  - id: "livingroom_music_volume_restore_retry"
+    alias: "Livingroom music volume restore retry"
+    description: "Retry outstanding speaker resets every thirty seconds and on reconnect."
+    mode: "queued"
+    triggers:
+      - trigger: "event"
+        id: "retry"
+        event_type: "timer.finished"
+        event_data:
+          entity_id: "timer.livingroom_music_restore_retry"
+      - trigger: "homeassistant"
+        id: "restart"
+        event: "start"
+      - trigger: "state"
+        id: "reconnect"
+        entity_id:
+          - "media_player.sonos"
+          - "media_player.bedroom"
+        from:
+          - "unavailable"
+          - "unknown"
+    actions:
+      - condition: "template"
+        value_template: "{{ is_state('input_boolean.livingroom_music_restore_sonos', 'on') or is_state('input_boolean.livingroom_music_restore_bedroom', 'on') }}"
+      - action: "script.turn_on"
+        target:
+          entity_id: "script.livingroom_music_volume_reset"
+
   - id: livingroom_music_remote
     alias: Livingroom music remote
     description: Short presses step the fixed volume or skip HA queue playback.
@@ -149,6 +734,13 @@ automation:
         entity_id: event.kitchen_button_4
         not_from: [unknown, unavailable]
         not_to: [unknown, unavailable]
+      - trigger: state
+        id: kids
+        entity_id: event.kitchen_button_1
+        not_from: [unknown, unavailable]
+        not_to: [unknown, unavailable]
+    variables:
+      k: "{{ states('input_number.livingroom_music_kids_session') | int(-1) }}"
     conditions:
       - condition: template
         value_template: "{{ trigger.from_state is not none and trigger.to_state is not none }}"
@@ -160,15 +752,30 @@ automation:
           - conditions: "{{ trigger.id == 'up' }}"
             sequence:
               - *volume_available
-              - action: script.livingroom_music_volume
-                data:
-                  delta: 1
+              - variables:
+                  s: "{{ states('input_number.livingroom_music_volume_step') | float(-1) }}"
+              - if: >-
+                  {{ s == 4 and is_state('input_boolean.livingroom_music_kids', 'on')
+                     and is_state('timer.livingroom_music_kids', 'active')
+                     and is_state('input_boolean.livingroom_music_approved', 'off')
+                     and is_state('timer.livingroom_music_approval', 'idle')
+                     and is_state('script.livingroom_music_approval_request', 'off') }}
+                then:
+                  - action: script.turn_on
+                    target:
+                      entity_id: script.livingroom_music_approval_request
+                else:
+                  - action: script.livingroom_music_volume
+                    data:
+                      delta: 1
+                      session: "{{ k }}"
           - conditions: "{{ trigger.id == 'down' }}"
             sequence:
               - *volume_available
               - action: script.livingroom_music_volume
                 data:
                   delta: -1
+                  session: "{{ k }}"
           - conditions: "{{ trigger.id == 'skip' }}"
             sequence:
               - *volume_hands_off
@@ -185,6 +792,18 @@ automation:
               - action: media_player.media_next_track
                 target:
                   entity_id: media_player.sonos
+
+          - conditions: "{{ trigger.id == 'kids' }}"
+            sequence:
+              - condition: state
+                entity_id: script.livingroom_music_kids_end
+                state: "off"
+              - condition: state
+                entity_id: script.livingroom_music_kids_start
+                state: "off"
+              - action: script.turn_on
+                target:
+                  entity_id: script.livingroom_music_kids_start
 
   - id: livingroom_music_start
     alias: Livingroom music start
@@ -219,6 +838,12 @@ automation:
           {{ is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on')
              or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on') }}
       - *may_start
+      - condition: state
+        entity_id: input_boolean.livingroom_music_kids
+        state: "off"
+      - condition: state
+        entity_id: script.livingroom_music_kids_end
+        state: "off"
       - condition: template
         value_template: "{{ not is_state('media_player.sonos', 'playing') }}"
     actions:
@@ -289,6 +914,21 @@ automation:
              or now().strftime('%H:%M:%S') < '07:30:00'
              or now().strftime('%H:%M:%S') >= '22:00:00' }}
     actions:
+      - if:
+          condition: "template"
+          value_template: "{{ is_state('input_boolean.livingroom_music_kids', 'on') or is_state('script.livingroom_music_kids_end', 'on') }}"
+        then:
+          - if:
+              condition: "state"
+              entity_id: "input_boolean.livingroom_music_kids"
+              state: "on"
+            then:
+              - action: "script.livingroom_music_kids_end"
+          - if:
+              condition: "template"
+              value_template: "{{ not (state_attr('media_player.sonos', 'source') == 'Spotify Connect' and ((state_attr('media_player.sonos', 'media_content_id') or '') | string).startswith('x-sonos-vli:')) }}"
+            then:
+              - stop: "Kids cleanup owns this pause."
       - variables:
           was_phone: >-
             {{ state_attr('media_player.sonos', 'source') == 'Spotify Connect'

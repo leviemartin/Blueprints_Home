@@ -61,11 +61,15 @@ async def test_volume_package_loads(hass, music, services):
 def test_volume_text_rules():
     path = REPO / "ha/packages/livingroom_music.yaml"
     text = path.read_text()
+    assert text.count("[0.05, 0.10, 0.15, 0.20, 0.25, 0.30]") == 1
     assert text.count("[0.05, 0.10, 0.15, 0.20, 0.25]") == 1
-    assert all(float(n) <= 0.25 for n in re.findall(r"\b\d+\.\d+\b", text))
+    assert all(float(n) <= 0.30 for n in re.findall(r"\b\d+\.\d+\b", text))
+    assert text.count("0.30") == 1
     assert "volume_up" not in text and "volume_down" not in text
     levels = [line.strip() for line in text.splitlines() if "volume_level:" in line]
-    assert levels == ['volume_level: "{{ level }}"']
+    assert sorted(levels) == sorted([
+        'volume_level: "{{ level }}"', *['volume_level: "{{ restore_level }}"'] * 2,
+    ])
     for line in text.splitlines():
         if re.match(r"\s*delta:", line) and line.split(":", 1)[1].strip():
             assert line.split(":", 1)[1].strip() in ("1", "-1")
@@ -76,7 +80,7 @@ def test_volume_text_rules():
             if "action" in node or "service" in node:
                 data = node.get("data", {})
                 if "step" in data:
-                    assert type(data["step"]) is int and 0 <= data["step"] <= 4
+                    assert type(data["step"]) is int and 0 <= data["step"] <= 5
                 if "delta" in data:
                     assert type(data["delta"]) is int and data["delta"] in (-1, 1)
             pending.extend(node.values())
