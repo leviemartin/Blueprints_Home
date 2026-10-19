@@ -74,7 +74,7 @@ def music(hass, boot, services):
             await put(hass, SONOS, "playing", APP)
             if approved or pending:
                 await hass.services.async_call("input_number", "set_value",
-                                               {"entity_id": STEP, "value": 4}, blocking=True)
+                                               {"entity_id": STEP, "value": 3}, blocking=True)
                 await press(hass, 2)
                 if approved:
                     await answer(hass, "LRM_APPROVE_" + hass.states.get(RID).state)
@@ -89,7 +89,7 @@ async def test_kids_package_loads(hass, music, services):
     for name in ("volume_reset", "clear_pushes", "kids_start", "kids_end", "approval_request"):
         assert hass.states.is_state("script." + PREFIX + name, "off")
     assert package["script"][PREFIX + "volume_reset"]["mode"] == "restart"
-    assert hass.states.get(STEP).state == "2.0"
+    assert hass.states.get(STEP).state == "0.0"
     assert all(hass.states.is_state(e, "off") for e in [KIDS, APPROVED, SENDING, *DEBTS])
     assert hass.states.get(RID).state == ""
     assert [hass.states.get(e).attributes["duration"] for e in (KT, CT, AT, RT)] == [
@@ -114,21 +114,35 @@ async def test_rapid_on(hass, music, services):
 async def test_brighten_cap_in_cooldown(hass, music, services):
     await music()
     await hass.services.async_call("timer", "start", {"entity_id": CT}, blocking=True)
-    await hass.services.async_call("input_number", "set_value", {"entity_id": STEP, "value": 4}, blocking=True)
+    await hass.services.async_call("input_number", "set_value", {"entity_id": STEP, "value": 3}, blocking=True)
     for _ in range(3):
         await press(hass, 2)
     assert not volumes(services) and not pushes(services)
 
 
-@pytest.mark.parametrize("case", ["kids_approved", "cooldown"])
+@pytest.mark.parametrize("case", ["kids_approved", "cooldown", "at_030", "presence_off", "phone_session"])
 async def test_dim_always_works(hass, music, services, case):
     await music(kids=True, approved=True)
     if case == "cooldown":
         hass.bus.async_fire("timer.finished", {"entity_id": KT})
         await settle(hass)
+    if case in ("at_030", "presence_off", "phone_session"):
+        await press(hass, 2)
+        assert hass.states.get(STEP).state == "5.0"
+        if case == "presence_off":
+            await put(hass, FP2, "off")
+        elif case == "phone_session":
+            await put(hass, SONOS, "playing", PHONE)
+        services.records.clear()
+        await press(hass, 3)
+        await press(hass, 3)
+        assert volumes(services) == [0.25, 0.20]
+        assert hass.states.get(STEP).state == "3.0"
+        assert hass.states.is_state(KIDS, "on")
+        return
     services.records.clear()
     await press(hass, 3)
-    assert volumes(services) == ([0.25] if case == "kids_approved" else [0.15])
+    assert volumes(services) == ([0.20] if case == "kids_approved" else [0.15])
 
 
 @pytest.mark.parametrize("kind", ["initial_press", "repeat", "long_press", "long_release", "double_press",
@@ -145,12 +159,12 @@ async def test_on_non_press_events(hass, music, services, kind):
     assert not calls(services) and not pushes(services)
 
 
-@pytest.mark.parametrize("state", ["unknown", "unavailable", "-1", "6", "2.5"])
+@pytest.mark.parametrize("state", ["unknown", "unavailable", "-1", "4", "5", "6", "2.5"])
 async def test_step_invalid_at_on(hass, music, services, state):
     await music(states={FP2: "on", SONOS: "playing"}, attrs={SONOS: APP})
     await put(hass, STEP, state)
     await press(hass, 1)
-    assert hass.states.is_state(KIDS, "on") and hass.states.get(PRE).state == "2.0"
+    assert hass.states.is_state(KIDS, "on") and hass.states.get(PRE).state == "0.0"
 
 
 async def test_kids_time_from_playing(hass, music, services):
@@ -172,11 +186,11 @@ async def test_kids_time_from_silence(hass, music, services):
     await press(hass, 1)
     observed = calls(services)
     assert [n for n, _ in observed] == ["volume_set", "play_media", "shuffle_set", "play_media", "shuffle_set", "repeat_set"]
-    assert observed[0][1] == {"entity_id": [SONOS, BEDROOM], "volume_level": 0.15}
+    assert observed[0][1] == {"entity_id": [SONOS, BEDROOM], "volume_level": 0.07}
     assert observed[1][1] == {"entity_id": SONOS, "media_content_id": LAZY, "media_content_type": "playlist", "enqueue": "replace"}
     assert observed[2][1] == {"entity_id": SONOS, "shuffle": True}
     assert observed[3][1]["media_content_id"] == PAIR
-    assert hass.states.get(PRE).state == "2.0"
+    assert hass.states.get(PRE).state == "0.0"
 
 
 async def test_kids_time_ends_after_30_min(hass, music, services, freezer):
@@ -320,15 +334,25 @@ async def test_kids_end_pause_fails(hass, music, services, caplog):
     caplog.clear()
 
 
-@pytest.mark.parametrize("case", ["bedroom_unavailable_then_back", "bedroom_raises", "restart_with_debt", "never_gives_up"])
+@pytest.mark.parametrize("case", ["bedroom_unavailable_then_back", "bedroom_raises", "restart_with_debt",
+                                   "restart_old_pre_4", "end_pre_unknown", "end_pre_4", "never_gives_up"])
 async def test_volume_restore_retry(hass, music, services, freezer, caplog, case):
-    if case == "restart_with_debt":
-        await music(start=True, extra=[State(e, "on") for e in DEBTS] + [State(PRE, "3")])
-        assert volumes(services) == [0.20, 0.20]
-        assert hass.states.get(STEP).state == "2.0"
+    if case in ("restart_with_debt", "restart_old_pre_4"):
+        await music(start=True, extra=[State(e, "on") for e in DEBTS] + [
+            State(PRE, "4" if case == "restart_old_pre_4" else "3")])
+        assert volumes(services) == ([0.07, 0.07] if case == "restart_old_pre_4" else [0.20, 0.20])
+        assert hass.states.get(STEP).state == "0.0"
         assert all(hass.states.is_state(e, "off") for e in DEBTS)
         return
     await music(kids=True, approved=True)
+    if case.startswith("end_pre_"):
+        await put(hass, PRE, "unknown" if case == "end_pre_unknown" else "4")
+        services.records.clear()
+        await advance(hass, freezer, 1800)
+        assert volumes(services) == [0.07, 0.07]
+        assert hass.states.get(STEP).state == "0.0"
+        assert all(hass.states.is_state(e, "off") for e in DEBTS)
+        return
     @callback
     def fail(call):
         services.record(call)
@@ -385,7 +409,7 @@ async def test_hands_off_ignores_on(hass, music, services):
 
 
 async def test_approval_push(hass, music, services):
-    await music(kids=True, step=4)
+    await music(kids=True, step=3)
     services.records.clear()
     @callback
     def record(call):
@@ -406,29 +430,27 @@ async def test_approval_push(hass, music, services):
     assert len(pushes(services)) == 2 and not volumes(services)
 
 
-@pytest.mark.parametrize("case", ["at_step_4", "after_dim"])
-async def test_approve_gives_030(hass, music, services, case):
-    await music(kids=True, step=4, pending=True)
+@pytest.mark.parametrize("case", ["at_step_3", "after_dim"])
+async def test_approve_unlocks_025_and_030(hass, music, services, case):
+    await music(kids=True, step=3, pending=True)
     rid = hass.states.get(RID).state
     if case == "after_dim":
         await press(hass, 3)
     services.records.clear()
     await answer(hass, "LRM_APPROVE_" + rid)
-    assert volumes(services) == ([0.30] if case == "at_step_4" else [])
+    assert volumes(services) == ([0.25] if case == "at_step_3" else [])
     assert len(pushes(services)) == 2 and all(c.data["message"] == "clear_notification" for c in pushes(services))
     assert hass.states.is_state(APPROVED, "on")
     services.records.clear()
-    if case == "at_step_4":
-        await press(hass, 3)
-    else:
-        await press(hass, 2)
-    await press(hass, 2)
-    assert volumes(services) == [0.25, 0.30] and not pushes(services)
+    for button in ([2, 3] if case == "at_step_3" else [2, 2, 2]):
+        await press(hass, button)
+    assert volumes(services) == ([0.30, 0.25] if case == "at_step_3" else [0.20, 0.25, 0.30])
+    assert not pushes(services)
     assert all(set(c.data["entity_id"]) == {SONOS, BEDROOM} for c in services.sonos_calls())
 
 
 async def test_deny(hass, music, services):
-    await music(kids=True, step=4, pending=True)
+    await music(kids=True, step=3, pending=True)
     rid = hass.states.get(RID).state
     services.records.clear()
     await answer(hass, "LRM_DENY_" + rid)
@@ -443,7 +465,7 @@ async def test_deny(hass, music, services):
 
 
 async def test_timeout_is_deny(hass, music, services, freezer):
-    await music(kids=True, step=4, pending=True)
+    await music(kids=True, step=3, pending=True)
     rid = hass.states.get(RID).state
     services.records.clear()
     await advance(hass, freezer, 119)
@@ -462,7 +484,7 @@ async def test_timeout_is_deny(hass, music, services, freezer):
 
 @pytest.mark.parametrize("case", ["bogus", "previous_request", "wrong_prefix", "empty_id"])
 async def test_stale_or_unknown_id(hass, music, services, case):
-    await music(kids=True, step=4, pending=True)
+    await music(kids=True, step=3, pending=True)
     old = hass.states.get(RID).state
     if case == "previous_request":
         await answer(hass, "LRM_DENY_" + old)
@@ -477,20 +499,20 @@ async def test_stale_or_unknown_id(hass, music, services, case):
 
 @pytest.mark.parametrize("case", ["approve_then_deny", "deny_then_approve", "approve_twice"])
 async def test_first_answer_wins(hass, music, services, case):
-    await music(kids=True, step=4, pending=True)
+    await music(kids=True, step=3, pending=True)
     rid = hass.states.get(RID).state
     services.records.clear()
     for action in {"approve_then_deny": ["APPROVE", "DENY"], "deny_then_approve": ["DENY", "APPROVE"],
                    "approve_twice": ["APPROVE", "APPROVE"]}[case]:
         hass.bus.async_fire("mobile_app_notification_action", {"action": "LRM_" + action + "_" + rid})
     await settle(hass)
-    assert volumes(services) == ([] if case == "deny_then_approve" else [0.30])
+    assert volumes(services) == ([] if case == "deny_then_approve" else [0.25])
     assert len(pushes(services)) == 2
 
 
 @pytest.mark.parametrize("decision", ["deny", "approve"])
 async def test_answer_during_delivery(hass, music, services, decision):
-    await music(kids=True, step=4)
+    await music(kids=True, step=3)
     @callback
     def deliver(call):
         services.record(call)
@@ -508,12 +530,12 @@ async def test_answer_during_delivery(hass, music, services, decision):
     else:
         assert hass.states.is_state(AT, "active")
         await answer(hass, "LRM_APPROVE_" + hass.states.get(RID).state)
-        assert volumes(services) == [0.30]
+        assert volumes(services) == [0.25]
 
 
 @pytest.mark.parametrize("case", ["late_approve", "stale_grant"])
 async def test_late_grant_after_kids_end(hass, music, services, freezer, case):
-    await music(kids=True, step=4, pending=True)
+    await music(kids=True, step=3, pending=True)
     rid, old_session = hass.states.get(RID).state, hass.states.get(AS).state
     await advance(hass, freezer, 1800)
     services.records.clear()
@@ -527,12 +549,12 @@ async def test_late_grant_after_kids_end(hass, music, services, freezer, case):
         await press(hass, 1)
         await press(hass, 2)
         assert any("actions" in c.data.get("data", {}) for c in pushes(services))
-    assert 0.30 not in volumes(services)
+    assert max(volumes(services), default=0) <= 0.20
 
 
 @pytest.mark.parametrize("case", ["martin_missing", "martin_raises", "savannah_missing", "savannah_raises"])
 async def test_notify_failure(hass, music, services, caplog, case):
-    await music(kids=True, step=4)
+    await music(kids=True, step=3)
     name = MARTIN if case.startswith("martin") else SAVANNAH
     @callback
     def fail(call):
@@ -581,21 +603,21 @@ async def test_notify_failure(hass, music, services, caplog, case):
 
 
 async def test_pending_cleared_at_kids_end(hass, music, services):
-    await music(kids=True, step=4, pending=True)
+    await music(kids=True, step=3, pending=True)
     rid = hass.states.get(RID).state
     services.records.clear()
     hass.bus.async_fire("timer.finished", {"entity_id": KT})
     await settle(hass)
     assert {c.service for c in pushes(services) if c.data["message"] == "clear_notification"} == {MARTIN, SAVANNAH}
     await answer(hass, "LRM_APPROVE_" + rid)
-    assert 0.30 not in volumes(services)
+    assert max(volumes(services), default=0) <= 0.20
 
 
 @pytest.mark.parametrize("case", ["outside_kids", "kids_no_answer", "after_deny", "after_timeout", "cooldown",
                                    "approved_forced_outside_kids", "approved_forced_timer_idle", "approved_forced_other_session"])
 async def test_no_030_without_approval(hass, music, services, freezer, case):
     kids = case not in ("outside_kids", "approved_forced_outside_kids")
-    await music(kids=kids, step=4, pending=case in ("after_deny", "after_timeout"))
+    await music(kids=kids, step=3, pending=case in ("after_deny", "after_timeout"))
     if case == "after_deny":
         await answer(hass, "LRM_DENY_" + hass.states.get(RID).state)
     if case == "after_timeout":
@@ -610,18 +632,22 @@ async def test_no_030_without_approval(hass, music, services, freezer, case):
     services.records.clear()
     for _ in range(8):
         await press(hass, 2)
-    assert all(v <= 0.25 for v in volumes(services))
-    services.records.clear()
-    await put(hass, STEP, "5")
-    await volume_direct(hass)
-    assert not volumes(services)
+    assert all(v <= 0.20 for v in volumes(services))
+    for forced in ("4", "5"):
+        services.records.clear()
+        await put(hass, STEP, forced)
+        await volume_direct(hass)
+        await volume_direct(hass, step=int(forced), delta=-1)
+        assert not volumes(services)
+        await press(hass, 3)
+        assert volumes(services) == ([0.20] if forced == "4" else [])
 
 
 @pytest.mark.parametrize("speaker", [SONOS, BEDROOM])
 async def test_on_speakers_unavailable(hass, music, services, speaker):
     await music(states={FP2: "on", SONOS: "playing", speaker: "unavailable"})
     await press(hass, 1)
-    assert not calls(services) and hass.states.get(STEP).state == "2.0"
+    assert not calls(services) and hass.states.get(STEP).state == "0.0"
     assert hass.states.is_state(KIDS, "off")
 
 
@@ -662,7 +688,6 @@ async def test_start_waits_for_kids(hass, music, services):
 
 async def test_reset_after_delayed_030(hass, music, services, freezer):
     await music(kids=True, approved=True)
-    await press(hass, 3)
     release = asyncio.Event()
     async def hold(call):
         services.record(call)
@@ -718,7 +743,7 @@ async def test_kids_end_playback_fails(hass, music, services, freezer, caplog, c
     finally:
         release.set()
         await settle(hass)
-    assert volumes(services) == ([0.15, 0.05, 0.05] if case == "delayed_015" else [0.20, 0.20])
+    assert volumes(services) == ([0.15, 0.07, 0.07] if case == "delayed_015" else [0.20, 0.20])
     if case == "play_media_stalled":
         assert calls(services)[-1] == ("shuffle_set", {"entity_id": SONOS, "shuffle": True})
     if case == "pause_missing":
@@ -756,7 +781,7 @@ async def test_retry_keeps_later_dims(hass, music, services, freezer, caplog):
     assert not calls(services) and hass.states.get(STEP).state == "1.0"
 
 
-@pytest.mark.parametrize("case", ["released", "stuck", "dim_not_held"])
+@pytest.mark.parametrize("case", ["released", "stuck", "press_not_held"])
 async def test_kids_start_waits_for_fresh_start(hass, music, services, freezer, case):
     await music()
     release = asyncio.Event()
@@ -772,20 +797,20 @@ async def test_kids_start_waits_for_fresh_start(hass, music, services, freezer, 
         if case == "stuck":
             await advance(hass, freezer, 31)
             assert hass.states.is_state(KIDS, "off")
-        elif case == "dim_not_held":
-            await press(hass, 3)
-            assert volumes(services) == [0.15, 0.10] and hass.states.get(STEP).state == "1.0"
+        elif case == "press_not_held":
+            await press(hass, 2)
+            assert volumes(services) == [0.07, 0.10] and hass.states.get(STEP).state == "1.0"
         else:
             await put(hass, SONOS, "playing", APP)
     finally:
         release.set()
         await settle(hass)
-    assert volumes(services) == ([0.15, 0.10] if case == "dim_not_held" else [0.15])
+    assert volumes(services) == ([0.07, 0.10] if case == "press_not_held" else [0.07])
     plays = [c.data["media_content_id"] for c in services.sonos_calls() if c.service == "play_media"]
     assert plays == ([LAZY] if case == "stuck" else [LAZY, PAIR])
     if case != "stuck":
         assert hass.states.is_state(KIDS, "on")
-        assert hass.states.get(PRE).state == ("1.0" if case == "dim_not_held" else "2.0")
+        assert hass.states.get(PRE).state == ("1.0" if case == "press_not_held" else "0.0")
         assert [n for n, _ in calls(services)[-3:]] == ["play_media", "shuffle_set", "repeat_set"]
 
 
@@ -810,7 +835,7 @@ async def test_restart_mid_cleanup(hass, music, services, kids):
     await music(start=True, states={SONOS: "paused"},
                 extra=[State(KIDS, kids), State(PRE, "3"), State(STEP, "5"), State(APPROVED, "on"),
                        *[State(e, "on") for e in DEBTS]])
-    assert volumes(services)[-2:] == [0.20, 0.20] and max(volumes(services)) <= 0.25
+    assert volumes(services)[-2:] == [0.20, 0.20] and max(volumes(services)) <= 0.20
     assert all(hass.states.is_state(e, "off") for e in [KIDS, *DEBTS])
     assert hass.states.is_state(RT, "idle")
 
@@ -823,7 +848,7 @@ async def test_press_races_kids_end(hass, music, services, freezer, case):
     held = False
     async def hold(call):
         nonlocal held
-        if call.data["volume_level"] == 0.25 and not held:
+        if call.data["volume_level"] == 0.20 and not held:
             held = True
             await release.wait()
         services.record(call)
@@ -846,8 +871,8 @@ async def test_press_races_kids_end(hass, music, services, freezer, case):
     finally:
         release.set()
         await settle(hass)
-    level = 0.10 if pre else 0.05
-    assert volumes(services)[-2:] == [level, level] and max(volumes(services)) <= 0.25
+    level = 0.10 if pre else 0.07
+    assert volumes(services)[-2:] == [level, level] and max(volumes(services)) <= 0.20
     before = volumes(services)
     await advance(hass, freezer, 60)
     assert volumes(services) == before and float(hass.states.get(STEP).state) == pre
@@ -895,7 +920,7 @@ async def test_kids_end_during_step_write(hass, music, services):
     writes = []
     async def interrupt(call):
         if STEP in call.data.get("entity_id", []):
-            if float(call.data["value"]) == 5:
+            if float(call.data["value"]) == 4:
                 hass.bus.async_fire("timer.finished", {"entity_id": KT})
                 while hass.states.is_state(KIDS, "on"):
                     await settle(hass, 1)
@@ -904,9 +929,49 @@ async def test_kids_end_during_step_write(hass, music, services):
     hass.services.async_register("input_number", "set_value", interrupt, schema=original.schema)
     services.records.clear()
     await press(hass, 2)
-    assert max(volumes(services)) <= 0.25 and volumes(services)[-2:] == [0.20, 0.20]
+    assert max(volumes(services)) <= 0.20 and volumes(services)[-2:] == [0.20, 0.20]
     assert writes[-1] == 3 and hass.states.get(STEP).state == "3.0"
     assert all(hass.states.is_state(e, "off") for e in [KIDS, APPROVED, *DEBTS])
+
+
+@pytest.mark.parametrize("caller", ["remote", "direct"])
+@pytest.mark.parametrize("change", ["kids_end", "approval_off", "timer_idle", "other_session"])
+async def test_dim_rechecks_approval_during_step_write(hass, music, services, caller, change):
+    await music(kids=True, approved=True)
+    await press(hass, 2)
+    assert hass.states.get(STEP).state == "5.0"
+    original = hass.services.async_services()["input_number"]["set_value"]
+    interrupted = False
+
+    async def interrupt(call):
+        nonlocal interrupted
+        if STEP in call.data.get("entity_id", []) and float(call.data["value"]) == 4:
+            interrupted = True
+            if change == "kids_end":
+                hass.bus.async_fire("timer.finished", {"entity_id": KT})
+                while hass.states.is_state(KIDS, "on"):
+                    await settle(hass, 1)
+            elif change == "approval_off":
+                hass.states.async_set(APPROVED, "off")
+            elif change == "timer_idle":
+                await hass.services.async_call("timer", "cancel", {"entity_id": KT}, blocking=True)
+            else:
+                hass.states.async_set(AS, "-1")
+        return await original.job.target(call)
+
+    hass.services.async_register("input_number", "set_value", interrupt, schema=original.schema)
+    services.records.clear()
+    if caller == "direct":
+        await volume_direct(hass, delta=-1)
+    else:
+        await press(hass, 3)
+    assert interrupted
+    assert max(volumes(services), default=0) <= 0.20
+    if change == "kids_end":
+        assert volumes(services)[-2:] == [0.20, 0.20]
+        assert hass.states.get(STEP).state == "3.0"
+    else:
+        assert not volumes(services)
 
 
 @pytest.mark.parametrize("case", ["kids_off", "session_bump", "write_held"])
@@ -918,7 +983,7 @@ async def test_press_inside_kids_end_cleanup(hass, music, services, freezer, cas
     fired = False
     async def record(call):
         if STEP in call.data.get("entity_id", []):
-            if case == "write_held" and float(call.data["value"]) == 4:
+            if case == "write_held" and float(call.data["value"]) == 3:
                 held.set()
                 await release.wait()
             writes.append(float(call.data["value"]))
@@ -962,7 +1027,7 @@ async def test_press_inside_kids_end_cleanup(hass, music, services, freezer, cas
         assert len(last_clear) > final_reset
     assert hass.states.get(STEP).state == "1.0" and hass.states.is_state(RT, "idle")
     assert all(hass.states.is_state(e, "off") for e in [KIDS, *DEBTS])
-    assert max(volumes(services)) <= 0.25
+    assert max(volumes(services)) <= 0.20
 
 
 async def test_on_during_kids_end_cleanup(hass, music, services, freezer):
@@ -996,7 +1061,6 @@ async def test_paused_approval_obeys_stop_rules(hass, music, services, freezer, 
     # Cross only the quiet-hours boundary; keep the kids timer from expiring.
     await music(kids=True, approved=True,
                 time="21:59:59.5" if blocker == "quiet" else "12:00:00.5")
-    await press(hass, 3)
     await put(hass, SONOS, "paused", APP)
 
     def block():
@@ -1035,6 +1099,8 @@ async def test_disconnect_during_volume_dispatch(hass, music, services, freezer,
         await music(kids=True, approved=True)
     else:
         await music(extra=[State(e, "on") for e in DEBTS] + [State(PRE, "3")])
+        await hass.services.async_call("input_number", "set_value",
+                                       {"entity_id": STEP, "value": 2}, blocking=True)
         await hass.services.async_call("timer", "start", {"entity_id": RT}, blocking=True)
 
     @callback

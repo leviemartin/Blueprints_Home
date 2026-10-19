@@ -67,7 +67,7 @@ def fresh(services):
     observed = calls(services)
     assert [name for name, _ in observed] == ["volume_set", "play_media", "shuffle_set"]
     assert set(observed[0][1]["entity_id"]) == {SONOS, BEDROOM}
-    assert observed[0][1]["volume_level"] == 0.15
+    assert observed[0][1]["volume_level"] == 0.07
     assert observed[1][1] == {
         "entity_id": SONOS,
         "media_content_id": "spotify:playlist:37i9dQZF1DWTc452KG008d",

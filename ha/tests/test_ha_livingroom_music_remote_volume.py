@@ -54,15 +54,15 @@ async def test_volume_package_loads(hass, music, services):
     package = await music()
     assert "livingroom_music_remote" in {a["id"] for a in package["automation"]}
     assert hass.states.is_state("script." + VOLUME, "off")
-    assert float(hass.states.get(STEP).state) == 2
+    assert float(hass.states.get(STEP).state) == 0
     assert not calls(services)
 
 
 def test_volume_text_rules():
     path = REPO / "ha/packages/livingroom_music.yaml"
     text = path.read_text()
-    assert text.count("[0.05, 0.10, 0.15, 0.20, 0.25, 0.30]") == 1
-    assert text.count("[0.05, 0.10, 0.15, 0.20, 0.25]") == 1
+    assert text.count("[0.07, 0.10, 0.15, 0.20, 0.25, 0.30]") == 1
+    assert text.count("[0.07, 0.10, 0.15, 0.20]") == 1
     assert all(float(n) <= 0.30 for n in re.findall(r"\b\d+\.\d+\b", text))
     assert text.count("0.30") == 1
     assert "volume_up" not in text and "volume_down" not in text
@@ -92,9 +92,9 @@ async def test_brighten_dim_ladder(hass, music, services):
     await music()
     await hass.services.async_call("input_number", "set_value",
                                    {"entity_id": STEP, "value": 0}, blocking=True)
-    for button in [2] * 4 + [3] * 4:
+    for button in [2] * 4 + [3] * 3:
         await press(hass, button)
-    assert volumes(services) == [0.10, 0.15, 0.20, 0.25, 0.20, 0.15, 0.10, 0.05]
+    assert volumes(services) == [0.10, 0.15, 0.20, 0.15, 0.10, 0.07]
     assert all(c.service == "volume_set" and set(c.data["entity_id"]) == {SONOS, BEDROOM}
                for c in services.sonos_calls())
     assert float(hass.states.get(STEP).state) == 0
@@ -123,7 +123,7 @@ async def test_off_queued_behind_hands_off(hass, music, services):
     await press(hass, 2, settle=False)
     await press(hass, 4, settle=False)
     await settle_loop(hass)
-    assert volumes(services) == [0.20]
+    assert volumes(services) == [0.10]
     assert [c.service for c in services.sonos_calls()] == ["volume_set"]
 
 
@@ -131,11 +131,11 @@ async def test_off_queued_behind_hands_off(hass, music, services):
 async def test_brighten_cap(hass, music, services, case):
     await music(states={SONOS: "playing"}, attrs={SONOS: PHONE if case == "phone_session" else APP})
     await hass.services.async_call("input_number", "set_value",
-                                   {"entity_id": STEP, "value": 4}, blocking=True)
+                                   {"entity_id": STEP, "value": 3}, blocking=True)
     for _ in range(3):
         await press(hass, 2)
     assert not calls(services)
-    assert float(hass.states.get(STEP).state) == 4
+    assert float(hass.states.get(STEP).state) == 3
 
 
 async def test_dim_floor(hass, music, services):
@@ -150,11 +150,11 @@ async def test_dim_floor(hass, music, services):
 async def test_volume_in_phone_session(hass, music, services):
     await music(states={SONOS: "playing"}, attrs={SONOS: PHONE})
     await press(hass, 2)
-    assert volumes(services) == [0.20]
-    assert float(hass.states.get(STEP).state) == 3
+    assert volumes(services) == [0.10]
+    assert float(hass.states.get(STEP).state) == 1
     await press(hass, 3)
-    assert volumes(services) == [0.20, 0.15]
-    assert float(hass.states.get(STEP).state) == 2
+    assert volumes(services) == [0.10, 0.07]
+    assert float(hass.states.get(STEP).state) == 0
     assert [c.service for c in services.sonos_calls()] == ["volume_set"] * 2
 
 
@@ -222,7 +222,7 @@ async def test_hands_off_ignores_remote(hass, music, services, button):
     await music(hands=True, states={SONOS: "playing"}, attrs={SONOS: APP})
     await press(hass, button)
     assert not calls(services)
-    assert float(hass.states.get(STEP).state) == 2
+    assert float(hass.states.get(STEP).state) == 0
 
 
 @pytest.mark.parametrize("case", ["hands", "sonos_unavailable", "bedroom_unavailable"])
@@ -233,7 +233,7 @@ async def test_volume_script_guards(hass, music, services, case):
     await music(hands=case == "hands", states=states)
     await volume_direct(hass)
     assert not calls(services)
-    assert float(hass.states.get(STEP).state) == 2
+    assert float(hass.states.get(STEP).state) == 0
 
 
 @pytest.mark.parametrize("speaker", [SONOS, BEDROOM])
@@ -242,7 +242,7 @@ async def test_speakers_unavailable(hass, music, services, caplog, speaker, butt
     await music(states={SONOS: "playing", speaker: "unavailable"}, attrs={SONOS: APP})
     await press(hass, button)
     assert not calls(services)
-    assert float(hass.states.get(STEP).state) == 2
+    assert float(hass.states.get(STEP).state) == 0
     assert not [r for r in caplog.records if r.levelno >= 40]
 
 
@@ -262,7 +262,7 @@ async def test_fresh_start_and_press_ordering(hass, music, services, order):
     hass.services.async_register("media_player", "volume_set", hold)
     try:
         await hass.services.async_call("script", "turn_on",
-                                       {"entity_id": "script." + VOLUME, "variables": {"step": 0}},
+                                       {"entity_id": "script." + VOLUME, "variables": {"step": 1}},
                                        blocking=True)
         await settle_loop(hass)
         assert entered.is_set()
@@ -276,14 +276,14 @@ async def test_fresh_start_and_press_ordering(hass, music, services, order):
     finally:
         release.set()
         await settle_loop(hass)
-    expected = [0.05, 0.10, 0.15] if order == "press_then_fresh" else [0.05, 0.15, 0.20]
+    expected = [0.10, 0.15, 0.07] if order == "press_then_fresh" else [0.10, 0.07, 0.10]
     assert volumes(services) == expected
     observed = calls(services)
     assert len(observed) == 5
     assert all(set(data["entity_id"]) == {SONOS, BEDROOM}
                for name, data in observed if name == "volume_set")
     fresh_index = next(i for i, (name, data) in enumerate(observed)
-                       if name == "volume_set" and data["volume_level"] == 0.15)
+                       if name == "volume_set" and data["volume_level"] == 0.07)
     play_index = next(i for i, (name, _) in enumerate(observed) if name == "play_media")
     shuffle_index = next(i for i, (name, _) in enumerate(observed) if name == "shuffle_set")
     assert fresh_index < play_index < shuffle_index
@@ -292,7 +292,7 @@ async def test_fresh_start_and_press_ordering(hass, music, services, order):
         "media_content_type": "playlist", "enqueue": "replace",
     }
     assert observed[shuffle_index][1] == {"entity_id": SONOS, "shuffle": True}
-    assert float(hass.states.get(STEP).state) == (2 if order == "press_then_fresh" else 3)
+    assert float(hass.states.get(STEP).state) == (0 if order == "press_then_fresh" else 1)
 
 
 @pytest.mark.parametrize("change", ["hands_off", "bedroom_unavailable"])
@@ -310,7 +310,7 @@ async def test_guard_change_during_step_write(hass, music, services, caplog, cha
     hass.services.async_register("input_number", "set_value", interrupt, schema=original.schema)
     await press(hass, 2)
     assert not calls(services)
-    assert float(hass.states.get(STEP).state) == 3
+    assert float(hass.states.get(STEP).state) == 1
     assert not [r for r in caplog.records if r.levelno >= 40]
 
 
@@ -318,7 +318,7 @@ async def test_guard_change_during_step_write(hass, music, services, caplog, cha
 async def test_fresh_start_guard_in_queue(hass, music, services, change):
     await music()
     await hass.services.async_call("input_number", "set_value",
-                                   {"entity_id": STEP, "value": 3}, blocking=True)
+                                   {"entity_id": STEP, "value": 2}, blocking=True)
     release, entered = asyncio.Event(), asyncio.Event()
 
     async def hold(call):
@@ -331,7 +331,7 @@ async def test_fresh_start_guard_in_queue(hass, music, services, change):
     try:
         await press(hass, 2)
         assert entered.is_set()
-        assert float(hass.states.get(STEP).state) == 4
+        assert float(hass.states.get(STEP).state) == 3
         await edge(hass)
         assert hass.states.get("script." + VOLUME).attributes["current"] == 2
         if change == "phone_session":
@@ -343,7 +343,7 @@ async def test_fresh_start_guard_in_queue(hass, music, services, change):
         await settle_loop(hass)
     assert hass.states.is_state("script." + VOLUME, "off")
     assert hass.states.is_state("script.livingroom_music_fresh_start", "off")
-    assert volumes(services) == [0.25]
+    assert volumes(services) == [0.20]
     assert [c.service for c in services.sonos_calls()] == ["volume_set"]
     assert set(services.sonos_calls()[0].data["entity_id"]) == {SONOS, BEDROOM}
-    assert float(hass.states.get(STEP).state) == 4
+    assert float(hass.states.get(STEP).state) == 3
