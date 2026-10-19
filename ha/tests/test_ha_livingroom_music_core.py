@@ -87,7 +87,7 @@ async def test_package_loads(hass, boot, services):
                             "input_select", "timer", "input_datetime"}
     assert {a["id"] for a in package["automation"]} == {
         f"livingroom_music_{name}" for name in
-        ("start", "pause", "empty_timer", "phone", "hands_off_reset", "quiet_reset")
+        ("start", "pause", "empty_timer", "phone", "hands_off_reset", "quiet_reset", "remote")
     }
     assert hass.states.get(f"script.{SCRIPT}").state == "off"
     assert hass.states.is_state(HANDS, "off")
@@ -100,7 +100,7 @@ async def test_package_loads(hass, boot, services):
 def test_package_text_rules():
     text = (REPO / "ha/packages/livingroom_music.yaml").read_text()
     levels = [line for line in text.splitlines() if "volume_level" in line]
-    assert levels and all(re.fullmatch(r"\s*volume_level:\s*0\.15\s*", line) for line in levels)
+    assert [line.strip() for line in levels] == ['volume_level: "{{ level }}"']
     assert all(word not in text for word in (
         "pixel_9_pro_xl", "spotcast", "music_assistant", "sonos.snapshot", "sonos.restore",
     ))

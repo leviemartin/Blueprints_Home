@@ -5,6 +5,14 @@ input_boolean:
   livingroom_music_ha_session:
     name: Livingroom music HA paused this
 
+input_number:
+  livingroom_music_volume_step:
+    name: Livingroom music volume step
+    min: 0
+    max: 4
+    step: 1
+    initial: 2
+
 timer:
   livingroom_music_empty:
     duration: "00:15:00"
@@ -42,13 +50,9 @@ script:
             value_template: >-
               {{ states('media_player.sonos') not in ['unknown', 'unavailable']
                  and states('media_player.bedroom') not in ['unknown', 'unavailable'] }}
-      - action: media_player.volume_set
-        target:
-          entity_id:
-            - media_player.sonos
-            - media_player.bedroom
+      - action: script.livingroom_music_volume
         data:
-          volume_level: 0.15
+          step: 2
       - *may_start
       - action: media_player.play_media
         target:
@@ -64,7 +68,124 @@ script:
         data:
           shuffle: true
 
+  livingroom_music_volume:
+    alias: Livingroom music volume
+    description: Set both speakers to one fixed ladder level in queue order.
+    mode: queued
+    max: 20
+    fields:
+      step:
+        description: Optional absolute ladder index for a fresh start.
+      delta:
+        description: Optional one-step direction from the remote.
+    sequence:
+      - variables:
+          cur: "{{ states('input_number.livingroom_music_volume_step') | float(-1) }}"
+          s: >-
+            {% if step is defined %}
+              {{ step | float(-1) }}
+            {% elif delta is defined %}
+              {{ cur + (delta | int) if cur in [0, 1, 2, 3, 4] else -1 }}
+            {% else %}
+              {{ cur }}
+            {% endif %}
+          level: "{{ [0.05, 0.10, 0.15, 0.20, 0.25][s | int] if s in [0, 1, 2, 3, 4] else none }}"
+      - &volume_hands_off
+        condition: state
+        entity_id: input_boolean.livingroom_music_hands_off
+        state: "off"
+      - &volume_available
+        condition: template
+        value_template: >-
+          {{ states('media_player.sonos') not in ['unknown', 'unavailable']
+             and states('media_player.bedroom') not in ['unknown', 'unavailable'] }}
+      - condition: template
+        value_template: "{{ s in [0, 1, 2, 3, 4] }}"
+      - &volume_start_guard
+        condition: or
+        conditions:
+          - condition: template
+            value_template: "{{ step is not defined }}"
+          - *may_start
+      - if:
+          - condition: template
+            value_template: "{{ step is defined or delta is defined }}"
+        then:
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.livingroom_music_volume_step
+            data:
+              value: "{{ s }}"
+      - *volume_hands_off
+      - *volume_available
+      - *volume_start_guard
+      - action: media_player.volume_set
+        target:
+          entity_id:
+            - media_player.sonos
+            - media_player.bedroom
+        data:
+          volume_level: "{{ level }}"
+
 automation:
+  - id: livingroom_music_remote
+    alias: Livingroom music remote
+    description: Short presses step the fixed volume or skip HA queue playback.
+    mode: queued
+    max: 10
+    triggers:
+      - trigger: state
+        id: up
+        entity_id: event.kitchen_button_2
+        not_from: [unknown, unavailable]
+        not_to: [unknown, unavailable]
+      - trigger: state
+        id: down
+        entity_id: event.kitchen_button_3
+        not_from: [unknown, unavailable]
+        not_to: [unknown, unavailable]
+      - trigger: state
+        id: skip
+        entity_id: event.kitchen_button_4
+        not_from: [unknown, unavailable]
+        not_to: [unknown, unavailable]
+    conditions:
+      - condition: template
+        value_template: "{{ trigger.from_state is not none and trigger.to_state is not none }}"
+      - condition: template
+        value_template: "{{ trigger.to_state.attributes.get('event_type') == 'short_release' }}"
+    actions:
+      - *volume_hands_off
+      - choose:
+          - conditions: "{{ trigger.id == 'up' }}"
+            sequence:
+              - *volume_available
+              - action: script.livingroom_music_volume
+                data:
+                  delta: 1
+          - conditions: "{{ trigger.id == 'down' }}"
+            sequence:
+              - *volume_available
+              - action: script.livingroom_music_volume
+                data:
+                  delta: -1
+          - conditions: "{{ trigger.id == 'skip' }}"
+            sequence:
+              - *volume_hands_off
+              - condition: template
+                value_template: >-
+                  {{ is_state('timer.livingroom_music_phone', 'idle')
+                     and not (is_state('media_player.sonos', 'playing')
+                       and state_attr('media_player.sonos', 'source') == 'Spotify Connect'
+                       and ((state_attr('media_player.sonos', 'media_content_id') or '') | string).startswith('x-sonos-vli:')) }}
+              - condition: state
+                entity_id: media_player.sonos
+                state: playing
+              - *volume_available
+              - action: media_player.media_next_track
+                target:
+                  entity_id: media_player.sonos
+
   - id: livingroom_music_start
     alias: Livingroom music start
     description: Start on occupancy or blocker clearance; reconnect only resumes HA-paused content.

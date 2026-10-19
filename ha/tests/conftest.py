@@ -22,6 +22,9 @@ PACKAGES = {
     "livingroom_music": {
         "binary_sensor.presence_sensor_fp2_e863_presence_sensor_1": ("off", "Presence-Sensor-FP2-E863 Presence Sensor 1"),
         "binary_sensor.living_room_main_fp300_couch_occupancy_sensor": ("off", "FP300_Couch Occupancy Sensor"),
+        "event.kitchen_button_2": ("2026-10-20T08:00:00.000+00:00", "Music Remote button 2"),
+        "event.kitchen_button_3": ("2026-10-20T08:00:00.000+00:00", "Music Remote button 3"),
+        "event.kitchen_button_4": ("2026-10-20T08:00:00.000+00:00", "Music Remote button 4"),
         "media_player.sonos": ("idle", "Living Room One"),
         "media_player.bedroom": ("idle", "Bedroom One"),
         "media_player.lg_webos_tv_oled65c9pla": ("off", "LG webOS TV OLED65C9PLA"),
