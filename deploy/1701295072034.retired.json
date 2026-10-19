@@ -1,0 +1,31 @@
+{
+  "action": [
+    {
+      "data": {
+        "volume_level": 0.25
+      },
+      "service": "media_player.volume_set",
+      "target": {
+        "device_id": [
+          "9bd11e37ec9bfff4c2c03d97971e5693",
+          "239ede3dd7ee6ec4311a3b76d2841bc0"
+        ]
+      }
+    }
+  ],
+  "alias": "Sonos 20% Volume Samuel",
+  "condition": [],
+  "description": "",
+  "id": "1701295072034",
+  "mode": "single",
+  "trigger": [
+    {
+      "device_id": "dfad9901619a42507889cad7dfc9b8d9",
+      "domain": "hue",
+      "platform": "device",
+      "subtype": 2,
+      "type": "initial_press",
+      "unique_id": "b086d467-8b29-41be-901f-90d9c16eb627"
+    }
+  ]
+}
