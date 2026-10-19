@@ -534,6 +534,11 @@ script:
                   message: "The kids ask for louder music. Approve or Deny within 2 minutes."
                   data:
                     tag: "livingroom_music_approval"
+                    channel: "kids_music_approval"
+                    importance: "high"
+                    priority: "high"
+                    ttl: 0
+                    timeout: 120
                     actions:
                       - action: "{{ 'LRM_APPROVE_' ~ context.id }}"
                         title: "Approve"
@@ -545,6 +550,11 @@ script:
                   message: "The kids ask for louder music. Approve or Deny within 2 minutes."
                   data:
                     tag: "livingroom_music_approval"
+                    channel: "kids_music_approval"
+                    importance: "high"
+                    priority: "high"
+                    ttl: 0
+                    timeout: 120
                     actions:
                       - action: "{{ 'LRM_APPROVE_' ~ context.id }}"
                         title: "Approve"

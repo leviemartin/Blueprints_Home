@@ -423,11 +423,27 @@ async def test_approval_push(hass, music, services):
     rid = hass.states.get(RID).state
     assert [c.service for c in pushes(services)] == [MARTIN, SAVANNAH]
     for c in pushes(services):
-        assert c.data["data"] == {"tag": "livingroom_music_approval", "actions": [
-            {"action": "LRM_APPROVE_" + rid, "title": "Approve"},
-            {"action": "LRM_DENY_" + rid, "title": "Deny"}]}
+        assert c.data == {"title": "Kids music volume",
+            "message": "The kids ask for louder music. Approve or Deny within 2 minutes.",
+            "data": {"tag": "livingroom_music_approval",
+                     "channel": "kids_music_approval", "importance": "high",
+                     "priority": "high", "ttl": 0, "timeout": 120, "actions": [
+                         {"action": "LRM_APPROVE_" + rid, "title": "Approve"},
+                         {"action": "LRM_DENY_" + rid, "title": "Deny"}]}}
     await press(hass, 2)
     assert len(pushes(services)) == 2 and not volumes(services)
+
+
+@pytest.mark.parametrize("decision", ["APPROVE", "DENY"])
+async def test_clear_push_data_unchanged(hass, music, services, decision):
+    await music(kids=True, step=3, pending=True)
+    rid = hass.states.get(RID).state
+    services.records.clear()
+    await answer(hass, "LRM_" + decision + "_" + rid)
+    assert sorted(c.service for c in pushes(services)) == sorted([MARTIN, SAVANNAH])
+    for c in pushes(services):
+        assert c.data == {"message": "clear_notification",
+                          "data": {"tag": "livingroom_music_approval"}}
 
 
 @pytest.mark.parametrize("case", ["at_step_3", "after_dim"])
