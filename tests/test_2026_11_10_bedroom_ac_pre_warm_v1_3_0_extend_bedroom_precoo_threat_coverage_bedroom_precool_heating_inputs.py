@@ -301,3 +301,85 @@ def test_us01_every_threat_with_a_gap_line_is_named_under_residual_gaps():
             gaps.append(current)
     assert gaps
     assert [t for t in gaps if not re.search(rf"\b{t}\b", residual)] == []
+
+
+def _assert_mapped(threat, own, expected):
+    entries = _parse(THREAT_MAP.read_text()).get(threat) or []
+    names = [name for _, name in entries]
+    assert expected in names and own in names, (threat, names)
+    assert [p for p in _problems({threat: entries}) if p.startswith(f"{threat}:")] == []
+
+
+def test_tm01_unsafe_heat_setpoint_or_aim_is_mapped_to_an_existing_test():
+    """TM-1: the unsafe setpoint and aim threat points at an existing acceptance test."""
+    _assert_mapped("TM-1", "test_tm01_unsafe_heat_setpoint_or_aim_is_mapped_to_an_existing_test", "test_us13_extreme_inputs_keep_the_aim_and_every_setpoint_inside_the_caps")
+
+
+def test_tm02_stalled_forecast_call_threat_is_mapped_to_an_existing_test():
+    """TM-2: the stalled forecast call threat points at an existing acceptance test."""
+    _assert_mapped("TM-2", "test_tm02_stalled_forecast_call_threat_is_mapped_to_an_existing_test", "test_us07_the_winter_safety_cuts_come_before_the_first_forecast_call")
+
+
+def test_tm03_bad_sensor_values_threat_is_mapped_to_an_existing_test():
+    """TM-3: the bad sensor values threat points at an existing acceptance test."""
+    _assert_mapped("TM-3", "test_tm03_bad_sensor_values_threat_is_mapped_to_an_existing_test", "test_us07_unusable_sensor_states_are_dropped_and_all_bad_means_sensor_failure")
+
+
+def test_tm04_season_toggle_threat_is_mapped_to_an_existing_test():
+    """TM-4: the unavailable or invalid season toggle threat points at an existing acceptance test."""
+    _assert_mapped("TM-4", "test_tm04_season_toggle_threat_is_mapped_to_an_existing_test", "test_us01_invalid_toggle_raises_one_fixed_id_notice")
+
+
+def test_tm05_toggle_recovery_threat_is_mapped_to_an_existing_test():
+    """TM-5: the toggle recovery read as a flip threat points at an existing acceptance test."""
+    _assert_mapped("TM-5", "test_tm05_toggle_recovery_threat_is_mapped_to_an_existing_test", "test_us10_a_toggle_that_recovers_to_on_inside_120_seconds_sends_nothing_to_a_heating_unit")
+
+
+def test_tm06_stale_timer_threat_is_mapped_to_an_existing_test():
+    """TM-6: the stale LG timer threat points at an existing acceptance test."""
+    _assert_mapped("TM-6", "test_tm06_stale_timer_threat_is_mapped_to_an_existing_test", "test_us10_vacation_in_winter_stops_every_run_before_any_heat_command")
+
+
+def test_tm07_timer_hours_threat_is_mapped_to_an_existing_test():
+    """TM-7: the timer hours bounds threat points at an existing acceptance test."""
+    _assert_mapped("TM-7", "test_tm07_timer_hours_threat_is_mapped_to_an_existing_test", "test_us04_timer_hours_hold_their_bounds_across_weekend_boundaries_and_dst_changes")
+
+
+def test_tm08_unverified_morning_start_threat_is_mapped_to_an_existing_test():
+    """TM-8: the unverified morning start threat points at an existing acceptance test."""
+    _assert_mapped("TM-8", "test_tm08_unverified_morning_start_threat_is_mapped_to_an_existing_test", "test_us14_a_set_that_does_not_read_back_gives_one_notice")
+
+
+def test_tm09_parked_state_threat_is_mapped_to_an_existing_test():
+    """TM-9: the wrong parked-state inference threat points at an existing acceptance test."""
+    _assert_mapped("TM-9", "test_tm09_parked_state_threat_is_mapped_to_an_existing_test", "test_us06_every_winter_command_that_names_a_mode_names_heat")
+
+
+def test_tm10_night_re_heat_threat_is_mapped_to_an_existing_test():
+    """TM-10: the night re-heat restoring an unknown state threat points at an existing acceptance test."""
+    _assert_mapped("TM-10", "test_tm10_night_re_heat_threat_is_mapped_to_an_existing_test", "test_us05_night_re_heat_matrix_and_budget_hold_for_a_cold_night")
+
+
+def test_tm11_lock_window_exemption_threat_is_mapped_to_an_existing_test():
+    """TM-11: the lock-window exemption hiding a manual off threat points at an existing acceptance test."""
+    _assert_mapped("TM-11", "test_tm11_lock_window_exemption_threat_is_mapped_to_an_existing_test", "test_us07_lock_window_exemption_has_hard_edges_and_summer_classification_is_unchanged")
+
+
+def test_tm12_notification_flooding_threat_is_mapped_to_an_existing_test():
+    """TM-12: the notification flooding threat points at an existing acceptance test."""
+    _assert_mapped("TM-12", "test_tm12_notification_flooding_threat_is_mapped_to_an_existing_test", "test_us14_every_notice_id_is_a_constant_and_each_winter_notice_has_one")
+
+
+def test_tm13_unknown_unit_capabilities_threat_is_mapped_to_an_existing_test():
+    """TM-13: the unknown or unsupported unit capabilities threat points at an existing acceptance test."""
+    _assert_mapped("TM-13", "test_tm13_unknown_unit_capabilities_threat_is_mapped_to_an_existing_test", "test_us13_safety_cuts_work_with_unknown_limits_and_read_neither_limit")
+
+
+def test_tm14_summer_regression_threat_is_mapped_to_an_existing_test():
+    """TM-14: the summer regression threat points at an existing acceptance test."""
+    _assert_mapped("TM-14", "test_tm14_summer_regression_threat_is_mapped_to_an_existing_test", "test_us12_with_the_toggle_on_the_backstop_never_fires")
+
+
+def test_tm15_fan_commands_threat_is_mapped_to_an_existing_test():
+    """TM-15: the fan commands on hand-controlled devices threat points at an existing acceptance test."""
+    _assert_mapped("TM-15", "test_tm15_fan_commands_threat_is_mapped_to_an_existing_test", "test_us08_bedtime_lock_switches_off_only_fans_the_blueprint_started_and_nobody_touched")
