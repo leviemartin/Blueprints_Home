@@ -1,6 +1,18 @@
 blueprint:
-  name: "Bedroom Sleep Pre-Cool v1.2.1"
+  name: "Bedroom Sleep Pre-Cool v1.3.0"
   description: >
+    **Version: 1.3.0** — winter heating inputs: season toggle (unavailable or
+    empty counts as summer, with one notice), Winter Target capped at 20 °C,
+    Pre-Warm Offset held below the Drift Tolerance, Heating Drive Setpoint capped
+    at 24 °C and the unit's max_temp and rounded down to its step, Morning Time
+    (winter only: after the Deep-Night Check, before Wake Time). With the toggle
+    off the summer rules of the entries below apply unchanged.
+    At night in the heating season a bedroom below the Winter Target minus the Drift
+    Tolerance gets one bare turn-on of the parked heat state (not from the planned
+    morning start until 5 min after it), the deep-night check nudges the setpoint up
+    once by the Correction Step (capped at 24 °C), and a unit the LG timer starts in
+    another mode than heat is set to heat once, with one notice. No turn-off is sent
+    before Wake Time.
     **Version: 1.2.1** — no PRECOOL setpoint command while the AC has not reported
     numeric min/max limits (bug #30: the ThinQ entity may lack them on the turn-on
     tick, so the clamp sent the 16 °C fallback and HA rejected it; the next tick sets
@@ -621,6 +633,117 @@ blueprint:
             - label: "Switch off"
               value: "off"
 
+    # =======================================================
+    # GROUP 8 — WINTER HEATING (v1.3.0)
+    # =======================================================
+    heating_season_toggle:
+      name: Heating Season Toggle (Optional)
+      description: >
+        Optional input_boolean. ON = winter rules, OFF = the summer rules.
+        Unavailable, unknown, empty or not configured counts as OFF and raises
+        one notice, so a missing toggle never starts the heating.
+      default: []
+      selector:
+        entity:
+          domain: input_boolean
+          multiple: true
+    winter_target:
+      name: Winter Target (°C)
+      description: >
+        The temperature the heating aims to hold on winter nights. Capped at
+        20 °C, even if a higher value is stored.
+      default: 19.0
+      selector:
+        number:
+          min: 16.0
+          max: 20.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    prewarm_offset:
+      name: Pre-Warm Offset (°C)
+      description: >
+        How far above the Winter Target the pre-warm aims. Used as at most the
+        Drift Tolerance minus 0.1 °C, so the aim stays inside the band.
+      default: 1.0
+      selector:
+        number:
+          min: 0.0
+          max: 3.0
+          step: 0.1
+          unit_of_measurement: "°C"
+    heating_drive_setpoint:
+      name: Heating Drive Setpoint (°C)
+      description: >
+        The hall setpoint while driving the rooms up. Every heat setpoint is
+        capped at 24 °C and at the unit's max_temp, and rounded down to its step.
+      default: 24.0
+      selector:
+        number:
+          min: 20.0
+          max: 24.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    morning_time:
+      name: Morning Time
+      description: >
+        Winter only: when the morning heat should be on. Must be after the
+        Deep-Night Check and before Wake Time, else the schedule-order notice shows.
+        The LG timer counts whole hours from Bedtime (rounded down), so the unit
+        starts exactly at this time only when it is a whole number of hours after
+        Bedtime (Bedtime 19:30: 05:30, 06:30, ...); any other value starts it up
+        to an hour early. The manual-run debug dump shows the timer hours and the
+        planned start.
+      default: "05:30:00"
+      selector:
+        time: {}
+    weekend_morning_time:
+      name: Weekend Morning Time
+      description: >
+        Winter only: used instead of the Morning Time when the morning is a
+        Saturday or Sunday (armed on Friday or Saturday). The morning start is
+        never planned at or after Wake Time.
+      default: "06:30:00"
+      selector:
+        time: {}
+    ac_power_on_timer:
+      name: AC Power-On Timer (Optional)
+      description: >
+        Winter only: the LG power-on timer (a number entity, in hours). At
+        bedtime the unit is parked in heat, switched off, and this is set once
+        to the whole hours, rounded down, until the morning time. Empty,
+        unavailable, above its maximum or not reading back after the set: one
+        notice and no morning start that day.
+      default: []
+      selector:
+        entity:
+          domain: number
+          multiple: true
+    heating_skip_threshold:
+      name: Mild-Evening Skip Threshold (°C)
+      description: >
+        Winter only: the evening pre-warm is skipped when the forecast low is
+        at or above this and the coldest bedroom is already at or above the
+        Winter Target.
+      default: 12.0
+      selector:
+        number:
+          min: 0.0
+          max: 20.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    heating_bias_helper:
+      name: Heating Lead-Time Bias Helper (input_number)
+      description: >
+        An input_number helper that persists the self-learned heating lead-time
+        correction (minutes), kept apart from the summer Lead-Time Bias Helper.
+        Min -60 (or lower), max 120 (or higher), step 1. Leave empty for a bias
+        of 0.
+      default: []
+      selector:
+        entity:
+          domain: input_number
+          multiple: true
+
 mode: restart
 max_exceeded: silent
 
@@ -683,6 +806,16 @@ variables:
   precool_fan_percentage: !input precool_fan_percentage
   fan_settle_minutes: !input fan_settle_minutes
   fans_at_wake: !input fans_at_wake
+  # --- Group 8: winter heating (v1.3.0) ---
+  heating_season_toggle: !input heating_season_toggle
+  winter_target: !input winter_target
+  prewarm_offset: !input prewarm_offset
+  heating_drive_setpoint: !input heating_drive_setpoint
+  morning_time: !input morning_time
+  weekend_morning_time: !input weekend_morning_time
+  ac_power_on_timer: !input ac_power_on_timer
+  heating_skip_threshold: !input heating_skip_threshold
+  heating_bias_helper: !input heating_bias_helper
 
 trigger:
   # T1: Periodic 1-minute tick — phase derivation, prediction, transitions
@@ -838,6 +971,167 @@ action:
       ac_started_ts: >-
         {% set s = expand(ac_climate) | list %}
         {{ as_timestamp(s[0].last_changed) if s | length > 0 else 0 }}
+
+  # =============================================
+  # STEP 2a-W: WINTER SAFETY (v1.3.0) — real ticks only, ahead of the forecast fetch, the
+  # configuration check and the sensor stop, so none of them can hold a cut back. Each cut
+  # has one fixed-id notice (a repeat replaces it, so a night shows at most one): overheat
+  # (any bedroom above winter target + tolerance while the unit heats: one turn-off), every
+  # bedroom sensor dead (one turn-off; STEP 5 then stops all heat commands until a sensor
+  # reads a number), a season flip (a unit running in the other season's mode since before
+  # the flip is switched off; a flip to summer also zeroes the LG timer, in the flip minute)
+  # and Vacation in the heating season (off, timer 0, stop). The season facts are defined here
+  # because manual_off (STEP 2c) needs heating_season; STEP 2d repeats them unchanged. A
+  # toggle that does not read on or off never flips anything.
+  # =============================================
+  - variables:
+      season_entity: >-
+        {% if heating_season_toggle is iterable and heating_season_toggle is not string
+              and heating_season_toggle | length > 0 %}
+          {{ heating_season_toggle[0] }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
+      season_state: "{{ states(season_entity) if season_entity != '' else 'unconfigured' }}"
+      heating_season: "{{ season_state == 'on' }}"
+      season_changed_ts: "{{ as_timestamp(states[season_entity].last_changed) if season_entity != '' and states[season_entity] is not none else 0 }}"
+      safe_overheat_level: "{{ (([winter_target | float(19), 20] | min) + (tolerance | float)) | round(2) }}"
+      safe_timer: >-
+        {% if ac_power_on_timer is iterable and ac_power_on_timer is not string and ac_power_on_timer | length > 0 %}
+          {{ ac_power_on_timer[0] }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
+      safe_timer_set_due: "{{ safe_timer != '' and states(safe_timer) not in ['unavailable', 'unknown'] and (states(safe_timer) | float(0)) != 0 }}"
+      season_flip_off_due: "{{ is_real_trigger and ac_is_running and season_state in ['on', 'off'] and (season_changed_ts | float) > (ac_started_ts | float) and ((heating_season and current_hvac_mode != 'heat') or ((not heating_season) and current_hvac_mode == 'heat')) }}"
+      season_flip_timer_due: "{{ is_real_trigger and season_state == 'off' and (as_timestamp(now()) - (season_changed_ts | float)) < 120 and safe_timer_set_due }}"
+      safe_overheat_due: "{{ is_real_trigger and heating_season and ac_is_running and current_hvac_mode == 'heat' and bedroom_sensors_ok and (bedroom_valid_temps | max) > (safe_overheat_level | float) }}"
+      safe_sensor_due: "{{ is_real_trigger and heating_season and (not bedroom_sensors_ok) and (not ac_unavailable) }}"
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_real_trigger and heating_season and vacation_active }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ ac_is_running }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ ac_climate }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ safe_timer_set_due }}"
+                sequence:
+                  - service: number.set_value
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ safe_timer }}"
+                    data:
+                      value: 0
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ enable_notifications }}"
+                sequence:
+                  - service: persistent_notification.create
+                    continue_on_error: true
+                    data:
+                      title: "Bedroom Pre-Warm — Vacation"
+                      message: >
+                        Vacation is on in the heating season: {{ ac_climate }} is switched off,
+                        the AC Power-On Timer is set to 0 and no heat command is sent until
+                        Vacation is switched off.
+                      notification_id: "bedroom_precool_heat_vacation"
+          - stop: "Vacation active (heating season)"
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ season_flip_off_due or season_flip_timer_due }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ season_flip_off_due }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ ac_climate }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ season_flip_timer_due }}"
+                sequence:
+                  - service: number.set_value
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ safe_timer }}"
+                    data:
+                      value: 0
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ enable_notifications }}"
+                sequence:
+                  - service: persistent_notification.create
+                    continue_on_error: true
+                    data:
+                      title: "Bedroom Pre-Warm — Season Changed"
+                      message: >
+                        The Heating Season Toggle changed to {{ season_state }}: a unit running in the
+                        other season's mode is switched off and, for summer, the AC Power-On Timer
+                        is set to 0. The new rules apply from now on.
+                      notification_id: "bedroom_precool_heat_season_flip"
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ safe_sensor_due }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ ac_is_running and not season_flip_off_due }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ ac_climate }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ enable_notifications }}"
+                sequence:
+                  - service: persistent_notification.create
+                    continue_on_error: true
+                    data:
+                      title: "Bedroom Pre-Warm — Sensors Unavailable"
+                      message: >
+                        All bedroom temperature sensors are unavailable. {{ ac_climate }} is switched
+                        off and no heat command is sent until a sensor reads a number again.
+                      notification_id: "bedroom_precool_heat_sensors_failed"
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ safe_overheat_due }}"
+        sequence:
+          - service: climate.turn_off
+            target:
+              entity_id: "{{ ac_climate }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ enable_notifications }}"
+                sequence:
+                  - service: persistent_notification.create
+                    continue_on_error: true
+                    data:
+                      title: "Bedroom Pre-Warm — Overheat"
+                      message: >
+                        A bedroom reads {{ bedroom_valid_temps | max }}°C, above the {{ safe_overheat_level }}°C limit.
+                        {{ ac_climate }} is switched off; the night re-heat restarts it only once the coldest
+                        bedroom is below the re-heat level.
+                      notification_id: "bedroom_precool_heat_overheat"
 
   # =============================================
   # STEP 2b: FORECAST FETCH
@@ -1128,12 +1422,13 @@ action:
       # v1.2.0: the fan-only lock switches the unit off itself (≈ lock tick + cloud lag);
       # an off stamped within 180 s of the lock is the blueprint's, not a person's — a
       # person's off in that same window is misread as ours, documented.
+      # v1.3.0: the winter bedtime minute switches the unit off the same way, so heating nights get the exemption too.
       manual_off: >-
         {{ (not ac_is_running) and (not ac_unavailable)
            and ac_off_since_ts | float >= earliest_turn_on_ts | float + 120
            and ac_off_since_ts | float > automation_up_since_ts | float + 600
            and vacation_changed_ts | float < ac_off_since_ts | float - 120
-           and not (fan_only_mode and ac_off_since_ts | float >= lock_ts | float and ac_off_since_ts | float < lock_ts | float + 180) }}
+           and not ((fan_only_mode or heating_season) and ac_off_since_ts | float >= lock_ts | float and ac_off_since_ts | float < lock_ts | float + 180) }}
       # --- Phase derivation (all time-of-day string comparisons) ---
       # The "day side" of the schedule runs wake -> bedtime_lock.
       on_day_side: "{{ wake_tod <= now_tod and now_tod < lock_tod }}"
@@ -1258,7 +1553,8 @@ action:
       # start (one 21% command, interlock still honoured). Not further distinguished:
       # fan_assist and dry mode both default off, and the experiment runs on chosen
       # nights only.
-      in_fan_assist_window: "{{ phase == 'PRECOOL' and ac_is_running and (since_ac_start_min | float) < (fan_settle_minutes | float) and (automation_up_since_ts | float) < (earliest_turn_on_ts | float) }}"
+      # v1.3.0: in the heating season the assist runs only while the unit heats; the phase already excludes every other heating stage.
+      in_fan_assist_window: "{{ phase == 'PRECOOL' and ac_is_running and (not heating_season or current_hvac_mode == 'heat') and (since_ac_start_min | float) < (fan_settle_minutes | float) and (automation_up_since_ts | float) < (earliest_turn_on_ts | float) }}"
       # H5 (P2, board 20260909-151815 cycle 3, R1C3-04 ≡ R2C3-04): a turn_on issued on the
       # last in-window tick lands 10-60 s later, i.e. AFTER the window has already closed,
       # so the very next tick renders an empty due list and the fan our own write turned on
@@ -1268,18 +1564,13 @@ action:
       settle_grace_tod: >-
         {{ (today_at(bedtime) + timedelta(minutes=fan_settle_minutes | int, seconds=120)).strftime('%H:%M:%S') }}
       in_fan_settle_grace: "{{ lock_tod <= now_tod and now_tod < settle_grace_tod }}"
-      in_fan_assist_grace: "{{ phase == 'PRECOOL' and ac_is_running and (since_ac_start_min | float) < (fan_settle_minutes | float) + 2 and (automation_up_since_ts | float) < (earliest_turn_on_ts | float) }}"
+      in_fan_assist_grace: "{{ phase == 'PRECOOL' and ac_is_running and (not heating_season or current_hvac_mode == 'heat') and (since_ac_start_min | float) < (fan_settle_minutes | float) + 2 and (automation_up_since_ts | float) < (earliest_turn_on_ts | float) }}"
       night_phase: "{{ phase in ['NIGHT_HOLD', 'DEEP_NIGHT_CHECK', 'DEEP_HOLD'] }}"
-      # Board 20260909-151815 cycle 2 G3 (P1 residual R2C2-03 -> mitigation): a heater is
-      # never an acceptable fallback in a child's bedroom. A stale cloud read that
-      # reports 'off' while the unit is actually still running heat (LG ThinQ mode drift,
-      # or a guard/settle set_hvac_mode call whose cloud application silently failed)
-      # would otherwise sit uncorrected until the next real state change. heat_backstop_due
-      # catches it on every real tick: fan-only, a night phase, the unit ostensibly
-      # running, and its LAST-READ mode is 'heat'. This does NOT close the finding — a
-      # stale cloud 'off' WHILE actually heating is unobservable from this automation;
-      # the residual is recorded in the board report for the operator.
-      heat_backstop_due: "{{ fan_only_mode and night_phase and ac_is_running and current_hvac_mode == 'heat' }}"
+      # Heat backstop (2026-11-03 rule): a unit that reports heat is due a correction to cool
+      # only while a bedroom is above winter target + tolerance (safe_overheat_level) or every
+      # bedroom sensor has failed; a heat run started by hand with the rooms in range is left
+      # alone. STEP 5d adds the toggle-off and real-tick conditions.
+      heat_backstop_due: "{{ ac_is_running and current_hvac_mode == 'heat' and ((not bedroom_sensors_ok) or (bedroom_valid_temps | max) > (safe_overheat_level | float)) }}"
       # Night guard: fan-only, a night phase, unit off, warmest room over the band, on a
       # 5-minute tick (bounds a stuck cloud 'off' to ≤ 12 attempts/h, board R2-02). The
       # running unit is the latch — once on, guard_due is false until DAY_OFF turns it
@@ -1293,10 +1584,9 @@ action:
       # inside the 15-minute window is left alone (manual_setpoint already requires
       # ac_state_age_sec >= 120, so the first two ticks after a start are always ours).
       guard_settle_due: "{{ fan_only_mode and night_phase and ac_is_running and (since_ac_start_min | float) < 15 and not manual_setpoint }}"
-      # H2 (P2, board 20260909-151815 cycle 3, R1C3-02): the backstop (STEP 5d) now owns the
-      # heat case exclusively — without this exclusion both would send the same
-      # set_hvac_mode on a heat read inside the settle window (two beeps for one repair).
-      settle_mode_due: "{{ guard_settle_due and current_hvac_mode not in ['cool', 'dry'] and not heat_backstop_due }}"
+      # A heat read is never settle's to fix: STEP 5d owns it (only with a room overheated or every
+      # sensor failed), and a heat run started by hand is left alone.
+      settle_mode_due: "{{ guard_settle_due and current_hvac_mode not in ['cool', 'dry', 'heat'] }}"
       # Board 20260909-151815 F7 (P1, R1-02/R1-03): on a unit whose ac_temp_step >= 1, main
       # QUANTISES every commanded setpoint (int()) — maintaining = int(21.0) = 21, the
       # deep-night down-nudge = int(21 - 1.5) = 19 (NOT 19.5), up-nudge = int(22.5) = 22.
@@ -1312,7 +1602,7 @@ action:
       # is not in that list and is still corrected.
       night_hold_setpoints: "{% set ns = namespace(vals=[]) %}{% for v in [maintaining_setpoint | float, [[maintaining_setpoint | float - correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min, [[maintaining_setpoint | float + correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min] %}{% set ns.vals = ns.vals + [(v | int) if ac_temp_step | float >= 1 else v] %}{% endfor %}{{ ns.vals }}"
       setpoint_is_night_hold: "{% set ns = namespace(ok=false) %}{% if night_hold_setpoints is string or night_hold_setpoints is not iterable %}{% set ns.ok = true %}{% else %}{% for k in night_hold_setpoints %}{% if (current_setpoint | float - k | float) | abs <= 0.1 %}{% set ns.ok = true %}{% endif %}{% endfor %}{% endif %}{{ ns.ok }}"
-      settle_setpoint_due: "{{ guard_settle_due and current_setpoint_known and not setpoint_is_night_hold }}"
+      settle_setpoint_due: "{{ guard_settle_due and current_setpoint_known and not setpoint_is_night_hold and not heat_backstop_due }}"
       settle_fan_due: "{{ guard_settle_due and enable_fan_control and ac_fan_modes | length > 0 and current_fan != 'unknown' and current_fan != night_fan_mode }}"
       # --- v1.2.0 fan write rule → per-window lists of fans DUE for one command ---
       # A fan is due when: configured, present and available, not already at the target
@@ -1326,7 +1616,7 @@ action:
       # variables boundary intact.
       fans_due_night: >-
         {% set ns = namespace(out=[]) %}
-        {% if night_fans_tonight and in_fan_settle %}
+        {% if night_fans_tonight and in_fan_settle and not heating_season %}
           {% for f in bedroom_fans %}
             {% set st = expand(f) | list %}
             {% if st | length > 0 %}
@@ -1363,7 +1653,7 @@ action:
       # the last settle tick, never retried.
       fans_unset_night: >-
         {% set ns = namespace(out=[]) %}
-        {% if night_fans_tonight and in_fan_settle %}
+        {% if night_fans_tonight and in_fan_settle and not heating_season %}
           {% for f in bedroom_fans %}
             {% set st = expand(f) | list %}
             {% if st | length > 0 %}
@@ -1378,9 +1668,25 @@ action:
           {% endfor %}
         {% endif %}
         {{ ns.out }}
+      # v1.3.0: in the heating season this list is the bedtime-lock switch-off (a turn_off, no new call site): fans on at the
+      # pre-cool percentage that came on after the unit started and were not changed since. Wake time does nothing in winter.
       fans_on_at_wake: >-
         {% set ns = namespace(out=[]) %}
-        {% if fans_at_wake == 'off' and in_wake_window %}
+        {% if heating_season %}
+          {% if fan_assist_tonight and in_lock_window %}
+            {% for f in bedroom_fans %}
+              {% set st = expand(f) | list %}
+              {% if st | length > 0 %}
+                {% set s = st[0] %}
+                {% if s.state == 'on' and (state_attr(f, 'percentage') | int(-1)) == (precool_fan_percentage | int)
+                      and as_timestamp(s.last_changed) >= (ac_started_ts | float)
+                      and as_timestamp(s.last_updated) - as_timestamp(s.last_changed) < 120 %}
+                  {% set ns.out = ns.out + [f] %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+        {% elif fans_at_wake == 'off' and in_wake_window %}
           {% for f in bedroom_fans %}
             {% set st = expand(f) | list %}
             {% if st | length > 0 and st[0].state == 'on' %}
@@ -1423,7 +1729,7 @@ action:
       # strict windows, only the cut's own arming uses the grace.
       fans_unsafe_on: >-
         {% set ns = namespace(out=[]) %}
-        {% set night_branch = night_fans_tonight and in_fan_settle_grace %}
+        {% set night_branch = night_fans_tonight and in_fan_settle_grace and not heating_season %}
         {% set assist_branch = fan_assist_tonight and in_fan_assist_grace %}
         {% if (night_branch or assist_branch)
               and expand(fan_interlocks) | selectattr('state', 'eq', 'on') | list | length > 0 %}
@@ -1444,6 +1750,92 @@ action:
         {{ ns.out }}
 
   # =============================================
+  # STEP 2d: HEATING SEASON AND HEAT SETPOINT CAPS (v1.3.0)
+  # heating_season is true only when the toggle reads exactly 'on'; unavailable,
+  # unknown, empty, a stray string or no toggle at all is summer. Heat setpoints
+  # never exceed 24 or the unit's max_temp and are rounded DOWN to the unit's
+  # step; heat_setpoints_allowed stays false while the limits are unknown or the
+  # unit lacks heat, and nothing may send a heat setpoint then.
+  # =============================================
+  - variables:
+      season_entity: >-
+        {% if heating_season_toggle is iterable and heating_season_toggle is not string
+              and heating_season_toggle | length > 0 %}
+          {{ heating_season_toggle[0] }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
+      season_state: "{{ states(season_entity) if season_entity != '' else 'unconfigured' }}"
+      heating_season: "{{ season_state == 'on' }}"
+      season_toggle_invalid: "{{ season_state not in ['on', 'off'] }}"
+      winter_target_eff: "{{ [winter_target | float(19), 20] | min }}"
+      prewarm_offset_eff: "{{ ([[prewarm_offset | float(0), tolerance | float - 0.1] | min, 0] | max) | round(2) }}"
+      winter_aim: "{{ (winter_target_eff | float + prewarm_offset_eff | float) | round(2) }}"
+      heat_cap: "{{ [24, ac_max_temp | float] | min }}"
+      heating_drive_eff: "{% set v = [[heating_drive_setpoint | float(24), ac_min_temp | float] | max, heat_cap | float] | min %}{{ (((v / (ac_temp_step | float)) + 0.000001) | round(0, 'floor') * (ac_temp_step | float)) | round(2) }}"
+      heating_hold_eff: "{% set v = [[winter_target_eff | float, ac_min_temp | float] | max, heat_cap | float] | min %}{{ (((v / (ac_temp_step | float)) + 0.000001) | round(0, 'floor') * (ac_temp_step | float)) | round(2) }}"
+      heat_supported: "{{ 'heat' in ac_hvac_modes }}"
+      heat_setpoints_allowed: "{{ heating_season and heat_supported and ac_limits_known }}"
+      # --- v1.3.0 heating lead time: the summer formula mirrored (aim minus room, aim minus outdoor), no solar term ---
+      # Forecast low reuses the responses STEP 2b already fetched (hourly window min, else the daily templow, never above the live reading); no new fetch.
+      forecast_daily_low: >-
+        {% set ns = namespace(today=none, first=none) %}
+        {% for f in forecast_daily_list %}
+          {% set ts = f.datetime | default(none) %}
+          {% set tp = f.templow | default(none) %}
+          {% if ts is not none and tp | float(none) is not none %}
+            {% set fdt = as_datetime(ts, none) %}
+            {% if fdt is not none %}
+              {% if ns.first is none %}{% set ns.first = tp | float %}{% endif %}
+              {% if ns.today is none and (fdt | as_local).date() == now().date() %}
+                {% set ns.today = tp | float %}
+              {% endif %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.today if ns.today is not none else ns.first }}
+      forecast_daily_low_ok: "{{ forecast_daily_low is not none and forecast_daily_low | float(none) is not none }}"
+      forecast_low: >-
+        {% if forecast_window_temps | length > 0 %}
+          {{ forecast_window_temps | min }}
+        {% elif forecast_daily_low_ok %}
+          {{ [forecast_daily_low | float, outdoor_now | float] | min }}
+        {% else %}
+          {{ outdoor_now | float }}
+        {% endif %}
+      heat_outdoor_for_lead: "{{ [forecast_low | float, outdoor_now | float] | min }}"
+      heat_delta_in: "{{ [0, winter_aim | float - coldest_bedroom | float] | max }}"
+      heat_delta_out: "{{ [0, winter_aim | float - heat_outdoor_for_lead | float] | max }}"
+      heating_bias_entity: >-
+        {% if heating_bias_helper is iterable and heating_bias_helper is not string
+              and heating_bias_helper | length > 0 %}
+          {{ heating_bias_helper[0] }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
+      heating_bias_configured: "{{ heating_bias_entity != '' }}"
+      heating_bias: >-
+        {% if enable_auto_learn and heating_bias_configured %}
+          {{ states(heating_bias_entity) | float(0) }}
+        {% else %}
+          0
+        {% endif %}
+      heat_lead_raw: >-
+        {{ (base_minutes | float)
+           + (k_indoor | float) * (heat_delta_in | float)
+           + (k_outdoor | float) * (heat_delta_out | float)
+           + (safety_margin_minutes | float)
+           + (heating_bias | float) }}
+      heat_lead: "{{ [[heat_lead_raw | float, 0] | max, lead_cap_minutes | float] | min | round(0) | int }}"
+      heat_needed: "{{ coldest_bedroom | float < winter_target_eff | float or forecast_low | float < heating_skip_threshold | float }}"
+      overheat_level: "{{ (winter_target_eff | float + tolerance | float) | round(2) }}"
+      reheat_level: "{{ (winter_target_eff | float - tolerance | float) | round(2) }}"
+      heat_turn_on_ts: "{{ as_timestamp(today_at(bedtime) - timedelta(minutes=heat_lead | int)) }}"
+      heat_turn_on_tod: "{{ heat_turn_on_ts | float | timestamp_custom('%H:%M:%S') }}"
+      heat_running: "{{ ac_is_running and current_hvac_mode == 'heat' and now_tod >= earliest_turn_on_tod }}"
+      heat_stage: "{% if not heating_season %}OFF{% elif wake_tod <= now_tod and now_tod < bedtime_tod %}{% if not heat_needed and not heat_running %}SKIP{% elif now_tod < heat_turn_on_tod and not heat_running %}WAIT{% elif coldest_bedroom | float < winter_aim | float %}DRIVE{% else %}HOLD{% endif %}{% elif warmest_bedroom | float > overheat_level | float %}OVERHEAT{% elif coldest_bedroom | float < reheat_level | float %}REHEAT{% else %}HOLD{% endif %}"
+
+  # =============================================
   # STEP 3: RUNTIME (CONFIG) VALIDATION
   # =============================================
   - choose:
@@ -1457,6 +1849,8 @@ action:
                  or deep_night_check >= wake_time
                  or (today_at(bedtime) - timedelta(minutes=lead_cap_minutes | int))
                     <= today_at(wake_time)
+                 or (heating_season and (morning_time <= deep_night_check
+                                         or morning_time >= wake_time))
                  or (today_at(bedtime) + timedelta(minutes=fan_settle_minutes | int)).date()
                     != today_at(bedtime).date() }}
         sequence:
@@ -1480,9 +1874,43 @@ action:
                         ({{ lead_cap_minutes }} min = {{ earliest_turn_on_tod }})
                         must be after Wake Time. Bedtime plus the Fan Settle
                         Window ({{ fan_settle_minutes }} min) must not cross
-                        midnight. Control is paused until corrected.
+                        midnight. In the heating season the Morning Time
+                        ({{ morning_time }}) must be after the Deep-Night Check
+                        and before Wake Time. Control is paused until corrected.
                       notification_id: "bedroom_precool_config_error"
           - stop: "Configuration error"
+
+  # =============================================
+  # STEP 3b: SEASON TOGGLE AND HEAT SUPPORT NOTICES (v1.3.0)
+  # A toggle that is unavailable, unknown, empty or not configured counts as
+  # summer; one fixed-id notice says so. A unit without heat in its hvac_modes
+  # gets no heat command and one fixed-id notice. Both ids are constants.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ enable_notifications and season_toggle_invalid }}"
+        sequence:
+          - service: persistent_notification.create
+            continue_on_error: true
+            data:
+              title: "Bedroom Pre-Cool — Season Toggle Unavailable"
+              message: >
+                The Heating Season Toggle is not configured or does not read
+                on or off, so the blueprint runs the summer rules (no heating).
+              notification_id: "bedroom_precool_season_toggle_invalid"
+      - conditions:
+          - condition: template
+            value_template: "{{ enable_notifications and heating_season and not ac_unavailable and not heat_supported }}"
+        sequence:
+          - service: persistent_notification.create
+            continue_on_error: true
+            data:
+              title: "Bedroom Pre-Cool — No Heat Mode"
+              message: >
+                The AC does not list heat among its modes, so no heat command
+                is sent.
+              notification_id: "bedroom_precool_heat_unsupported"
 
   # =============================================
   # STEP 4: VACATION OVERRIDE
@@ -1609,30 +2037,34 @@ action:
   # validation stops (H3, R2C3-02): sitting behind `stop: "AC entity unavailable"` /
   # `stop: "No valid bedroom temperature sensor"` let a dead bedroom sensor block the mode
   # correction while the unit kept heating. Needs only STEP 2a/2c variables
-  # (fan_only_mode, night_phase, ac_is_running, current_hvac_mode, heat_backstop_due,
-  # desired_mode), all defined earlier than this point.
+  # (ac_is_running, current_hvac_mode, heat_backstop_due,
+  # maintaining_setpoint), all defined earlier than this point.
   # H1 (P1, R1C3-01 ≡ R2C3-03): corrects the MODE instead of switching the unit off. The
   # old unconditional climate.turn_off moved the climate entity's last_changed, which made
   # main's manual_off read True for the rest of the night (outside the lock's own 180 s
   # exemption) and killed guard_due (`... and not manual_off`) until wake, with STEP 7e
-  # then blaming a person for an off this blueprint caused. climate.set_hvac_mode with
-  # hvac_mode: desired_mode is the same idempotent command the settle step uses — the unit
-  # never goes off, so there is nothing for the guard to bring back; it re-fires on every
-  # tick the cloud read still says 'heat'. H2 gives it sole ownership of the heat case:
-  # settle_mode_due excludes heat_backstop_due, so the two never double-command one tick.
+  # then blaming a person for an off this blueprint caused. Since v1.3.0 (the 2026-11-03 rule)
+  # it is not limited to fan-only nights: with the Heating Season Toggle off, one
+  # climate.set_temperature (hvac_mode: cool, the maintaining setpoint) goes out only while a
+  # bedroom is above winter target + tolerance or every bedroom sensor has failed; a heat run
+  # started by hand with the rooms in range gets no command. The unit never goes off, so there
+  # is nothing for the guard to bring back; it re-fires on every tick the cloud read still says
+  # 'heat'. settle_mode_due and settle_setpoint_due stand down while it is due: one command per tick.
   # Does not close R2C2-03: a stale cloud 'off' while actually heating is unobservable
   # from this automation (documented residual for the operator).
   # =============================================
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ is_real_trigger and heat_backstop_due }}"
+            # Winter runs the unit in heat on purpose (night re-heat), so the backstop stands down.
+            value_template: "{{ is_real_trigger and heat_backstop_due and not heating_season }}"
         sequence:
-          - service: climate.set_hvac_mode
+          - service: climate.set_temperature
             target:
               entity_id: "{{ ac_climate }}"
             data:
-              hvac_mode: "{{ desired_mode }}"
+              hvac_mode: cool
+              temperature: "{{ maintaining_setpoint | float }}"
 
   # =============================================
   # STEP 5: SENSOR / ENTITY VALIDATION
@@ -1694,6 +2126,272 @@ action:
                 If inside the deep-night check window the blueprint will
                 correct upward.
               notification_id: "bedroom_precool_overcool_fault"
+
+  # =============================================
+  # STEP 5e: WINTER DISPATCH (v1.3.0) — heating season, real ticks only. At wake a
+  # running unit is switched off (until the earliest turn-on). In the evening, from the
+  # heat turn-on instant, one idempotent command each turns the unit on, selects heat and
+  # sets the drive setpoint (coldest room below the aim) or the hold setpoint (aim reached,
+  # unit running). A setpoint changed by hand, or a manual off, ends the evening's commands
+  # and raises one fixed-id notice. No heat command goes out without heat in the unit's
+  # hvac_modes or while its limits are unknown (heat_setpoints_allowed; the one no-heat
+  # notice is STEP 3b's). The block ends in stop so the summer dispatch below never runs
+  # on a real winter tick; a manual Run falls through to the debug dump.
+  # =============================================
+  - variables:
+      heat_evening: "{{ heating_season and wake_tod <= now_tod and now_tod < bedtime_tod }}"
+      # Hold = winter target + hall offset, capped at 24 and the unit max, rounded down to the step.
+      heat_hold_sp: "{% set v = [[winter_target_eff | float + hall_offset | float, ac_min_temp | float] | max, heat_cap | float] | min %}{{ (((v / (ac_temp_step | float)) + 0.000001) | round(0, 'floor') * (ac_temp_step | float)) | round(2) }}"
+      heat_target_sp: "{{ heating_drive_eff | float if heat_stage == 'DRIVE' else heat_hold_sp | float }}"
+      # A running heat unit, two ticks after it started, holding a setpoint that is neither drive nor hold.
+      manual_heat_setpoint: "{{ heat_evening and ac_is_running and current_hvac_mode == 'heat' and ac_limits_known and current_setpoint_known and (current_setpoint | float - heating_drive_eff | float) | abs > 0.1 and (current_setpoint | float - heat_hold_sp | float) | abs > 0.1 and ac_state_age_sec | float >= 120 }}"
+      heat_wake_off_due: "{{ heating_season and wake_tod <= now_tod and now_tod < earliest_turn_on_tod and ac_is_running }}"
+      heat_prewarm_due: "{{ heat_evening and heat_setpoints_allowed and not manual_off and not manual_heat_setpoint and (heat_stage == 'DRIVE' or (heat_stage == 'HOLD' and ac_is_running)) }}"
+      heat_manual_notice_due: "{{ enable_notifications and heat_evening and heat_stage in ['DRIVE', 'HOLD'] and (manual_off or manual_heat_setpoint) }}"
+      heat_bedtime_minute: "{{ heating_season and bedtime_tod <= now_tod and now_tod < (today_at(bedtime) + timedelta(minutes=1)).strftime('%H:%M:%S') }}"
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_real_trigger and heating_season }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ heat_wake_off_due }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ ac_climate }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ heat_prewarm_due }}"
+                sequence:
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ not ac_is_running }}"
+                        sequence:
+                          - service: climate.turn_on
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ current_hvac_mode != 'heat' }}"
+                        sequence:
+                          - service: climate.set_hvac_mode
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              hvac_mode: heat
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ (not current_setpoint_known) or (current_setpoint | float - heat_target_sp | float) | abs > 0.1 }}"
+                        sequence:
+                          - service: climate.set_temperature
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              temperature: "{{ heat_target_sp | float }}"
+          # Bedtime minute (winter): park in heat at the hold setpoint, switch the unit off, then arm
+          # the LG power-on timer once with the whole hours (rounded down) until the morning time; the
+          # hours are capped so the planned start is before Wake Time. The off is not gated on heat
+          # support, the park and the timer are. A timer that is empty, unavailable, over its maximum
+          # or does not read back raises one fixed-id notice and no morning start is armed.
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ heat_bedtime_minute }}"
+                sequence:
+                  - variables:
+                      weekend_morning: "{{ (now() + timedelta(days=1)).weekday() >= 5 }}"
+                      morning_pick: "{{ weekend_morning_time if weekend_morning else morning_time }}"
+                      bed_ts: "{{ as_timestamp(today_at(bedtime)) }}"
+                      morning_ts: "{{ as_timestamp(today_at(morning_pick) + timedelta(days=1)) }}"
+                      wake_next_ts: "{{ as_timestamp(today_at(wake_time) + timedelta(days=1)) }}"
+                      timer_hours: "{{ ([(morning_ts | float - bed_ts | float) / 3600, (wake_next_ts | float - bed_ts | float - 1) / 3600] | min) | int }}"
+                      timer_start_tod: "{{ (bed_ts | float + (timer_hours | int) * 3600) | timestamp_custom('%H:%M:%S') }}"
+                      timer_entity: "{% if ac_power_on_timer is iterable and ac_power_on_timer is not string and ac_power_on_timer | length > 0 %}{{ ac_power_on_timer[0] }}{% else %}{{ '' }}{% endif %}"
+                      timer_state: "{{ states(timer_entity) if timer_entity != '' else 'unconfigured' }}"
+                      timer_max: "{{ state_attr(timer_entity, 'max') | float(none) if timer_entity != '' else none }}"
+                      timer_problem: "{% if timer_entity == '' %}empty{% elif timer_state in ['unavailable', 'unknown'] %}unavailable{% elif timer_max is not none and (timer_hours | int) > (timer_max | float) %}over_max{% endif %}"
+                      timer_arm_due: "{{ heat_setpoints_allowed and timer_problem == '' }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ ac_is_running and heat_setpoints_allowed and current_hvac_mode != 'heat' }}"
+                        sequence:
+                          - service: climate.set_hvac_mode
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              hvac_mode: heat
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ ac_is_running and heat_setpoints_allowed and (current_hvac_mode != 'heat' or (not current_setpoint_known) or (current_setpoint | float - heat_hold_sp | float) | abs > 0.1) }}"
+                        sequence:
+                          - service: climate.set_temperature
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              temperature: "{{ heat_hold_sp | float }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ ac_is_running }}"
+                        sequence:
+                          - service: climate.turn_off
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ timer_arm_due }}"
+                        sequence:
+                          - service: number.set_value
+                            continue_on_error: true
+                            target:
+                              entity_id: "{{ timer_entity }}"
+                            data:
+                              value: "{{ timer_hours | int }}"
+                          - delay:
+                              seconds: 10
+                  - variables:
+                      timer_not_armed: "{{ not timer_arm_due or (states(timer_entity) | float(-1)) != (timer_hours | int) }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ enable_notifications and heat_setpoints_allowed and timer_not_armed }}"
+                        sequence:
+                          - service: persistent_notification.create
+                            continue_on_error: true
+                            data:
+                              title: "Bedroom Pre-Warm — Morning Start Not Armed"
+                              message: >
+                                {% if timer_problem == 'empty' %}No AC Power-On Timer is configured.
+                                {% elif timer_problem == 'unavailable' %}{{ timer_entity }} is {{ timer_state }}.
+                                {% elif timer_problem == 'over_max' %}The morning start needs {{ timer_hours }} h, above the {{ timer_max }} h maximum of {{ timer_entity }}.
+                                {% else %}{{ timer_entity }} did not read back {{ timer_hours }} h after it was set.
+                                {% endif %}
+                                The morning start planned for {{ timer_start_tod }} is not armed;
+                                {{ ac_climate }} stays off until you switch it on.
+                              notification_id: "bedroom_precool_heat_timer_not_armed"
+                  # Auto-learn (winter): one beep-free write to the heating bias helper, never the summer
+                  # one. Only after an evening the unit ran in heat, never when a person left a setpoint
+                  # that is neither the drive nor the hold setpoint, and never to a helper that is empty,
+                  # missing or whose range does not overlap -60..120. Rounded, then clamped inside both.
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ enable_auto_learn and heating_bias_configured and ac_is_running and current_hvac_mode == 'heat' and states(heating_bias_entity) not in ['unavailable', 'unknown'] }}"
+                        sequence:
+                          - variables:
+                              heat_bias_error: "{{ winter_aim | float - coldest_bedroom | float }}"
+                              heat_bias_raw: "{{ (heating_bias | float) + (learn_gain | float) * (heat_bias_error | float) * (k_indoor | float) }}"
+                              heat_bias_floor: "{{ ([state_attr(heating_bias_entity, 'min') | float(-60), -60] | max) | round(0, 'ceil') | int }}"
+                              heat_bias_ceiling: "{{ ([state_attr(heating_bias_entity, 'max') | float(120), 120] | min) | round(0, 'floor') | int }}"
+                              heat_bias_next: "{{ [[heat_bias_raw | float | round(0), heat_bias_floor | float] | max, heat_bias_ceiling | float] | min | int }}"
+                              heat_bias_manual: "{{ ac_limits_known and current_setpoint_known and (current_setpoint | float - heating_drive_eff | float) | abs > 0.1 and (current_setpoint | float - heat_hold_sp | float) | abs > 0.1 and ac_state_age_sec | float >= 120 }}"
+                          - choose:
+                              - conditions:
+                                  - condition: template
+                                    value_template: "{{ not heat_bias_manual and heat_bias_floor | float <= heat_bias_ceiling | float }}"
+                                sequence:
+                                  - service: input_number.set_value
+                                    target:
+                                      entity_id: "{{ heating_bias_entity }}"
+                                    data:
+                                      value: "{{ heat_bias_next | float }}"
+          # Night (winter): the coldest room below the re-heat level gets one bare turn-on of the parked
+          # heat state (hold setpoint), not from the planned morning start until 5 min after it, which the
+          # LG timer owns. At the deep-night check a unit still holding the hold setpoint gets one nudge up
+          # by the correction step, capped like every heat setpoint. A unit the timer started in another
+          # mode than heat gets one heat command at the hold setpoint and one fixed-id notice; one that came
+          # on in heat gets nothing. No turn-off is sent here: the unit runs on to Wake Time. manual_off is not
+          # consulted: the bedtime minute's own off would read as a person's.
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ heat_setpoints_allowed and ((heat_stage == 'REHEAT' and not heat_bedtime_minute) or (now_tod < wake_tod and ac_is_running and current_hvac_mode != 'heat')) }}"
+                sequence:
+                  - variables:
+                      night_after_midnight: "{{ now_tod < wake_tod }}"
+                      night_bed_ts: "{{ as_timestamp(today_at(bedtime) - timedelta(days=(1 if night_after_midnight else 0))) }}"
+                      night_weekend: "{{ (now() + timedelta(days=(0 if night_after_midnight else 1))).weekday() >= 5 }}"
+                      night_morning_pick: "{{ weekend_morning_time if night_weekend else morning_time }}"
+                      night_morning_ts: "{{ as_timestamp(today_at(night_morning_pick) + timedelta(days=(0 if night_after_midnight else 1))) }}"
+                      night_wake_ts: "{{ as_timestamp(today_at(wake_time) + timedelta(days=(0 if night_after_midnight else 1))) }}"
+                      night_timer_hours: "{{ ([(night_morning_ts | float - night_bed_ts | float) / 3600, (night_wake_ts | float - night_bed_ts | float - 1) / 3600] | min) | int }}"
+                      night_start_ts: "{{ night_bed_ts | float + (night_timer_hours | int) * 3600 }}"
+                      night_nudge_sp: "{% set v = [heat_hold_sp | float + correction_step | float, heat_cap | float] | min %}{{ (((v / (ac_temp_step | float)) + 0.000001) | round(0, 'floor') * (ac_temp_step | float)) | round(2) }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ heat_stage == 'REHEAT' and not ac_is_running and (as_timestamp(now()) < night_start_ts | float or as_timestamp(now()) >= night_start_ts | float + 300) }}"
+                        sequence:
+                          - service: climate.turn_on
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ heat_stage == 'REHEAT' and ac_is_running and current_hvac_mode == 'heat' and in_deep_check and current_setpoint_known and (current_setpoint | float - heat_hold_sp | float) | abs <= 0.1 and (night_nudge_sp | float - heat_hold_sp | float) | abs > 0.1 }}"
+                        sequence:
+                          - service: climate.set_temperature
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              temperature: "{{ night_nudge_sp | float }}"
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ ac_is_running and current_hvac_mode != 'heat' and now_tod < wake_tod and as_timestamp(now()) >= night_start_ts | float and (ac_started_ts | float) >= night_start_ts | float - 300 and as_timestamp(now()) - (ac_started_ts | float) < 300 }}"
+                        sequence:
+                          - service: climate.set_temperature
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              hvac_mode: heat
+                              temperature: "{{ heat_hold_sp | float }}"
+                          - choose:
+                              - conditions:
+                                  - condition: template
+                                    value_template: "{{ enable_notifications }}"
+                                sequence:
+                                  - service: persistent_notification.create
+                                    continue_on_error: true
+                                    data:
+                                      title: "Bedroom Pre-Warm — Wrong Mode After Timer Start"
+                                      message: >
+                                        {{ ac_climate }} came on in {{ current_hvac_mode }} mode after the
+                                        morning start planned for {{ night_start_ts | float | timestamp_custom('%H:%M') }};
+                                        it was set to heat at {{ heat_hold_sp }}°C once.
+                                      notification_id: "bedroom_precool_heat_wrong_mode"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ heat_manual_notice_due }}"
+                sequence:
+                  - service: persistent_notification.create
+                    continue_on_error: true
+                    data:
+                      title: "Bedroom Pre-Warm — Manual Override"
+                      message: >
+                        {% if manual_off %}
+                        {{ ac_climate }} was switched off during the evening pre-warm; it stays
+                        off tonight and the evening pre-warm ends.
+                        {% else %}
+                        {{ ac_climate }} holds a setpoint of {{ current_setpoint }}°C that the
+                        blueprint did not set ({{ heating_drive_eff }} / {{ heat_hold_sp }}°C); it is left alone until bedtime.
+                        {% endif %}
+                      notification_id: "bedroom_precool_heat_manual_override"
+            default:
+              - service: persistent_notification.dismiss
+                continue_on_error: true
+                data:
+                  notification_id: "bedroom_precool_heat_manual_override"
+          - stop: "Heating season"
 
   # =============================================
   # STEP 6: PHASE DISPATCH — exactly one phase acts.
@@ -2233,6 +2931,12 @@ action:
           - condition: template
             value_template: "{{ trigger.id | default('manual') == 'manual' }}"
         sequence:
+          - variables:
+              dbg_weekend_morning: "{{ (now() + timedelta(days=1)).weekday() >= 5 }}"
+              dbg_morning_pick: "{{ weekend_morning_time if dbg_weekend_morning else morning_time }}"
+              dbg_bed_ts: "{{ as_timestamp(today_at(bedtime)) }}"
+              dbg_timer_hours: "{{ ([(as_timestamp(today_at(dbg_morning_pick) + timedelta(days=1)) - dbg_bed_ts | float) / 3600, (as_timestamp(today_at(wake_time) + timedelta(days=1)) - dbg_bed_ts | float - 1) / 3600] | min) | int }}"
+              dbg_timer_start: "{{ (dbg_bed_ts | float + (dbg_timer_hours | int) * 3600) | timestamp_custom('%H:%M') }}"
           - service: persistent_notification.create
             data:
               title: "Bedroom Pre-Cool Debug — {{ now().strftime('%H:%M:%S') }}"
@@ -2291,6 +2995,28 @@ action:
                 **night_parity:** {{ night_parity }}
                 | fan_assist tonight={{ fan_assist_tonight }} · night fans tonight={{ night_fans_tonight }}
                 | interlock blocked={{ interlock_blocked }}
+
+                **season:** {{ 'winter' if heating_season else 'summer' }}
+                (toggle={{ season_state }})
+
+                **heat (season={{ heating_season }}):** stage={{ heat_stage }}
+                | **aim:** {{ winter_aim }}°C ({{ winter_target_eff }} target + {{ prewarm_offset_eff }} offset)
+                | **overheat:** {{ overheat_level }}°C
+                | **re-heat:** {{ reheat_level }}°C
+                | **heat_needed:** {{ heat_needed }}
+
+                **heat lead:** {{ heat_lead }} min (raw {{ heat_lead_raw }})
+                = base {{ base_minutes }}
+                + indoor {{ k_indoor }} × {{ heat_delta_in }}°C
+                + outdoor {{ k_outdoor }} × {{ heat_delta_out }}°C
+                + safety {{ safety_margin_minutes }}
+                + bias {{ heating_bias }} (no solar term)
+                | **forecast_low:** {{ forecast_low }}°C
+                | **heat turn_on:** {{ heat_turn_on_tod }}
+
+                {% if heating_season %}**hold setpoint:** {{ heat_hold_sp }}°C
+                | **timer:** {{ dbg_timer_hours }} h
+                | **planned start:** {{ dbg_timer_start }}{% endif %}
 
                 **fans due:** precool={{ fans_due_precool }} · night={{ fans_due_night }}
                 · unset={{ fans_unset_night }} · wake-off={{ fans_on_at_wake }}

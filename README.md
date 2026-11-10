@@ -228,7 +228,9 @@ Predictive pre-cooling of bedrooms via a single LG air conditioner in the upstai
 *   **🌡️ Closed-Loop Pre-Cool:** DRIVE / HOLD sub-states cool the hall as hard as the AC allows until the warmest bedroom reaches ideal.
 *   **💧 Opt-In Dry Mode:** Humidity-aware `dry` mode, default off — `cool` is the proven path; enable `dry` only after verifying it on the unit.
 *   **🛡️ Child-Safe:** `ideal_temp` is bounded ≥ 16 °C; a sub-16 °C bedroom reading raises an overcooling fault. Every setpoint is clamped to the AC's discovered limits.
-*   **🔍 Debug-Friendly:** Manual "Run" produces a persistent notification dumping every prediction variable for easy calibration.
+*   **🔥 Winter Heating (v1.3.0):** With the optional season toggle on, the same blueprint pre-warms the bedrooms to a Winter Target (capped at 20 °C) plus a Pre-Warm Offset, and the summer cooling rules stand down. The lead time mirrors the summer formula (indoor gap to the aim + outdoor gap to the aim from the forecast low + safety margin + its own learned bias in a separate `input_number`, no solar term), and the pre-warm skips mild evenings. Heat setpoints are capped at 24 °C and the unit's max and rounded down to its step. At bedtime the unit is parked in heat at the hold setpoint (Winter Target + Hall Offset), switched off, and the LG power-on timer is armed once for the morning start; at night a room below target minus tolerance gets one bare turn-on of the parked heat state, the deep-night check nudges once, and a wrong-mode morning start is corrected once. Overheat and sensor-failure cuts and the winter fan lists run in the same blueprint. Toggle off = exactly the summer behaviour.
+*   **⏱️ Morning Time alignment (v1.3.0):** The LG power-on timer counts whole hours from bedtime, rounded down and capped so the start is before Wake Time. Set Morning Time (and Weekend Morning Time) a whole number of hours after Bedtime (Bedtime 19:30: 05:30, 06:30, ...) for an exact start; any other value starts the unit up to an hour early.
+*   **🔍 Debug-Friendly:** Manual "Run" produces a persistent notification dumping every prediction variable for easy calibration; in winter it also shows the season, the aim (target plus offset), the coldest room, the forecast low, each lead-time term, the heating bias, the hold setpoint, the timer hours and the planned start time (v1.3.0).
 
 ### Requirements
 *   **Home Assistant Core 2025.7+** (LG ThinQ `set_temperature` fix, PR #147008)
@@ -238,6 +240,7 @@ Predictive pre-cooling of bedrooms via a single LG air conditioner in the upstai
 *   A weather entity with an **hourly** forecast — Met.no or Open-Meteo (**not Buienradar** — it has no hourly forecast)
 *   An `input_number` helper to persist the self-learned lead-time bias
 *   Optional: an `input_boolean` for the vacation toggle; the AC's sound `switch`
+*   Optional, winter (v1.3.0): an `input_boolean` season toggle, a second `input_number` for the heating bias (separate from the summer helper) and the LG power-on timer `number` entity (hours)
 
 See `requirements_bedroom_precool.md` for the detailed design.
 
