@@ -573,7 +573,9 @@ def test_bias_helper_range_notice_is_state_driven(bp):
 
 def test_auto_learn_write_is_clamped_and_skipped_on_an_override_night(bp):
     steps = _service_steps(bp.get("action") or bp.get("actions"), [])
-    writes = [(c, s) for c, s in steps if (s.get("service") or s.get("action")) == "input_number.set_value"]
+    writes = [(c, s) for c, s in steps
+              if (s.get("service") or s.get("action")) == "input_number.set_value"
+              and (s.get("target") or {}).get("entity_id") == "{{ lead_bias_entity }}"]
     assert len(writes) == 1
     conds, step = writes[0]
     assert any("phase == 'BEDTIME_LOCK'" in t for t in conds)
@@ -591,7 +593,9 @@ def test_auto_learn_write_and_notice_cover_a_missing_helper_entity(bp):
     """Final review #4: a configured helper that was deleted/renamed returns no state — the write
     is skipped (it would raise and abort the lock run) and the STEP 7a notice names it."""
     steps = _service_steps(bp.get("action") or bp.get("actions"), [])
-    writes = [(c, s) for c, s in steps if (s.get("service") or s.get("action")) == "input_number.set_value"]
+    writes = [(c, s) for c, s in steps
+              if (s.get("service") or s.get("action")) == "input_number.set_value"
+              and (s.get("target") or {}).get("entity_id") == "{{ lead_bias_entity }}"]
     assert any("states[lead_bias_entity] is not none" in t for t in writes[0][0])
     n = _notices(bp, "bedroom_precool_no_bias_helper")
     assert len(n) == 1

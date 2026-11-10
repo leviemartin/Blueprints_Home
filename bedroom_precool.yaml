@@ -2274,6 +2274,32 @@ action:
                                 The morning start planned for {{ timer_start_tod }} is not armed;
                                 {{ ac_climate }} stays off until you switch it on.
                               notification_id: "bedroom_precool_heat_timer_not_armed"
+                  # Auto-learn (winter): one beep-free write to the heating bias helper, never the summer
+                  # one. Only after an evening the unit ran in heat, never when a person left a setpoint
+                  # that is neither the drive nor the hold setpoint, and never to a helper that is empty,
+                  # missing or whose range does not overlap -60..120. Rounded, then clamped inside both.
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ enable_auto_learn and heating_bias_configured and ac_is_running and current_hvac_mode == 'heat' and states(heating_bias_entity) not in ['unavailable', 'unknown'] }}"
+                        sequence:
+                          - variables:
+                              heat_bias_error: "{{ winter_aim | float - coldest_bedroom | float }}"
+                              heat_bias_raw: "{{ (heating_bias | float) + (learn_gain | float) * (heat_bias_error | float) * (k_indoor | float) }}"
+                              heat_bias_floor: "{{ ([state_attr(heating_bias_entity, 'min') | float(-60), -60] | max) | round(0, 'ceil') | int }}"
+                              heat_bias_ceiling: "{{ ([state_attr(heating_bias_entity, 'max') | float(120), 120] | min) | round(0, 'floor') | int }}"
+                              heat_bias_next: "{{ [[heat_bias_raw | float | round(0), heat_bias_floor | float] | max, heat_bias_ceiling | float] | min | int }}"
+                              heat_bias_manual: "{{ ac_limits_known and current_setpoint_known and (current_setpoint | float - heating_drive_eff | float) | abs > 0.1 and (current_setpoint | float - heat_hold_sp | float) | abs > 0.1 and ac_state_age_sec | float >= 120 }}"
+                          - choose:
+                              - conditions:
+                                  - condition: template
+                                    value_template: "{{ not heat_bias_manual and heat_bias_floor | float <= heat_bias_ceiling | float }}"
+                                sequence:
+                                  - service: input_number.set_value
+                                    target:
+                                      entity_id: "{{ heating_bias_entity }}"
+                                    data:
+                                      value: "{{ heat_bias_next | float }}"
           # Night (winter): the coldest room below the re-heat level gets one bare turn-on of the parked
           # heat state (hold setpoint), not from the planned morning start until 5 min after it, which the
           # LG timer owns. At the deep-night check a unit still holding the hold setpoint gets one nudge up
