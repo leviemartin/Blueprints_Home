@@ -7,6 +7,12 @@ blueprint:
     at 24 °C and the unit's max_temp and rounded down to its step, Morning Time
     (winter only: after the Deep-Night Check, before Wake Time). With the toggle
     off the summer rules of the entries below apply unchanged.
+    At night in the heating season a bedroom below the Winter Target minus the Drift
+    Tolerance gets one bare turn-on of the parked heat state (not from the planned
+    morning start until 5 min after it), the deep-night check nudges the setpoint up
+    once by the Correction Step (capped at 24 °C), and a unit the LG timer starts in
+    another mode than heat is set to heat once, with one notice. No turn-off is sent
+    before Wake Time.
     **Version: 1.2.1** — no PRECOOL setpoint command while the AC has not reported
     numeric min/max limits (bug #30: the ThinQ entity may lack them on the turn-on
     tick, so the clamp sent the 16 °C fallback and HA rejected it; the next tick sets
@@ -1870,7 +1876,8 @@ action:
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ is_real_trigger and heat_backstop_due }}"
+            # Winter runs the unit in heat on purpose (night re-heat), so the backstop stands down.
+            value_template: "{{ is_real_trigger and heat_backstop_due and not heating_season }}"
         sequence:
           - service: climate.set_hvac_mode
             target:
@@ -2091,6 +2098,69 @@ action:
                                 The morning start planned for {{ timer_start_tod }} is not armed;
                                 {{ ac_climate }} stays off until you switch it on.
                               notification_id: "bedroom_precool_heat_timer_not_armed"
+          # Night (winter): the coldest room below the re-heat level gets one bare turn-on of the parked
+          # heat state (hold setpoint), not from the planned morning start until 5 min after it, which the
+          # LG timer owns. At the deep-night check a unit still holding the hold setpoint gets one nudge up
+          # by the correction step, capped like every heat setpoint. A unit the timer started in another
+          # mode than heat gets one heat command at the hold setpoint and one fixed-id notice; one that came
+          # on in heat gets nothing. No turn-off is sent here: the unit runs on to Wake Time. manual_off is not
+          # consulted: the bedtime minute's own off would read as a person's.
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ heat_setpoints_allowed and ((heat_stage == 'REHEAT' and not heat_bedtime_minute) or (now_tod < wake_tod and ac_is_running and current_hvac_mode != 'heat')) }}"
+                sequence:
+                  - variables:
+                      night_after_midnight: "{{ now_tod < wake_tod }}"
+                      night_bed_ts: "{{ as_timestamp(today_at(bedtime) - timedelta(days=(1 if night_after_midnight else 0))) }}"
+                      night_weekend: "{{ (now() + timedelta(days=(0 if night_after_midnight else 1))).weekday() >= 5 }}"
+                      night_morning_pick: "{{ weekend_morning_time if night_weekend else morning_time }}"
+                      night_morning_ts: "{{ as_timestamp(today_at(night_morning_pick) + timedelta(days=(0 if night_after_midnight else 1))) }}"
+                      night_wake_ts: "{{ as_timestamp(today_at(wake_time) + timedelta(days=(0 if night_after_midnight else 1))) }}"
+                      night_timer_hours: "{{ ([(night_morning_ts | float - night_bed_ts | float) / 3600, (night_wake_ts | float - night_bed_ts | float - 1) / 3600] | min) | int }}"
+                      night_start_ts: "{{ night_bed_ts | float + (night_timer_hours | int) * 3600 }}"
+                      night_nudge_sp: "{% set v = [heat_hold_sp | float + correction_step | float, heat_cap | float] | min %}{{ (((v / (ac_temp_step | float)) + 0.000001) | round(0, 'floor') * (ac_temp_step | float)) | round(2) }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ heat_stage == 'REHEAT' and not ac_is_running and (as_timestamp(now()) < night_start_ts | float or as_timestamp(now()) >= night_start_ts | float + 300) }}"
+                        sequence:
+                          - service: climate.turn_on
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ heat_stage == 'REHEAT' and ac_is_running and current_hvac_mode == 'heat' and in_deep_check and current_setpoint_known and (current_setpoint | float - heat_hold_sp | float) | abs <= 0.1 and (night_nudge_sp | float - heat_hold_sp | float) | abs > 0.1 }}"
+                        sequence:
+                          - service: climate.set_temperature
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              temperature: "{{ night_nudge_sp | float }}"
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ ac_is_running and current_hvac_mode != 'heat' and now_tod < wake_tod and as_timestamp(now()) >= night_start_ts | float and (ac_started_ts | float) >= night_start_ts | float - 300 and as_timestamp(now()) - (ac_started_ts | float) < 300 }}"
+                        sequence:
+                          - service: climate.set_temperature
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              hvac_mode: heat
+                              temperature: "{{ heat_hold_sp | float }}"
+                          - choose:
+                              - conditions:
+                                  - condition: template
+                                    value_template: "{{ enable_notifications }}"
+                                sequence:
+                                  - service: persistent_notification.create
+                                    continue_on_error: true
+                                    data:
+                                      title: "Bedroom Pre-Warm — Wrong Mode After Timer Start"
+                                      message: >
+                                        {{ ac_climate }} came on in {{ current_hvac_mode }} mode after the
+                                        morning start planned for {{ night_start_ts | float | timestamp_custom('%H:%M') }};
+                                        it was set to heat at {{ heat_hold_sp }}°C once.
+                                      notification_id: "bedroom_precool_heat_wrong_mode"
           - choose:
               - conditions:
                   - condition: template

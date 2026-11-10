@@ -1355,7 +1355,7 @@ def test_heat_backstop_is_exactly_one_set_hvac_mode_call_gated_on_heat_backstop_
     assert step["service"] == "climate.set_hvac_mode"
     assert step["target"]["entity_id"] == "{{ ac_climate }}"
     assert step["data"]["hvac_mode"] == "{{ desired_mode }}"
-    assert any(t.strip() == "{{ is_real_trigger and heat_backstop_due }}" for t in conds)
+    assert any(t.strip() == "{{ is_real_trigger and heat_backstop_due and not heating_season }}" for t in conds)
     turn_offs = [(c, s) for c, s in _service_steps(_top_level_steps(bp), []) if s.get("service") == "climate.turn_off"]
     assert not any(any("heat_backstop_due" in t for t in c) for c, s in turn_offs), \
         "no climate.turn_off may be gated on heat_backstop_due"
