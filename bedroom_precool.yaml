@@ -685,6 +685,28 @@ blueprint:
       default: "05:30:00"
       selector:
         time: {}
+    weekend_morning_time:
+      name: Weekend Morning Time
+      description: >
+        Winter only: used instead of the Morning Time when the morning is a
+        Saturday or Sunday (armed on Friday or Saturday). The morning start is
+        never planned at or after Wake Time.
+      default: "06:30:00"
+      selector:
+        time: {}
+    ac_power_on_timer:
+      name: AC Power-On Timer (Optional)
+      description: >
+        Winter only: the LG power-on timer (a number entity, in hours). At
+        bedtime the unit is parked in heat, switched off, and this is set once
+        to the whole hours, rounded down, until the morning time. Empty,
+        unavailable, above its maximum or not reading back after the set: one
+        notice and no morning start that day.
+      default: []
+      selector:
+        entity:
+          domain: number
+          multiple: true
     heating_skip_threshold:
       name: Mild-Evening Skip Threshold (°C)
       description: >
@@ -779,6 +801,8 @@ variables:
   prewarm_offset: !input prewarm_offset
   heating_drive_setpoint: !input heating_drive_setpoint
   morning_time: !input morning_time
+  weekend_morning_time: !input weekend_morning_time
+  ac_power_on_timer: !input ac_power_on_timer
   heating_skip_threshold: !input heating_skip_threshold
   heating_bias_helper: !input heating_bias_helper
 
@@ -1936,6 +1960,7 @@ action:
       heat_wake_off_due: "{{ heating_season and wake_tod <= now_tod and now_tod < earliest_turn_on_tod and ac_is_running }}"
       heat_prewarm_due: "{{ heat_evening and heat_setpoints_allowed and not manual_off and not manual_heat_setpoint and (heat_stage == 'DRIVE' or (heat_stage == 'HOLD' and ac_is_running)) }}"
       heat_manual_notice_due: "{{ enable_notifications and heat_evening and heat_stage in ['DRIVE', 'HOLD'] and (manual_off or manual_heat_setpoint) }}"
+      heat_bedtime_minute: "{{ heating_season and bedtime_tod <= now_tod and now_tod < (today_at(bedtime) + timedelta(minutes=1)).strftime('%H:%M:%S') }}"
   - choose:
       - conditions:
           - condition: template
@@ -1982,6 +2007,90 @@ action:
                               entity_id: "{{ ac_climate }}"
                             data:
                               temperature: "{{ heat_target_sp | float }}"
+          # Bedtime minute (winter): park in heat at the hold setpoint, switch the unit off, then arm
+          # the LG power-on timer once with the whole hours (rounded down) until the morning time; the
+          # hours are capped so the planned start is before Wake Time. The off is not gated on heat
+          # support, the park and the timer are. A timer that is empty, unavailable, over its maximum
+          # or does not read back raises one fixed-id notice and no morning start is armed.
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ heat_bedtime_minute }}"
+                sequence:
+                  - variables:
+                      weekend_morning: "{{ (now() + timedelta(days=1)).weekday() >= 5 }}"
+                      morning_pick: "{{ weekend_morning_time if weekend_morning else morning_time }}"
+                      bed_ts: "{{ as_timestamp(today_at(bedtime)) }}"
+                      morning_ts: "{{ as_timestamp(today_at(morning_pick) + timedelta(days=1)) }}"
+                      wake_next_ts: "{{ as_timestamp(today_at(wake_time) + timedelta(days=1)) }}"
+                      timer_hours: "{{ ([(morning_ts | float - bed_ts | float) / 3600, (wake_next_ts | float - bed_ts | float - 1) / 3600] | min) | int }}"
+                      timer_start_tod: "{{ (bed_ts | float + (timer_hours | int) * 3600) | timestamp_custom('%H:%M:%S') }}"
+                      timer_entity: "{% if ac_power_on_timer is iterable and ac_power_on_timer is not string and ac_power_on_timer | length > 0 %}{{ ac_power_on_timer[0] }}{% else %}{{ '' }}{% endif %}"
+                      timer_state: "{{ states(timer_entity) if timer_entity != '' else 'unconfigured' }}"
+                      timer_max: "{{ state_attr(timer_entity, 'max') | float(none) if timer_entity != '' else none }}"
+                      timer_problem: "{% if timer_entity == '' %}empty{% elif timer_state in ['unavailable', 'unknown'] %}unavailable{% elif timer_max is not none and (timer_hours | int) > (timer_max | float) %}over_max{% endif %}"
+                      timer_arm_due: "{{ heat_setpoints_allowed and timer_problem == '' }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ ac_is_running and heat_setpoints_allowed and current_hvac_mode != 'heat' }}"
+                        sequence:
+                          - service: climate.set_hvac_mode
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              hvac_mode: heat
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ ac_is_running and heat_setpoints_allowed and (current_hvac_mode != 'heat' or (not current_setpoint_known) or (current_setpoint | float - heat_hold_sp | float) | abs > 0.1) }}"
+                        sequence:
+                          - service: climate.set_temperature
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              temperature: "{{ heat_hold_sp | float }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ ac_is_running }}"
+                        sequence:
+                          - service: climate.turn_off
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ timer_arm_due }}"
+                        sequence:
+                          - service: number.set_value
+                            continue_on_error: true
+                            target:
+                              entity_id: "{{ timer_entity }}"
+                            data:
+                              value: "{{ timer_hours | int }}"
+                          - delay:
+                              seconds: 10
+                  - variables:
+                      timer_not_armed: "{{ not timer_arm_due or (states(timer_entity) | float(-1)) != (timer_hours | int) }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ enable_notifications and heat_setpoints_allowed and timer_not_armed }}"
+                        sequence:
+                          - service: persistent_notification.create
+                            continue_on_error: true
+                            data:
+                              title: "Bedroom Pre-Warm — Morning Start Not Armed"
+                              message: >
+                                {% if timer_problem == 'empty' %}No AC Power-On Timer is configured.
+                                {% elif timer_problem == 'unavailable' %}{{ timer_entity }} is {{ timer_state }}.
+                                {% elif timer_problem == 'over_max' %}The morning start needs {{ timer_hours }} h, above the {{ timer_max }} h maximum of {{ timer_entity }}.
+                                {% else %}{{ timer_entity }} did not read back {{ timer_hours }} h after it was set.
+                                {% endif %}
+                                The morning start planned for {{ timer_start_tod }} is not armed;
+                                {{ ac_climate }} stays off until you switch it on.
+                              notification_id: "bedroom_precool_heat_timer_not_armed"
           - choose:
               - conditions:
                   - condition: template
