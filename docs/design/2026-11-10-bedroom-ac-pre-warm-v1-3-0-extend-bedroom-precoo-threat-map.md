@@ -11,6 +11,7 @@ Each threat is mapped to the existing acceptance tests that cover it, by file an
 - `tests/test_bedroom_precool_heating_evening.py::test_us13_heat_setpoints_are_capped_at_24_and_the_unit_max_and_rounded_down_to_the_step`
 - `tests/test_bedroom_precool_heating_evening.py::test_us02_no_heat_command_sets_more_than_24`
 - `tests/test_bedroom_precool_heating_night.py::test_us05_the_nudge_is_capped_at_24_the_unit_max_and_rounded_down_to_the_step`
+- `tests/test_2026_11_10_bedroom_ac_pre_warm_v1_3_0_extend_bedroom_precoo_threat_coverage_bedroom_precool_heating_inputs.py::test_us13_extreme_inputs_keep_the_aim_and_every_setpoint_inside_the_caps`
 
 ## TM-2 A stalled forecast call delays a safety cut
 
@@ -22,8 +23,9 @@ Each threat is mapped to the existing acceptance tests that cover it, by file an
 - `tests/test_bedroom_precool_heating_safety.py::test_us07_every_sensor_unavailable_gives_one_turn_off_and_one_notice`
 - `tests/test_bedroom_precool_heating_safety.py::test_us07_sensor_failure_with_the_unit_already_off_sends_no_command`
 - `tests/test_bedroom_precool_heating_safety.py::test_us07_sensor_failure_cut_is_for_real_winter_ticks_with_a_reachable_unit`
+- `tests/test_2026_11_10_bedroom_ac_pre_warm_v1_3_0_extend_bedroom_precoo_threat_coverage_bedroom_precool_heating_inputs.py::test_us07_unusable_sensor_states_are_dropped_and_all_bad_means_sensor_failure`
 
-Gap: the sensor filter in bedroom_precool.yaml drops unavailable, unknown and non-numeric states but accepts nan, inf and implausible numbers such as -40 or 0. The same aggregation feeds the summer cooling rules, so a range filter would change summer behaviour and is not part of this task.
+Gap (not closed, raised to the lead): the sensor filter in bedroom_precool.yaml drops unavailable, unknown and non-numeric states but accepts nan, inf and implausible numbers such as -40 or 0, so a bogus low reading can start or sustain heating and a bogus high one can trigger a cut. The same aggregation feeds the summer cooling rules, so a range filter would change summer behaviour and is not part of this task. The mapped tests cover only the unavailable, unknown and non-numeric cases.
 
 ## TM-4 Season toggle unavailable, empty or not a boolean
 
@@ -35,11 +37,12 @@ Gap: the sensor filter in bedroom_precool.yaml drops unavailable, unknown and no
 
 ## TM-5 Toggle recovery read as a season flip
 
+- `tests/test_2026_11_10_bedroom_ac_pre_warm_v1_3_0_extend_bedroom_precoo_threat_coverage_bedroom_precool_heating_inputs.py::test_us10_a_toggle_that_recovers_to_on_inside_120_seconds_sends_nothing_to_a_heating_unit`
 - `tests/test_bedroom_precool_heating_safety.py::test_us10_a_unit_started_after_the_flip_is_left_to_the_other_rules`
 - `tests/test_bedroom_precool_heating_safety.py::test_us10_a_toggle_that_does_not_read_on_or_off_flips_nothing_and_a_manual_run_never_actuates`
 - `tests/test_bedroom_precool_heating_safety.py::test_us10_no_timer_reset_when_it_is_already_0_cannot_be_read_or_the_flip_minute_has_passed`
 
-Gap: the flip detector compares the toggle's last_changed with the unit's start and checks the unit's mode against the season; it does not read from_state and to_state. A toggle that goes unavailable and returns to on cannot turn off a unit that is heating, but a return to off within 120 s still zeroes a non-zero timer, which matches the toggle's state.
+Gap (partial): the new test pins the mitigation's scenario (the toggle returns to on within 120 s while the unit heats: no turn_off, no timer reset). The detector itself still compares the toggle's last_changed with the unit's start and the unit's mode with the season; it does not read from_state and to_state. A return to off within 120 s still zeroes a non-zero timer, which matches the toggle's state.
 
 ## TM-6 Stale LG timer starts the unit unattended
 
@@ -48,8 +51,9 @@ Gap: the flip detector compares the toggle's last_changed with the unit's start 
 - `tests/test_bedroom_precool_heating_safety.py::test_us10_no_timer_reset_when_it_is_already_0_cannot_be_read_or_the_flip_minute_has_passed`
 - `tests/test_bedroom_precool_heating_safety.py::test_us10_vacation_in_winter_switches_off_zeroes_the_timer_and_stops_before_any_cut`
 - `tests/test_bedroom_precool_heating_safety.py::test_us10_vacation_in_winter_sends_nothing_more_once_the_unit_is_off_and_the_timer_is_0`
+- `tests/test_2026_11_10_bedroom_ac_pre_warm_v1_3_0_extend_bedroom_precoo_threat_coverage_bedroom_precool_heating_inputs.py::test_us10_vacation_in_winter_stops_every_run_before_any_heat_command`
 
-Gap: the timer is zeroed in the flip minute and on every Vacation tick in winter. A toggle that is off with a non-zero timer outside the flip minute (a missed minute) is not reset, and Vacation in summer is left to the existing Vacation step. Closing this needs a summer-side change to bedroom_precool.yaml.
+Gap (not closed, raised to the lead): the timer is zeroed in the flip minute and on every Vacation tick in winter, and no heat command follows while Vacation is on. A toggle that is off with a non-zero timer outside the flip minute (a missed minute) is not reset, and Vacation in summer is left to the existing Vacation step. Closing this needs a summer-side change to bedroom_precool.yaml.
 
 ## TM-7 Timer hours miss their bounds
 
@@ -58,8 +62,7 @@ Gap: the timer is zeroed in the flip minute and on every Vacation tick in winter
 - `tests/test_bedroom_precool_heating_bedtime.py::test_us14_a_timer_that_cannot_be_set_gives_one_notice_and_no_morning_command`
 - `tests/test_bedroom_precool_heating_bedtime.py::test_us14_a_set_that_does_not_read_back_gives_one_notice`
 - `tests/test_bedroom_precool_heating_debug.py::test_us15_timer_hours_use_the_weekend_morning_time_and_never_pass_wake_time`
-
-Gap: no test sweeps bedtimes and morning times, and none runs on a DST change date; the hours come from timestamp differences, which the weekday and weekend cases check for 10 to 15 November 2026 only.
+- `tests/test_2026_11_10_bedroom_ac_pre_warm_v1_3_0_extend_bedroom_precoo_threat_coverage_bedroom_precool_heating_inputs.py::test_us04_timer_hours_hold_their_bounds_across_weekend_boundaries_and_dst_changes`
 
 ## TM-8 The morning start has no verified outcome
 
@@ -87,16 +90,18 @@ Gap: a unit that is already off at bedtime is not parked (the LG unit takes no m
 - `tests/test_bedroom_precool_heating_night.py::test_us05_deep_night_check_nudges_up_once_by_the_correction_step`
 - `tests/test_bedroom_precool_heating_night.py::test_us05_the_nudge_is_capped_at_24_the_unit_max_and_rounded_down_to_the_step`
 - `tests/test_bedroom_precool_heating_lead.py::test_us02_night_stage_reheats_below_the_band_and_flags_overheat_above_it`
+- `tests/test_2026_11_10_bedroom_ac_pre_warm_v1_3_0_extend_bedroom_precoo_threat_coverage_bedroom_precool_heating_inputs.py::test_us05_night_re_heat_matrix_and_budget_hold_for_a_cold_night`
 
-Gap: the bare turn-on does not correct a restored setpoint above the cap, and it ignores manual_off by design (the bedtime off would read as a person's). The deep-night nudge acts only on a unit holding the hold setpoint. No test simulates a whole night for the budget of one re-heat, one nudge and one restart.
+Gap (not closed, raised to the lead): the bare turn-on does not correct a restored setpoint above the cap, and it ignores manual_off by design (the bedtime off would read as a person's), so a manual setpoint above 24 survives a night re-heat. The deep-night nudge acts only on a unit holding the hold setpoint. The new test pins the overheat and re-heat matrix and a night budget of one re-heat and one nudge; the restart after an overheat cut is pinned at the stage level only.
 
 ## TM-11 Lock-window exemption hides a manual off
 
 - `tests/test_bedroom_precool_heating_safety.py::test_us07_the_180_second_lock_exemption_covers_heating_nights`
 - `tests/test_bedroom_precool_structure.py::test_rendered_manual_off_exempts_only_the_lock_s_own_off_in_fan_only`
 - `tests/test_bedroom_precool_structure.py::test_rendered_manual_off_only_for_an_off_transition_inside_the_adoption_window`
+- `tests/test_2026_11_10_bedroom_ac_pre_warm_v1_3_0_extend_bedroom_precoo_threat_coverage_bedroom_precool_heating_inputs.py::test_us07_lock_window_exemption_has_hard_edges_and_summer_classification_is_unchanged`
 
-Gap: the exemption is keyed to the 180 s window after bedtime, not to a recorded blueprint turn_off. The tests cover an off in the lock minute and an off at 180 s; offs at lock minus 1 s and at 179 s and 181 s are not pinned.
+Gap (partial): the exemption is keyed to the 180 s window after the lock minute, not to a recorded blueprint turn_off, so a person's off inside that window is still read as the blueprint's. The new test pins the edges at lock minus 1 s, plus 179 s, plus 180 s and plus 181 s and the unchanged summer classification.
 
 ## TM-12 Notification flooding or broken notice text
 
@@ -104,8 +109,7 @@ Gap: the exemption is keyed to the 180 s window after bedtime, not to a recorded
 - `tests/test_bedroom_precool_heating_inputs.py::test_us13_unit_without_heat_gets_one_fixed_id_notice`
 - `tests/test_2026_11_10_bedroom_ac_pre_warm_v1_3_0_extend_bedroom_precoo_threat_coverage_bedroom_precool_heating_inputs.py::test_us14_every_notice_id_is_a_constant_and_each_winter_notice_has_one`
 - `tests/test_bedroom_precool_heating_bedtime.py::test_us14_notice_follows_the_notification_switch`
-
-Gap: no test renders the messages with quotes, braces or long entity names, and none bounds message length.
+- `tests/test_2026_11_10_bedroom_ac_pre_warm_v1_3_0_extend_bedroom_precoo_threat_coverage_bedroom_precool_heating_inputs.py::test_us14_notice_messages_render_with_odd_values_and_stay_bounded`
 
 ## TM-13 Unknown or unsupported unit capabilities
 
@@ -114,8 +118,7 @@ Gap: no test renders the messages with quotes, braces or long entity names, and 
 - `tests/test_bedroom_precool_heating_bedtime.py::test_us13_no_heat_command_or_timer_at_bedtime_without_heat_mode_or_known_limits`
 - `tests/test_bedroom_precool_heating_evening.py::test_us13_no_heat_command_without_heat_mode_or_while_the_limits_are_unknown`
 - `tests/test_bedroom_precool_heating_night.py::test_us05_nothing_is_sent_in_summer_on_a_manual_run_without_heat_or_with_unknown_limits`
-
-Gap: no test runs a safety cut with the unit's limits unknown; the cuts read neither limit.
+- `tests/test_2026_11_10_bedroom_ac_pre_warm_v1_3_0_extend_bedroom_precoo_threat_coverage_bedroom_precool_heating_inputs.py::test_us13_safety_cuts_work_with_unknown_limits_and_read_neither_limit`
 
 ## TM-14 Summer regression through the shared v1.2.1 paths
 
@@ -145,7 +148,7 @@ Gap: "never a direction command" is pinned only by the four fan call sites being
 
 ## Residual gaps
 
-- TM-3, TM-6 and TM-9 need a change to bedroom_precool.yaml that also touches summer behaviour or the shared sensor and parked-state paths; they are not closed here.
-- TM-7 (DST dates and a bedtime sweep), TM-10 (night budget), TM-11 (window edges) and TM-12 (odd entity names, message length) have partial test coverage.
-- TM-8: the live check on the real unit is a release gate.
+- Not closed, raised to the lead as blockers (each needs a change to bedroom_precool.yaml that this task does not make): TM-3 (nan, inf and implausible readings are accepted), TM-6 (a stale timer outside the flip minute is not reset), TM-9 (an off unit left in cool is not detected as unparked) and TM-10 (the bare re-heat turn-on does not cap a restored setpoint).
+- Partly closed: TM-5 (the flip detector reads last_changed, not an on/off transition), TM-11 (the exemption is keyed to the window, not to a recorded turn_off), TM-15 ("never a direction command" is pinned only by the four fan call sites) and TM-14 (below).
+- TM-8: the read-back happens 10 s after the set in the bedtime minute and a timer that does not clear after firing is not detected; the live check on the real unit is a release gate.
 - TM-14: no stored v1.2.1 render for a differential test.
