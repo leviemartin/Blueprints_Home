@@ -372,6 +372,32 @@ only runs on chosen nights.
 5. Every setpoint clamped to the AC's discovered `min_temp` / `max_temp`.
 6. Configuration validation: blocks operation on an invalid setup.
 
+## Winter Heating (v1.3.0)
+
+An optional season toggle (`heating_season_toggle`, an `input_boolean`) switches the blueprint between the summer rules above and the winter rules below. Only the state `on` is winter; `off`, `unavailable`, `unknown`, an empty input or no toggle at all is summer, with one notice, so a broken toggle never starts the heating. With the toggle off every rule above applies unchanged. In winter the summer cooling dispatch does not run.
+
+    aim          = min(winter_target, 20) + min(prewarm_offset, tolerance − 0.1)
+    delta_in     = max(0, aim − coldest_bedroom)
+    forecast_low = hourly window minimum | daily low (never above the live reading) | live outdoor reading
+    delta_out    = max(0, aim − min(forecast_low, outdoor_now))
+    heat_lead    = clamp(base_minutes + k_indoor * delta_in + k_outdoor * delta_out
+                         + safety_margin_minutes + heating_bias, 0, lead_cap_minutes)
+    heat_turn_on = bedtime − heat_lead          # the summer formula mirrored, no solar term
+
+`heating_bias` is read from its own `input_number` (`heating_bias_helper`), never from the summer helper, and is 0 when auto-learn is off or no helper is set. The auto-learn write happens at the winter bedtime minute.
+
+Evening stages (wake -> bedtime): `SKIP` (mild evening: the coldest room is at or above the winter target, the forecast low is at or above `heating_skip_threshold` and the unit is not heating), `WAIT` (before `heat_turn_on`), `DRIVE` (coldest room below the aim: heat at the heating drive setpoint) and `HOLD` (aim reached: heat at the hold setpoint, winter target + hall offset). Every heat setpoint is capped at 24 °C and the unit's `max_temp` and rounded down to the unit's step; no heat command goes out while the limits are unknown or the unit lacks heat. A setpoint changed by hand or a manual off ends the evening's commands, with one notice. Night stages: `OVERHEAT` (warmest room above target + tolerance), `REHEAT` (coldest room below target − tolerance), otherwise `HOLD`.
+
+Bedtime minute (winter): the unit is parked in heat at the hold setpoint, switched off, and the LG power-on timer (`ac_power_on_timer`, a `number` entity in hours) is set once to the whole hours (rounded down) from bedtime until the morning time (Morning Time, or Weekend Morning Time when the morning is a Saturday or Sunday). The hours are capped so the planned start is before Wake Time. A timer that is empty, unavailable, above its maximum or does not read back raises one notice and no morning start is armed.
+
+**Morning Time alignment:** because the timer counts whole hours, the unit starts at the Morning Time exactly only when that time is a whole number of hours after Bedtime (Bedtime 19:30: 05:30, 06:30, ...). Any other value starts the unit up to an hour earlier; the manual-run debug dump shows the timer hours and the planned start. In the heating season the Morning Time must be after the Deep-Night Check and before Wake Time, else the configuration notice shows.
+
+Night: a bedroom below target − tolerance gets one bare `turn_on` of the parked heat state (not from the planned morning start until 5 minutes after it, and never a turn-off before Wake Time); the deep-night check nudges the setpoint up once by the Correction Step (capped at 24 °C); a unit the LG timer starts in another mode than heat is set to heat once, with one notice.
+
+Safety: overheat (any bedroom above target + tolerance while the unit heats) and every bedroom sensor dead each cause one turn-off; a season flip switches off a unit still running in the other season's mode (a flip to summer also zeroes the timer); Vacation in the heating season switches the unit off and sets the timer to 0. The heat backstop of the Night Mode section is no longer limited to fan-only nights: with the toggle off, one `climate.set_temperature` (`hvac_mode: cool`, the maintaining setpoint) goes out only while a bedroom is above target + tolerance or every bedroom sensor has failed, and never a turn-off; with the toggle on, winter runs the unit in heat on purpose and the backstop stands down.
+
+Fans (winter): the existing fan lists are season-aware — the summer lists are empty in winter, the evening assist runs at the pre-cool percentage while the unit heats, fans this blueprint started are switched off at the bedtime lock unless touched by hand, and nothing runs in other heating stages. No new fan call site was added.
+
 ## Testing & Debugging
 
 Manual "Run" in HA produces a persistent notification dumping all computed
@@ -379,6 +405,8 @@ state: phase, warmest/coldest bedroom, ΔT terms, solar load, forecast_max,
 lead_bias, lead, turn_on, cooling_needed, AC mode/setpoint/fan, the discovered
 AC limits, and the resolved setpoints. Set `bedtime` to a few minutes ahead to
 watch PRECOOL -> BEDTIME-LOCK -> NIGHT-HOLD live.
+
+In the heating season the dump also shows the season, the aim (winter target + pre-warm offset), the coldest room, the forecast low, each lead-time term (base, indoor, outdoor, safety, bias), the heating bias, the hold setpoint, the timer hours and the planned start time (v1.3.0).
 
 ## Out of Scope (V2)
 

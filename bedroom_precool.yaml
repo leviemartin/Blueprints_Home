@@ -688,6 +688,11 @@ blueprint:
       description: >
         Winter only: when the morning heat should be on. Must be after the
         Deep-Night Check and before Wake Time, else the schedule-order notice shows.
+        The LG timer counts whole hours from Bedtime (rounded down), so the unit
+        starts exactly at this time only when it is a whole number of hours after
+        Bedtime (Bedtime 19:30: 05:30, 06:30, ...); any other value starts it up
+        to an hour early. The manual-run debug dump shows the timer hours and the
+        planned start.
       default: "05:30:00"
       selector:
         time: {}
@@ -2926,6 +2931,12 @@ action:
           - condition: template
             value_template: "{{ trigger.id | default('manual') == 'manual' }}"
         sequence:
+          - variables:
+              dbg_weekend_morning: "{{ (now() + timedelta(days=1)).weekday() >= 5 }}"
+              dbg_morning_pick: "{{ weekend_morning_time if dbg_weekend_morning else morning_time }}"
+              dbg_bed_ts: "{{ as_timestamp(today_at(bedtime)) }}"
+              dbg_timer_hours: "{{ ([(as_timestamp(today_at(dbg_morning_pick) + timedelta(days=1)) - dbg_bed_ts | float) / 3600, (as_timestamp(today_at(wake_time) + timedelta(days=1)) - dbg_bed_ts | float - 1) / 3600] | min) | int }}"
+              dbg_timer_start: "{{ (dbg_bed_ts | float + (dbg_timer_hours | int) * 3600) | timestamp_custom('%H:%M') }}"
           - service: persistent_notification.create
             data:
               title: "Bedroom Pre-Cool Debug — {{ now().strftime('%H:%M:%S') }}"
@@ -2985,8 +2996,11 @@ action:
                 | fan_assist tonight={{ fan_assist_tonight }} · night fans tonight={{ night_fans_tonight }}
                 | interlock blocked={{ interlock_blocked }}
 
+                **season:** {{ 'winter' if heating_season else 'summer' }}
+                (toggle={{ season_state }})
+
                 **heat (season={{ heating_season }}):** stage={{ heat_stage }}
-                | **aim:** {{ winter_aim }}°C
+                | **aim:** {{ winter_aim }}°C ({{ winter_target_eff }} target + {{ prewarm_offset_eff }} offset)
                 | **overheat:** {{ overheat_level }}°C
                 | **re-heat:** {{ reheat_level }}°C
                 | **heat_needed:** {{ heat_needed }}
@@ -2999,6 +3013,10 @@ action:
                 + bias {{ heating_bias }} (no solar term)
                 | **forecast_low:** {{ forecast_low }}°C
                 | **heat turn_on:** {{ heat_turn_on_tod }}
+
+                {% if heating_season %}**hold setpoint:** {{ heat_hold_sp }}°C
+                | **timer:** {{ dbg_timer_hours }} h
+                | **planned start:** {{ dbg_timer_start }}{% endif %}
 
                 **fans due:** precool={{ fans_due_precool }} · night={{ fans_due_night }}
                 · unset={{ fans_unset_night }} · wake-off={{ fans_on_at_wake }}
