@@ -1,6 +1,12 @@
 blueprint:
-  name: "Bedroom Sleep Pre-Cool v1.2.1"
+  name: "Bedroom Sleep Pre-Cool v1.3.0"
   description: >
+    **Version: 1.3.0** — winter heating inputs: season toggle (unavailable or
+    empty counts as summer, with one notice), Winter Target capped at 20 °C,
+    Pre-Warm Offset held below the Drift Tolerance, Heating Drive Setpoint capped
+    at 24 °C and the unit's max_temp and rounded down to its step, Morning Time
+    (winter only: after the Deep-Night Check, before Wake Time). With the toggle
+    off the summer rules of the entries below apply unchanged.
     **Version: 1.2.1** — no PRECOOL setpoint command while the AC has not reported
     numeric min/max limits (bug #30: the ThinQ entity may lack them on the turn-on
     tick, so the clamp sent the 16 °C fallback and HA rejected it; the next tick sets
@@ -621,6 +627,65 @@ blueprint:
             - label: "Switch off"
               value: "off"
 
+    # =======================================================
+    # GROUP 8 — WINTER HEATING (v1.3.0)
+    # =======================================================
+    heating_season_toggle:
+      name: Heating Season Toggle (Optional)
+      description: >
+        Optional input_boolean. ON = winter rules, OFF = the summer rules.
+        Unavailable, unknown, empty or not configured counts as OFF and raises
+        one notice, so a missing toggle never starts the heating.
+      default: []
+      selector:
+        entity:
+          domain: input_boolean
+          multiple: true
+    winter_target:
+      name: Winter Target (°C)
+      description: >
+        The temperature the heating aims to hold on winter nights. Capped at
+        20 °C, even if a higher value is stored.
+      default: 19.0
+      selector:
+        number:
+          min: 16.0
+          max: 20.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    prewarm_offset:
+      name: Pre-Warm Offset (°C)
+      description: >
+        How far above the Winter Target the pre-warm aims. Used as at most the
+        Drift Tolerance minus 0.1 °C, so the aim stays inside the band.
+      default: 1.0
+      selector:
+        number:
+          min: 0.0
+          max: 3.0
+          step: 0.1
+          unit_of_measurement: "°C"
+    heating_drive_setpoint:
+      name: Heating Drive Setpoint (°C)
+      description: >
+        The hall setpoint while driving the rooms up. Every heat setpoint is
+        capped at 24 °C and at the unit's max_temp, and rounded down to its step.
+      default: 24.0
+      selector:
+        number:
+          min: 20.0
+          max: 24.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    morning_time:
+      name: Morning Time
+      description: >
+        Winter only: when the morning heat should be on. Must be after the
+        Deep-Night Check and before Wake Time, else the schedule-order notice shows.
+      default: "05:30:00"
+      selector:
+        time: {}
+
 mode: restart
 max_exceeded: silent
 
@@ -683,6 +748,12 @@ variables:
   precool_fan_percentage: !input precool_fan_percentage
   fan_settle_minutes: !input fan_settle_minutes
   fans_at_wake: !input fans_at_wake
+  # --- Group 8: winter heating (v1.3.0) ---
+  heating_season_toggle: !input heating_season_toggle
+  winter_target: !input winter_target
+  prewarm_offset: !input prewarm_offset
+  heating_drive_setpoint: !input heating_drive_setpoint
+  morning_time: !input morning_time
 
 trigger:
   # T1: Periodic 1-minute tick — phase derivation, prediction, transitions
@@ -1444,6 +1515,34 @@ action:
         {{ ns.out }}
 
   # =============================================
+  # STEP 2d: HEATING SEASON AND HEAT SETPOINT CAPS (v1.3.0)
+  # heating_season is true only when the toggle reads exactly 'on'; unavailable,
+  # unknown, empty, a stray string or no toggle at all is summer. Heat setpoints
+  # never exceed 24 or the unit's max_temp and are rounded DOWN to the unit's
+  # step; heat_setpoints_allowed stays false while the limits are unknown or the
+  # unit lacks heat, and nothing may send a heat setpoint then.
+  # =============================================
+  - variables:
+      season_entity: >-
+        {% if heating_season_toggle is iterable and heating_season_toggle is not string
+              and heating_season_toggle | length > 0 %}
+          {{ heating_season_toggle[0] }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
+      season_state: "{{ states(season_entity) if season_entity != '' else 'unconfigured' }}"
+      heating_season: "{{ season_state == 'on' }}"
+      season_toggle_invalid: "{{ season_state not in ['on', 'off'] }}"
+      winter_target_eff: "{{ [winter_target | float(19), 20] | min }}"
+      prewarm_offset_eff: "{{ ([[prewarm_offset | float(0), tolerance | float - 0.1] | min, 0] | max) | round(2) }}"
+      winter_aim: "{{ (winter_target_eff | float + prewarm_offset_eff | float) | round(2) }}"
+      heat_cap: "{{ [24, ac_max_temp | float] | min }}"
+      heating_drive_eff: "{% set v = [[heating_drive_setpoint | float(24), ac_min_temp | float] | max, heat_cap | float] | min %}{{ (((v / (ac_temp_step | float)) + 0.000001) | round(0, 'floor') * (ac_temp_step | float)) | round(2) }}"
+      heating_hold_eff: "{% set v = [[winter_target_eff | float, ac_min_temp | float] | max, heat_cap | float] | min %}{{ (((v / (ac_temp_step | float)) + 0.000001) | round(0, 'floor') * (ac_temp_step | float)) | round(2) }}"
+      heat_supported: "{{ 'heat' in ac_hvac_modes }}"
+      heat_setpoints_allowed: "{{ heating_season and heat_supported and ac_limits_known }}"
+
+  # =============================================
   # STEP 3: RUNTIME (CONFIG) VALIDATION
   # =============================================
   - choose:
@@ -1457,6 +1556,8 @@ action:
                  or deep_night_check >= wake_time
                  or (today_at(bedtime) - timedelta(minutes=lead_cap_minutes | int))
                     <= today_at(wake_time)
+                 or (heating_season and (morning_time <= deep_night_check
+                                         or morning_time >= wake_time))
                  or (today_at(bedtime) + timedelta(minutes=fan_settle_minutes | int)).date()
                     != today_at(bedtime).date() }}
         sequence:
@@ -1480,9 +1581,43 @@ action:
                         ({{ lead_cap_minutes }} min = {{ earliest_turn_on_tod }})
                         must be after Wake Time. Bedtime plus the Fan Settle
                         Window ({{ fan_settle_minutes }} min) must not cross
-                        midnight. Control is paused until corrected.
+                        midnight. In the heating season the Morning Time
+                        ({{ morning_time }}) must be after the Deep-Night Check
+                        and before Wake Time. Control is paused until corrected.
                       notification_id: "bedroom_precool_config_error"
           - stop: "Configuration error"
+
+  # =============================================
+  # STEP 3b: SEASON TOGGLE AND HEAT SUPPORT NOTICES (v1.3.0)
+  # A toggle that is unavailable, unknown, empty or not configured counts as
+  # summer; one fixed-id notice says so. A unit without heat in its hvac_modes
+  # gets no heat command and one fixed-id notice. Both ids are constants.
+  # =============================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ enable_notifications and season_toggle_invalid }}"
+        sequence:
+          - service: persistent_notification.create
+            continue_on_error: true
+            data:
+              title: "Bedroom Pre-Cool — Season Toggle Unavailable"
+              message: >
+                The Heating Season Toggle is not configured or does not read
+                on or off, so the blueprint runs the summer rules (no heating).
+              notification_id: "bedroom_precool_season_toggle_invalid"
+      - conditions:
+          - condition: template
+            value_template: "{{ enable_notifications and heating_season and not ac_unavailable and not heat_supported }}"
+        sequence:
+          - service: persistent_notification.create
+            continue_on_error: true
+            data:
+              title: "Bedroom Pre-Cool — No Heat Mode"
+              message: >
+                The AC does not list heat among its modes, so no heat command
+                is sent.
+              notification_id: "bedroom_precool_heat_unsupported"
 
   # =============================================
   # STEP 4: VACATION OVERRIDE

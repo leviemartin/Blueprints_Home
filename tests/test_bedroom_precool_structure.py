@@ -71,9 +71,9 @@ def test_instants_are_carried_as_timestamps_not_datetimes(text):
     assert "as_timestamp(fdt) <= bedtime_ts | float" in text
 
 
-def test_version_bumped(bp):
-    assert bp["blueprint"]["name"].endswith("v1.2.1")
-    assert "**Version: 1.2.1**" in bp["blueprint"]["description"]
+def test_us01_version_bumped(bp):
+    assert bp["blueprint"]["name"].endswith("v1.3.0")
+    assert "**Version: 1.3.0**" in bp["blueprint"]["description"]
 
 
 # --- deployed instance config (board 20260907-163522 R1-04: the deploy dry-run owns the
