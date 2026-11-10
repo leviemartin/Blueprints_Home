@@ -968,6 +968,167 @@ action:
         {{ as_timestamp(s[0].last_changed) if s | length > 0 else 0 }}
 
   # =============================================
+  # STEP 2a-W: WINTER SAFETY (v1.3.0) — real ticks only, ahead of the forecast fetch, the
+  # configuration check and the sensor stop, so none of them can hold a cut back. Each cut
+  # has one fixed-id notice (a repeat replaces it, so a night shows at most one): overheat
+  # (any bedroom above winter target + tolerance while the unit heats: one turn-off), every
+  # bedroom sensor dead (one turn-off; STEP 5 then stops all heat commands until a sensor
+  # reads a number), a season flip (a unit running in the other season's mode since before
+  # the flip is switched off; a flip to summer also zeroes the LG timer, in the flip minute)
+  # and Vacation in the heating season (off, timer 0, stop). The season facts are defined here
+  # because manual_off (STEP 2c) needs heating_season; STEP 2d repeats them unchanged. A
+  # toggle that does not read on or off never flips anything.
+  # =============================================
+  - variables:
+      season_entity: >-
+        {% if heating_season_toggle is iterable and heating_season_toggle is not string
+              and heating_season_toggle | length > 0 %}
+          {{ heating_season_toggle[0] }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
+      season_state: "{{ states(season_entity) if season_entity != '' else 'unconfigured' }}"
+      heating_season: "{{ season_state == 'on' }}"
+      season_changed_ts: "{{ as_timestamp(states[season_entity].last_changed) if season_entity != '' and states[season_entity] is not none else 0 }}"
+      safe_overheat_level: "{{ (([winter_target | float(19), 20] | min) + (tolerance | float)) | round(2) }}"
+      safe_timer: >-
+        {% if ac_power_on_timer is iterable and ac_power_on_timer is not string and ac_power_on_timer | length > 0 %}
+          {{ ac_power_on_timer[0] }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
+      safe_timer_set_due: "{{ safe_timer != '' and states(safe_timer) not in ['unavailable', 'unknown'] and (states(safe_timer) | float(0)) != 0 }}"
+      season_flip_off_due: "{{ is_real_trigger and ac_is_running and season_state in ['on', 'off'] and (season_changed_ts | float) > (ac_started_ts | float) and ((heating_season and current_hvac_mode != 'heat') or ((not heating_season) and current_hvac_mode == 'heat')) }}"
+      season_flip_timer_due: "{{ is_real_trigger and season_state == 'off' and (as_timestamp(now()) - (season_changed_ts | float)) < 120 and safe_timer_set_due }}"
+      safe_overheat_due: "{{ is_real_trigger and heating_season and ac_is_running and current_hvac_mode == 'heat' and bedroom_sensors_ok and (bedroom_valid_temps | max) > (safe_overheat_level | float) }}"
+      safe_sensor_due: "{{ is_real_trigger and heating_season and (not bedroom_sensors_ok) and (not ac_unavailable) }}"
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_real_trigger and heating_season and vacation_active }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ ac_is_running }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ ac_climate }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ safe_timer_set_due }}"
+                sequence:
+                  - service: number.set_value
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ safe_timer }}"
+                    data:
+                      value: 0
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ enable_notifications }}"
+                sequence:
+                  - service: persistent_notification.create
+                    continue_on_error: true
+                    data:
+                      title: "Bedroom Pre-Warm — Vacation"
+                      message: >
+                        Vacation is on in the heating season: {{ ac_climate }} is switched off,
+                        the AC Power-On Timer is set to 0 and no heat command is sent until
+                        Vacation is switched off.
+                      notification_id: "bedroom_precool_heat_vacation"
+          - stop: "Vacation active (heating season)"
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ season_flip_off_due or season_flip_timer_due }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ season_flip_off_due }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ ac_climate }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ season_flip_timer_due }}"
+                sequence:
+                  - service: number.set_value
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ safe_timer }}"
+                    data:
+                      value: 0
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ enable_notifications }}"
+                sequence:
+                  - service: persistent_notification.create
+                    continue_on_error: true
+                    data:
+                      title: "Bedroom Pre-Warm — Season Changed"
+                      message: >
+                        The Heating Season Toggle changed to {{ season_state }}: a unit running in the
+                        other season's mode is switched off and, for summer, the AC Power-On Timer
+                        is set to 0. The new rules apply from now on.
+                      notification_id: "bedroom_precool_heat_season_flip"
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ safe_sensor_due }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ ac_is_running and not season_flip_off_due }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ ac_climate }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ enable_notifications }}"
+                sequence:
+                  - service: persistent_notification.create
+                    continue_on_error: true
+                    data:
+                      title: "Bedroom Pre-Warm — Sensors Unavailable"
+                      message: >
+                        All bedroom temperature sensors are unavailable. {{ ac_climate }} is switched
+                        off and no heat command is sent until a sensor reads a number again.
+                      notification_id: "bedroom_precool_heat_sensors_failed"
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ safe_overheat_due }}"
+        sequence:
+          - service: climate.turn_off
+            target:
+              entity_id: "{{ ac_climate }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ enable_notifications }}"
+                sequence:
+                  - service: persistent_notification.create
+                    continue_on_error: true
+                    data:
+                      title: "Bedroom Pre-Warm — Overheat"
+                      message: >
+                        A bedroom reads {{ bedroom_valid_temps | max }}°C, above the {{ safe_overheat_level }}°C limit.
+                        {{ ac_climate }} is switched off; the night re-heat restarts it only once the coldest
+                        bedroom is below the re-heat level.
+                      notification_id: "bedroom_precool_heat_overheat"
+
+  # =============================================
   # STEP 2b: FORECAST FETCH
   # weather.get_forecasts is the PLURAL current action — the singular
   # weather.get_forecast was deprecated. Both calls read HA's cached forecast
@@ -1256,12 +1417,13 @@ action:
       # v1.2.0: the fan-only lock switches the unit off itself (≈ lock tick + cloud lag);
       # an off stamped within 180 s of the lock is the blueprint's, not a person's — a
       # person's off in that same window is misread as ours, documented.
+      # v1.3.0: the winter bedtime minute switches the unit off the same way, so heating nights get the exemption too.
       manual_off: >-
         {{ (not ac_is_running) and (not ac_unavailable)
            and ac_off_since_ts | float >= earliest_turn_on_ts | float + 120
            and ac_off_since_ts | float > automation_up_since_ts | float + 600
            and vacation_changed_ts | float < ac_off_since_ts | float - 120
-           and not (fan_only_mode and ac_off_since_ts | float >= lock_ts | float and ac_off_since_ts | float < lock_ts | float + 180) }}
+           and not ((fan_only_mode or heating_season) and ac_off_since_ts | float >= lock_ts | float and ac_off_since_ts | float < lock_ts | float + 180) }}
       # --- Phase derivation (all time-of-day string comparisons) ---
       # The "day side" of the schedule runs wake -> bedtime_lock.
       on_day_side: "{{ wake_tod <= now_tod and now_tod < lock_tod }}"
