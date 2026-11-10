@@ -685,6 +685,31 @@ blueprint:
       default: "05:30:00"
       selector:
         time: {}
+    heating_skip_threshold:
+      name: Mild-Evening Skip Threshold (°C)
+      description: >
+        Winter only: the evening pre-warm is skipped when the forecast low is
+        at or above this and the coldest bedroom is already at or above the
+        Winter Target.
+      default: 12.0
+      selector:
+        number:
+          min: 0.0
+          max: 20.0
+          step: 0.5
+          unit_of_measurement: "°C"
+    heating_bias_helper:
+      name: Heating Lead-Time Bias Helper (input_number)
+      description: >
+        An input_number helper that persists the self-learned heating lead-time
+        correction (minutes), kept apart from the summer Lead-Time Bias Helper.
+        Min -60 (or lower), max 120 (or higher), step 1. Leave empty for a bias
+        of 0.
+      default: []
+      selector:
+        entity:
+          domain: input_number
+          multiple: true
 
 mode: restart
 max_exceeded: silent
@@ -754,6 +779,8 @@ variables:
   prewarm_offset: !input prewarm_offset
   heating_drive_setpoint: !input heating_drive_setpoint
   morning_time: !input morning_time
+  heating_skip_threshold: !input heating_skip_threshold
+  heating_bias_helper: !input heating_bias_helper
 
 trigger:
   # T1: Periodic 1-minute tick — phase derivation, prediction, transitions
@@ -1541,6 +1568,64 @@ action:
       heating_hold_eff: "{% set v = [[winter_target_eff | float, ac_min_temp | float] | max, heat_cap | float] | min %}{{ (((v / (ac_temp_step | float)) + 0.000001) | round(0, 'floor') * (ac_temp_step | float)) | round(2) }}"
       heat_supported: "{{ 'heat' in ac_hvac_modes }}"
       heat_setpoints_allowed: "{{ heating_season and heat_supported and ac_limits_known }}"
+      # --- v1.3.0 heating lead time: the summer formula mirrored (aim minus room, aim minus outdoor), no solar term ---
+      # Forecast low reuses the responses STEP 2b already fetched (hourly window min, else the daily templow, never above the live reading); no new fetch.
+      forecast_daily_low: >-
+        {% set ns = namespace(today=none, first=none) %}
+        {% for f in forecast_daily_list %}
+          {% set ts = f.datetime | default(none) %}
+          {% set tp = f.templow | default(none) %}
+          {% if ts is not none and tp | float(none) is not none %}
+            {% set fdt = as_datetime(ts, none) %}
+            {% if fdt is not none %}
+              {% if ns.first is none %}{% set ns.first = tp | float %}{% endif %}
+              {% if ns.today is none and (fdt | as_local).date() == now().date() %}
+                {% set ns.today = tp | float %}
+              {% endif %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.today if ns.today is not none else ns.first }}
+      forecast_daily_low_ok: "{{ forecast_daily_low is not none and forecast_daily_low | float(none) is not none }}"
+      forecast_low: >-
+        {% if forecast_window_temps | length > 0 %}
+          {{ forecast_window_temps | min }}
+        {% elif forecast_daily_low_ok %}
+          {{ [forecast_daily_low | float, outdoor_now | float] | min }}
+        {% else %}
+          {{ outdoor_now | float }}
+        {% endif %}
+      heat_outdoor_for_lead: "{{ [forecast_low | float, outdoor_now | float] | min }}"
+      heat_delta_in: "{{ [0, winter_aim | float - coldest_bedroom | float] | max }}"
+      heat_delta_out: "{{ [0, winter_aim | float - heat_outdoor_for_lead | float] | max }}"
+      heating_bias_entity: >-
+        {% if heating_bias_helper is iterable and heating_bias_helper is not string
+              and heating_bias_helper | length > 0 %}
+          {{ heating_bias_helper[0] }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
+      heating_bias_configured: "{{ heating_bias_entity != '' }}"
+      heating_bias: >-
+        {% if enable_auto_learn and heating_bias_configured %}
+          {{ states(heating_bias_entity) | float(0) }}
+        {% else %}
+          0
+        {% endif %}
+      heat_lead_raw: >-
+        {{ (base_minutes | float)
+           + (k_indoor | float) * (heat_delta_in | float)
+           + (k_outdoor | float) * (heat_delta_out | float)
+           + (safety_margin_minutes | float)
+           + (heating_bias | float) }}
+      heat_lead: "{{ [[heat_lead_raw | float, 0] | max, lead_cap_minutes | float] | min | round(0) | int }}"
+      heat_needed: "{{ coldest_bedroom | float < winter_target_eff | float or forecast_low | float < heating_skip_threshold | float }}"
+      overheat_level: "{{ (winter_target_eff | float + tolerance | float) | round(2) }}"
+      reheat_level: "{{ (winter_target_eff | float - tolerance | float) | round(2) }}"
+      heat_turn_on_ts: "{{ as_timestamp(today_at(bedtime) - timedelta(minutes=heat_lead | int)) }}"
+      heat_turn_on_tod: "{{ heat_turn_on_ts | float | timestamp_custom('%H:%M:%S') }}"
+      heat_running: "{{ ac_is_running and current_hvac_mode == 'heat' and now_tod >= earliest_turn_on_tod }}"
+      heat_stage: "{% if not heating_season %}OFF{% elif wake_tod <= now_tod and now_tod < bedtime_tod %}{% if not heat_needed and not heat_running %}SKIP{% elif now_tod < heat_turn_on_tod and not heat_running %}WAIT{% elif coldest_bedroom | float < winter_aim | float %}DRIVE{% else %}HOLD{% endif %}{% elif warmest_bedroom | float > overheat_level | float %}OVERHEAT{% elif coldest_bedroom | float < reheat_level | float %}REHEAT{% else %}HOLD{% endif %}"
 
   # =============================================
   # STEP 3: RUNTIME (CONFIG) VALIDATION
@@ -2426,6 +2511,21 @@ action:
                 **night_parity:** {{ night_parity }}
                 | fan_assist tonight={{ fan_assist_tonight }} · night fans tonight={{ night_fans_tonight }}
                 | interlock blocked={{ interlock_blocked }}
+
+                **heat (season={{ heating_season }}):** stage={{ heat_stage }}
+                | **aim:** {{ winter_aim }}°C
+                | **overheat:** {{ overheat_level }}°C
+                | **re-heat:** {{ reheat_level }}°C
+                | **heat_needed:** {{ heat_needed }}
+
+                **heat lead:** {{ heat_lead }} min (raw {{ heat_lead_raw }})
+                = base {{ base_minutes }}
+                + indoor {{ k_indoor }} × {{ heat_delta_in }}°C
+                + outdoor {{ k_outdoor }} × {{ heat_delta_out }}°C
+                + safety {{ safety_margin_minutes }}
+                + bias {{ heating_bias }} (no solar term)
+                | **forecast_low:** {{ forecast_low }}°C
+                | **heat turn_on:** {{ heat_turn_on_tod }}
 
                 **fans due:** precool={{ fans_due_precool }} · night={{ fans_due_night }}
                 · unset={{ fans_unset_night }} · wake-off={{ fans_on_at_wake }}
