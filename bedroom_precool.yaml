@@ -1916,6 +1916,98 @@ action:
               notification_id: "bedroom_precool_overcool_fault"
 
   # =============================================
+  # STEP 5e: WINTER DISPATCH (v1.3.0) — heating season, real ticks only. At wake a
+  # running unit is switched off (until the earliest turn-on). In the evening, from the
+  # heat turn-on instant, one idempotent command each turns the unit on, selects heat and
+  # sets the drive setpoint (coldest room below the aim) or the hold setpoint (aim reached,
+  # unit running). A setpoint changed by hand, or a manual off, ends the evening's commands
+  # and raises one fixed-id notice. No heat command goes out without heat in the unit's
+  # hvac_modes or while its limits are unknown (heat_setpoints_allowed; the one no-heat
+  # notice is STEP 3b's). The block ends in stop so the summer dispatch below never runs
+  # on a real winter tick; a manual Run falls through to the debug dump.
+  # =============================================
+  - variables:
+      heat_evening: "{{ heating_season and wake_tod <= now_tod and now_tod < bedtime_tod }}"
+      # Hold = winter target + hall offset, capped at 24 and the unit max, rounded down to the step.
+      heat_hold_sp: "{% set v = [[winter_target_eff | float + hall_offset | float, ac_min_temp | float] | max, heat_cap | float] | min %}{{ (((v / (ac_temp_step | float)) + 0.000001) | round(0, 'floor') * (ac_temp_step | float)) | round(2) }}"
+      heat_target_sp: "{{ heating_drive_eff | float if heat_stage == 'DRIVE' else heat_hold_sp | float }}"
+      # A running heat unit, two ticks after it started, holding a setpoint that is neither drive nor hold.
+      manual_heat_setpoint: "{{ heat_evening and ac_is_running and current_hvac_mode == 'heat' and ac_limits_known and current_setpoint_known and (current_setpoint | float - heating_drive_eff | float) | abs > 0.1 and (current_setpoint | float - heat_hold_sp | float) | abs > 0.1 and ac_state_age_sec | float >= 120 }}"
+      heat_wake_off_due: "{{ heating_season and wake_tod <= now_tod and now_tod < earliest_turn_on_tod and ac_is_running }}"
+      heat_prewarm_due: "{{ heat_evening and heat_setpoints_allowed and not manual_off and not manual_heat_setpoint and (heat_stage == 'DRIVE' or (heat_stage == 'HOLD' and ac_is_running)) }}"
+      heat_manual_notice_due: "{{ enable_notifications and heat_evening and heat_stage in ['DRIVE', 'HOLD'] and (manual_off or manual_heat_setpoint) }}"
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_real_trigger and heating_season }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ heat_wake_off_due }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ ac_climate }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ heat_prewarm_due }}"
+                sequence:
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ not ac_is_running }}"
+                        sequence:
+                          - service: climate.turn_on
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ current_hvac_mode != 'heat' }}"
+                        sequence:
+                          - service: climate.set_hvac_mode
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              hvac_mode: heat
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ (not current_setpoint_known) or (current_setpoint | float - heat_target_sp | float) | abs > 0.1 }}"
+                        sequence:
+                          - service: climate.set_temperature
+                            target:
+                              entity_id: "{{ ac_climate }}"
+                            data:
+                              temperature: "{{ heat_target_sp | float }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ heat_manual_notice_due }}"
+                sequence:
+                  - service: persistent_notification.create
+                    continue_on_error: true
+                    data:
+                      title: "Bedroom Pre-Warm — Manual Override"
+                      message: >
+                        {% if manual_off %}
+                        {{ ac_climate }} was switched off during the evening pre-warm; it stays
+                        off tonight and the evening pre-warm ends.
+                        {% else %}
+                        {{ ac_climate }} holds a setpoint of {{ current_setpoint }}°C that the
+                        blueprint did not set ({{ heating_drive_eff }} / {{ heat_hold_sp }}°C); it is left alone until bedtime.
+                        {% endif %}
+                      notification_id: "bedroom_precool_heat_manual_override"
+            default:
+              - service: persistent_notification.dismiss
+                continue_on_error: true
+                data:
+                  notification_id: "bedroom_precool_heat_manual_override"
+          - stop: "Heating season"
+
+  # =============================================
   # STEP 6: PHASE DISPATCH — exactly one phase acts.
   # Each acting branch resolves desired setpoint/mode/fan, then issues
   # only idempotent service calls (a stray call is a stray beep).
