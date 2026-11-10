@@ -1548,7 +1548,8 @@ action:
       # start (one 21% command, interlock still honoured). Not further distinguished:
       # fan_assist and dry mode both default off, and the experiment runs on chosen
       # nights only.
-      in_fan_assist_window: "{{ phase == 'PRECOOL' and ac_is_running and (since_ac_start_min | float) < (fan_settle_minutes | float) and (automation_up_since_ts | float) < (earliest_turn_on_ts | float) }}"
+      # v1.3.0: in the heating season the assist runs only while the unit heats; the phase already excludes every other heating stage.
+      in_fan_assist_window: "{{ phase == 'PRECOOL' and ac_is_running and (not heating_season or current_hvac_mode == 'heat') and (since_ac_start_min | float) < (fan_settle_minutes | float) and (automation_up_since_ts | float) < (earliest_turn_on_ts | float) }}"
       # H5 (P2, board 20260909-151815 cycle 3, R1C3-04 ≡ R2C3-04): a turn_on issued on the
       # last in-window tick lands 10-60 s later, i.e. AFTER the window has already closed,
       # so the very next tick renders an empty due list and the fan our own write turned on
@@ -1558,7 +1559,7 @@ action:
       settle_grace_tod: >-
         {{ (today_at(bedtime) + timedelta(minutes=fan_settle_minutes | int, seconds=120)).strftime('%H:%M:%S') }}
       in_fan_settle_grace: "{{ lock_tod <= now_tod and now_tod < settle_grace_tod }}"
-      in_fan_assist_grace: "{{ phase == 'PRECOOL' and ac_is_running and (since_ac_start_min | float) < (fan_settle_minutes | float) + 2 and (automation_up_since_ts | float) < (earliest_turn_on_ts | float) }}"
+      in_fan_assist_grace: "{{ phase == 'PRECOOL' and ac_is_running and (not heating_season or current_hvac_mode == 'heat') and (since_ac_start_min | float) < (fan_settle_minutes | float) + 2 and (automation_up_since_ts | float) < (earliest_turn_on_ts | float) }}"
       night_phase: "{{ phase in ['NIGHT_HOLD', 'DEEP_NIGHT_CHECK', 'DEEP_HOLD'] }}"
       # Board 20260909-151815 cycle 2 G3 (P1 residual R2C2-03 -> mitigation): a heater is
       # never an acceptable fallback in a child's bedroom. A stale cloud read that
@@ -1616,7 +1617,7 @@ action:
       # variables boundary intact.
       fans_due_night: >-
         {% set ns = namespace(out=[]) %}
-        {% if night_fans_tonight and in_fan_settle %}
+        {% if night_fans_tonight and in_fan_settle and not heating_season %}
           {% for f in bedroom_fans %}
             {% set st = expand(f) | list %}
             {% if st | length > 0 %}
@@ -1653,7 +1654,7 @@ action:
       # the last settle tick, never retried.
       fans_unset_night: >-
         {% set ns = namespace(out=[]) %}
-        {% if night_fans_tonight and in_fan_settle %}
+        {% if night_fans_tonight and in_fan_settle and not heating_season %}
           {% for f in bedroom_fans %}
             {% set st = expand(f) | list %}
             {% if st | length > 0 %}
@@ -1668,9 +1669,25 @@ action:
           {% endfor %}
         {% endif %}
         {{ ns.out }}
+      # v1.3.0: in the heating season this list is the bedtime-lock switch-off (a turn_off, no new call site): fans on at the
+      # pre-cool percentage that came on after the unit started and were not changed since. Wake time does nothing in winter.
       fans_on_at_wake: >-
         {% set ns = namespace(out=[]) %}
-        {% if fans_at_wake == 'off' and in_wake_window %}
+        {% if heating_season %}
+          {% if fan_assist_tonight and in_lock_window %}
+            {% for f in bedroom_fans %}
+              {% set st = expand(f) | list %}
+              {% if st | length > 0 %}
+                {% set s = st[0] %}
+                {% if s.state == 'on' and (state_attr(f, 'percentage') | int(-1)) == (precool_fan_percentage | int)
+                      and as_timestamp(s.last_changed) >= (ac_started_ts | float)
+                      and as_timestamp(s.last_updated) - as_timestamp(s.last_changed) < 120 %}
+                  {% set ns.out = ns.out + [f] %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+        {% elif fans_at_wake == 'off' and in_wake_window %}
           {% for f in bedroom_fans %}
             {% set st = expand(f) | list %}
             {% if st | length > 0 and st[0].state == 'on' %}
@@ -1713,7 +1730,7 @@ action:
       # strict windows, only the cut's own arming uses the grace.
       fans_unsafe_on: >-
         {% set ns = namespace(out=[]) %}
-        {% set night_branch = night_fans_tonight and in_fan_settle_grace %}
+        {% set night_branch = night_fans_tonight and in_fan_settle_grace and not heating_season %}
         {% set assist_branch = fan_assist_tonight and in_fan_assist_grace %}
         {% if (night_branch or assist_branch)
               and expand(fan_interlocks) | selectattr('state', 'eq', 'on') | list | length > 0 %}
