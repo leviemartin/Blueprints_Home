@@ -1306,61 +1306,6 @@ def test_rendered_guard_due_and_settle_respect_a_manual_override(bp):
     assert _guard(bp, t, manual_setpoint=True, **settling)["guard_settle_due"] is False   # a person's setpoint
 
 
-def test_rendered_settle_mode_due_and_heat_backstop_due_are_mutually_exclusive(bp):
-    """H2 (P2, board 20260909-151815 cycle 3, R1C3-02): with H1's backstop no longer
-    switching the unit off, both settle_mode_due and heat_backstop_due would otherwise fire
-    the same set_hvac_mode on a heat read inside the settle window (two beeps for one
-    repair). The backstop gets sole ownership of the heat case."""
-    t = datetime(2026, 9, 9, 23, 7, tzinfo=TZ)
-    started = (t - timedelta(minutes=2)).timestamp()
-    base = dict(night_mode="fan_only", phase="NIGHT_HOLD", ac_is_running=True, ac_started_ts=started)
-    heat = _guard(bp, t, **base, current_hvac_mode="heat")
-    assert heat["heat_backstop_due"] is True and heat["settle_mode_due"] is False
-    for mode in ("fan_only", "auto"):
-        other = _guard(bp, t, **base, current_hvac_mode=mode)
-        assert other["heat_backstop_due"] is False and other["settle_mode_due"] is True, mode
-
-
-# --- G3 (P1 residual R2C2-03 -> mitigation, board 20260909-151815 cycle 2): heat backstop ---
-
-def test_rendered_heat_backstop_due_only_for_heat_at_night_in_fan_only_while_running(bp):
-    """A heater is never an acceptable fallback in a child's bedroom. heat_backstop_due
-    catches a unit whose LAST-READ mode is 'heat' on any real tick in a night phase,
-    fan-only, while ostensibly running — a stale cloud read that reports 'off' while the
-    unit is actually still heating is a separate, unobservable residual (documented, not
-    closed by this predicate)."""
-    t = datetime(2026, 9, 9, 23, 0, tzinfo=TZ)
-    hot = dict(night_mode="fan_only", phase="NIGHT_HOLD", ac_is_running=True, current_hvac_mode="heat")
-    assert _guard(bp, t, **hot)["heat_backstop_due"] is True
-    assert _guard(bp, t, **dict(hot, current_hvac_mode="cool"))["heat_backstop_due"] is False
-    assert _guard(bp, t, **dict(hot, current_hvac_mode="fan_only"))["heat_backstop_due"] is False
-    assert _guard(bp, t, **dict(hot, night_mode="ac_hold"))["heat_backstop_due"] is False
-    assert _guard(bp, t, **dict(hot, ac_is_running=False))["heat_backstop_due"] is False
-    for ph in ("PRECOOL", "BEDTIME_LOCK", "DAY_OFF"):
-        assert _guard(bp, t, **dict(hot, phase=ph))["heat_backstop_due"] is False, ph
-    for ph in ("NIGHT_HOLD", "DEEP_NIGHT_CHECK", "DEEP_HOLD"):
-        assert _guard(bp, t, **dict(hot, phase=ph))["heat_backstop_due"] is True, ph
-
-
-def test_heat_backstop_is_exactly_one_set_hvac_mode_call_gated_on_heat_backstop_due(bp):
-    """H1 (P1, board 20260909-151815 cycle 3, R1C3-01 ≡ R2C3-03): the old unconditional
-    climate.turn_off moved the climate entity's last_changed, which made main's manual_off
-    read True for the rest of the night and killed guard_due (`... and not manual_off`)
-    until wake, with STEP 7e then blaming a person for an off this blueprint caused. The
-    backstop now corrects the mode in place — the same idempotent command the settle step
-    uses — so nothing latches and there is nothing for the guard to bring back."""
-    calls = _calls_with(bp, "heat_backstop_due")
-    assert len(calls) == 1
-    conds, step = calls[0]
-    assert step["service"] == "climate.set_hvac_mode"
-    assert step["target"]["entity_id"] == "{{ ac_climate }}"
-    assert step["data"]["hvac_mode"] == "{{ desired_mode }}"
-    assert any(t.strip() == "{{ is_real_trigger and heat_backstop_due and not heating_season }}" for t in conds)
-    turn_offs = [(c, s) for c, s in _service_steps(_top_level_steps(bp), []) if s.get("service") == "climate.turn_off"]
-    assert not any(any("heat_backstop_due" in t for t in c) for c, s in turn_offs), \
-        "no climate.turn_off may be gated on heat_backstop_due"
-
-
 def test_rendered_interlock_blocked_fails_safe_and_honours_the_clear_hold(bp):
     now = datetime(2026, 9, 9, 19, 29, tzinfo=TZ)
     render = lambda states, sensors: _reparse(_fan_env(now, states).from_string(

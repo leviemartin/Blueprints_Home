@@ -1561,16 +1561,11 @@ action:
       in_fan_settle_grace: "{{ lock_tod <= now_tod and now_tod < settle_grace_tod }}"
       in_fan_assist_grace: "{{ phase == 'PRECOOL' and ac_is_running and (not heating_season or current_hvac_mode == 'heat') and (since_ac_start_min | float) < (fan_settle_minutes | float) + 2 and (automation_up_since_ts | float) < (earliest_turn_on_ts | float) }}"
       night_phase: "{{ phase in ['NIGHT_HOLD', 'DEEP_NIGHT_CHECK', 'DEEP_HOLD'] }}"
-      # Board 20260909-151815 cycle 2 G3 (P1 residual R2C2-03 -> mitigation): a heater is
-      # never an acceptable fallback in a child's bedroom. A stale cloud read that
-      # reports 'off' while the unit is actually still running heat (LG ThinQ mode drift,
-      # or a guard/settle set_hvac_mode call whose cloud application silently failed)
-      # would otherwise sit uncorrected until the next real state change. heat_backstop_due
-      # catches it on every real tick: fan-only, a night phase, the unit ostensibly
-      # running, and its LAST-READ mode is 'heat'. This does NOT close the finding — a
-      # stale cloud 'off' WHILE actually heating is unobservable from this automation;
-      # the residual is recorded in the board report for the operator.
-      heat_backstop_due: "{{ fan_only_mode and night_phase and ac_is_running and current_hvac_mode == 'heat' }}"
+      # Heat backstop (2026-11-03 rule): a unit that reports heat is due a correction to cool
+      # only while a bedroom is above winter target + tolerance (safe_overheat_level) or every
+      # bedroom sensor has failed; a heat run started by hand with the rooms in range is left
+      # alone. STEP 5d adds the toggle-off and real-tick conditions.
+      heat_backstop_due: "{{ ac_is_running and current_hvac_mode == 'heat' and ((not bedroom_sensors_ok) or (bedroom_valid_temps | max) > (safe_overheat_level | float)) }}"
       # Night guard: fan-only, a night phase, unit off, warmest room over the band, on a
       # 5-minute tick (bounds a stuck cloud 'off' to ≤ 12 attempts/h, board R2-02). The
       # running unit is the latch — once on, guard_due is false until DAY_OFF turns it
@@ -1584,10 +1579,9 @@ action:
       # inside the 15-minute window is left alone (manual_setpoint already requires
       # ac_state_age_sec >= 120, so the first two ticks after a start are always ours).
       guard_settle_due: "{{ fan_only_mode and night_phase and ac_is_running and (since_ac_start_min | float) < 15 and not manual_setpoint }}"
-      # H2 (P2, board 20260909-151815 cycle 3, R1C3-02): the backstop (STEP 5d) now owns the
-      # heat case exclusively — without this exclusion both would send the same
-      # set_hvac_mode on a heat read inside the settle window (two beeps for one repair).
-      settle_mode_due: "{{ guard_settle_due and current_hvac_mode not in ['cool', 'dry'] and not heat_backstop_due }}"
+      # A heat read is never settle's to fix: STEP 5d owns it (only with a room overheated or every
+      # sensor failed), and a heat run started by hand is left alone.
+      settle_mode_due: "{{ guard_settle_due and current_hvac_mode not in ['cool', 'dry', 'heat'] }}"
       # Board 20260909-151815 F7 (P1, R1-02/R1-03): on a unit whose ac_temp_step >= 1, main
       # QUANTISES every commanded setpoint (int()) — maintaining = int(21.0) = 21, the
       # deep-night down-nudge = int(21 - 1.5) = 19 (NOT 19.5), up-nudge = int(22.5) = 22.
@@ -1603,7 +1597,7 @@ action:
       # is not in that list and is still corrected.
       night_hold_setpoints: "{% set ns = namespace(vals=[]) %}{% for v in [maintaining_setpoint | float, [[maintaining_setpoint | float - correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min, [[maintaining_setpoint | float + correction_step | float, ac_min_temp | float] | max, ac_max_temp | float] | min] %}{% set ns.vals = ns.vals + [(v | int) if ac_temp_step | float >= 1 else v] %}{% endfor %}{{ ns.vals }}"
       setpoint_is_night_hold: "{% set ns = namespace(ok=false) %}{% if night_hold_setpoints is string or night_hold_setpoints is not iterable %}{% set ns.ok = true %}{% else %}{% for k in night_hold_setpoints %}{% if (current_setpoint | float - k | float) | abs <= 0.1 %}{% set ns.ok = true %}{% endif %}{% endfor %}{% endif %}{{ ns.ok }}"
-      settle_setpoint_due: "{{ guard_settle_due and current_setpoint_known and not setpoint_is_night_hold }}"
+      settle_setpoint_due: "{{ guard_settle_due and current_setpoint_known and not setpoint_is_night_hold and not heat_backstop_due }}"
       settle_fan_due: "{{ guard_settle_due and enable_fan_control and ac_fan_modes | length > 0 and current_fan != 'unknown' and current_fan != night_fan_mode }}"
       # --- v1.2.0 fan write rule → per-window lists of fans DUE for one command ---
       # A fan is due when: configured, present and available, not already at the target
@@ -2038,17 +2032,19 @@ action:
   # validation stops (H3, R2C3-02): sitting behind `stop: "AC entity unavailable"` /
   # `stop: "No valid bedroom temperature sensor"` let a dead bedroom sensor block the mode
   # correction while the unit kept heating. Needs only STEP 2a/2c variables
-  # (fan_only_mode, night_phase, ac_is_running, current_hvac_mode, heat_backstop_due,
-  # desired_mode), all defined earlier than this point.
+  # (ac_is_running, current_hvac_mode, heat_backstop_due,
+  # maintaining_setpoint), all defined earlier than this point.
   # H1 (P1, R1C3-01 ≡ R2C3-03): corrects the MODE instead of switching the unit off. The
   # old unconditional climate.turn_off moved the climate entity's last_changed, which made
   # main's manual_off read True for the rest of the night (outside the lock's own 180 s
   # exemption) and killed guard_due (`... and not manual_off`) until wake, with STEP 7e
-  # then blaming a person for an off this blueprint caused. climate.set_hvac_mode with
-  # hvac_mode: desired_mode is the same idempotent command the settle step uses — the unit
-  # never goes off, so there is nothing for the guard to bring back; it re-fires on every
-  # tick the cloud read still says 'heat'. H2 gives it sole ownership of the heat case:
-  # settle_mode_due excludes heat_backstop_due, so the two never double-command one tick.
+  # then blaming a person for an off this blueprint caused. Since v1.3.0 (the 2026-11-03 rule)
+  # it is not limited to fan-only nights: with the Heating Season Toggle off, one
+  # climate.set_temperature (hvac_mode: cool, the maintaining setpoint) goes out only while a
+  # bedroom is above winter target + tolerance or every bedroom sensor has failed; a heat run
+  # started by hand with the rooms in range gets no command. The unit never goes off, so there
+  # is nothing for the guard to bring back; it re-fires on every tick the cloud read still says
+  # 'heat'. settle_mode_due and settle_setpoint_due stand down while it is due: one command per tick.
   # Does not close R2C2-03: a stale cloud 'off' while actually heating is unobservable
   # from this automation (documented residual for the operator).
   # =============================================
@@ -2058,11 +2054,12 @@ action:
             # Winter runs the unit in heat on purpose (night re-heat), so the backstop stands down.
             value_template: "{{ is_real_trigger and heat_backstop_due and not heating_season }}"
         sequence:
-          - service: climate.set_hvac_mode
+          - service: climate.set_temperature
             target:
               entity_id: "{{ ac_climate }}"
             data:
-              hvac_mode: "{{ desired_mode }}"
+              hvac_mode: cool
+              temperature: "{{ maintaining_setpoint | float }}"
 
   # =============================================
   # STEP 5: SENSOR / ENTITY VALIDATION
