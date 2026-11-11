@@ -1,6 +1,6 @@
 {
   "id": "1779553673971",
-  "alias": "Bedroom Sleep Pre-Cool v1.2.1",
+  "alias": "Bedroom Sleep Pre-Cool v1.3.0",
   "description": "",
   "use_blueprint": {
     "path": "leviemartin/bedroom_precool.yaml",
@@ -37,7 +37,18 @@
       "fan_assist": "off",
       "precool_fan_percentage": 21,
       "fan_settle_minutes": 45,
-      "fans_at_wake": "leave"
+      "fans_at_wake": "leave",
+      "heating_season_toggle": [
+        "input_boolean.heating_season"
+      ],
+      "winter_target": 18,
+      "prewarm_offset": 0.5,
+      "heating_drive_setpoint": 24,
+      "morning_time": "06:30:00",
+      "weekend_morning_time": "06:30:00",
+      "ac_power_on_timer": [
+        "number.bedrooms_schedule_turn_on"
+      ]
     }
   },
   "trace": {
