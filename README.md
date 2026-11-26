@@ -77,21 +77,23 @@ There is deliberately no import-by-URL path for this blueprint: every install go
 ## Circadian Living Room Lights Blueprint
 
 ### Overview
-Living room lighting that follows presence, the sun and the family routine (v3.0.0). Two presence sensors count as one room: the Aqara FP2 (`presence_fp2`, also the lux sensor) and the Aqara FP300 on the couch (`presence_fp300`). Either sensor on turns the lights on; they go off only when both sensors are clear.
+Living room lighting that follows presence, the sun and the family routine (v3.1.0). Two presence sensors count as one room: the Aqara FP2 (`presence_fp2`, also the lux sensor) and the Aqara FP300 on the couch (`presence_fp300`). Either sensor on turns the lights on; they go off only when both sensors are clear.
 
 ### Features
 *   **☀️ Native Circadian Algorithm:** Automatically shifts Color Temperature (Kelvin) based on the Sun's elevation without external integrations.
 *   **🛋️ Hue Infuse Support:** Optimized for Philips Hue Infuse ceiling lights, supporting independent control of main and backlight entities.
 *   **✨ Native Hue Effects:** Supports triggering native effects like **Candlelight** and **Fireplace** during Evening and Night profiles.
 *   **🍽️ Routine Overrides:** Dedicated time slots for **Dinner** (Bright/Neutral) and **Toddler Prep** (Warm Amber/Dim) to override the sun cycle.
-*   **Dual presence (v3.0.0):** Either sensor on turns the lights on. The lights go off only after both sensors are clear (off, unavailable or unknown) for `presence_timeout` (default 5 min).
-*   **Late-night quick off:** Between 23:00 and 06:30 (`late_night_start` / `late_night_end`, crossing midnight) the lights go off 1 min (`late_night_timeout`) after both sensors are clear. A both-clear countdown whose 1-min mark passed before 23:00 finishes on `presence_timeout` (up to 4 min later than the late-night delay); a clear that began just before 23:00 can still turn off at its 1-min mark just after 23:00. A countdown whose 1-min mark falls at or after 06:30 also finishes on `presence_timeout`; there is no extra trigger at the window edges. The Night profile (22:00-06:00, 20 %) is independent of the late-night window.
+*   **Dual presence:** Either sensor on turns the lights on. The lights go off only after both sensors are clear (off, unavailable or unknown) for `presence_timeout` (default 5 min). A sensor missing from Home Assistant counts as clear.
+*   **Re-check (v3.1.0):** every trigger recomputes whether the lights should be on. A 5-minute check, HA start and automation reload catch missed timers and lux crossings; they can turn lights off or refresh them, never turn them on.
+*   **Late-night quick off:** Between 23:00 and 06:30 (`late_night_start` / `late_night_end`, crossing midnight) the lights go off 1 min (`late_night_timeout`) after both sensors are clear. A both-clear countdown whose 1-min mark passed before 23:00 turns off at the next 5-minute check (23:00 itself is one); a clear that began just before 23:00 can still turn off at its 1-min mark just after 23:00. A countdown whose 1-min mark falls at or after 06:30 finishes on `presence_timeout`; there is no extra trigger at the window edges beyond the 5-minute check. The Night profile (22:00-06:00, 20 %) is independent of the late-night window.
 *   **Dog on the bench:** The FP300 counts like the FP2 at all hours, so the dog lying on its bench keeps the FP300, and so the lights, on, also at night. This is accepted and still being tested; there is no cap or zone exclusion.
-*   **FP300 offline push:** An FP300 that is unavailable or unknown counts as clear, so the lights follow the FP2 alone. After 30 min offline, one push goes to each `notify_targets` entry (full `notify.<name>` services, others ignored; empty, the default, disables it). The push runs after the light calls, also while the override is on. A target that does not exist aborts the run at the push step; check it exists after editing.
+*   **Sensor offline push:** A sensor that is unavailable or unknown counts as clear, so the lights follow the other one alone. After 30 min offline (FP2 or FP300), one push goes to each `notify_targets` entry; a sensor missing from Home Assistant is pushed once an hour (full `notify.<name>` services, others ignored; empty, the default, disables it). The push runs after the light calls, also while the override is on. A target that does not exist aborts the run at the push step; check it exists after editing.
 *   **Daylight Harvesting:** FP2 illuminance only; FP300 lux is not read.
-    *   **Auto-ON:** lights turn on when someone is present and the FP2 reads below 150 lx (`lux_on_threshold`), or when you are already sitting there and it gets darker than that.
+    *   **Auto-ON:** lights turn on when someone is present and the FP2 reads below 150 lx (`lux_on_threshold`), or when you are already sitting there and it stays darker than that for 5 min (`lux_on_duration`). With no lux reading, presence alone turns them on.
     *   **Auto-OFF:** lights turn off when the FP2 reads above 400 lx (`lux_off_threshold`) for 5 min (`lux_off_duration`).
-    *   These are the blueprint defaults; each instance can set its own values (per instance).
+    *   Between the two thresholds the lights keep their current state.
+    *   These are the blueprint defaults; each instance can set its own values (per instance). The living room uses 175 / 250 lx and 5 / 10 min (RFC `docs/design/2026-11-26-living-room-lighting.md`, D4).
 *   **✨ Seamless Transitions:** Uses long transitions (30s) for color shifts and fast transitions (2s) for presence, ensuring a premium feel.
 
 ### Requirements

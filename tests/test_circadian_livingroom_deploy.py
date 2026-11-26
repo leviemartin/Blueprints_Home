@@ -167,7 +167,7 @@ def test_every_run_call_passes_dry_run():
 
 
 INSTANCE = ROOT / "deploy" / f"circadian_livingroom_{INSTANCE_ID}.json"
-V3_ALIAS = "Circadian Living Room Lights v3.0.0"
+V3_ALIAS = "Circadian Living Room Lights v3.1.0"
 NOTIFY_TARGET = "notify.mobile_app_martin_fold"
 DROPPED_KEYS = ["presence_entity", *STALE_KEYS]
 KEPT_KEYS = [
@@ -176,7 +176,8 @@ KEPT_KEYS = [
     "lux_off_threshold", "lux_on_threshold", "toddler_kelvin", "night_kelvin",
     "hue_bulbs", "hue_ceiling", "max_kelvin", "night_bri",
 ]
-MIGRATED_KEYS = ["presence_fp2", "presence_fp300", *KEPT_KEYS, "notify_targets", "time_evening"]  # time_evening: RFC 2026-11-26 D7
+MIGRATED_KEYS = ["presence_fp2", "presence_fp300", *KEPT_KEYS, "notify_targets", "time_evening",
+                 "lux_off_duration", "lux_on_duration"]  # RFC 2026-11-26: time_evening D7; lux durations D4
 LATE_NIGHT_KEYS = ["late_night_start", "late_night_end", "late_night_timeout"]
 V2_2_0_KEYS = [
     "hue_bulbs", "hue_ceiling", "ceiling_brightness_scale", "presence_entity",
@@ -207,8 +208,8 @@ def test_migrated_instance_dry_run_passes():
     r = dry(str(BP), HA_PATH, str(INSTANCE))
     assert r.returncode == 0, r.stdout + r.stderr
     assert r.stdout.splitlines() == [
-        "blueprint: Circadian Living Room Lights v3.0.0",
-        f"instance {INSTANCE}: ok (id {INSTANCE_ID}, 22 inputs)",
+        "blueprint: Circadian Living Room Lights v3.1.0",
+        f"instance {INSTANCE}: ok (id {INSTANCE_ID}, 24 inputs)",
         "dry-run: validation passed, nothing deployed",
     ]
     assert r.stderr == ""
@@ -253,9 +254,12 @@ def test_notify_targets_is_the_audited_fold_service():
 def test_non_presence_inputs_keep_audit_literals():
     inp = json.loads(INSTANCE.read_text())["use_blueprint"]["input"]
     for key in KEPT_KEYS:
+        if key in ("lux_on_threshold", "lux_off_threshold"):
+            continue  # recalibrated by RFC 2026-11-26 D4, pinned below
         assert inp[key] == LIVE_INPUT[key], key
         assert type(inp[key]) is type(LIVE_INPUT[key]), key
-    assert (inp["lux_on_threshold"], inp["lux_off_threshold"]) == (394, 611)
+    assert (inp["lux_on_threshold"], inp["lux_off_threshold"]) == (175, 250)  # RFC 2026-11-26 D4
+    assert (inp["lux_on_duration"], inp["lux_off_duration"]) == (5, 10)
 
 
 def test_late_night_inputs_left_unset():
@@ -266,7 +270,7 @@ def test_late_night_inputs_left_unset():
 def test_unmigrated_snapshot_fails_v3_dry_run():
     r = dry(str(BP), HA_PATH, str(SNAPSHOT))
     assert r.returncode == 1, r.stdout + r.stderr
-    assert "blueprint: Circadian Living Room Lights v3.0.0" in r.stdout
+    assert "blueprint: Circadian Living Room Lights v3.1.0" in r.stdout
     assert problems(r) == [
         UNKNOWN + "govee_brightness_scale, govee_lights, hue_lights, light_entity, presence_entity",
         MISSING + "presence_fp2, presence_fp300",
@@ -367,7 +371,7 @@ def test_migrated_instance_fails_against_v2_2_0_blueprint(tmp_path):
     assert r.returncode == 1
     assert "validation passed" not in r.stdout
     assert problems(r) == [
-        UNKNOWN + "notify_targets, presence_fp2, presence_fp300",
+        UNKNOWN + "lux_on_duration, notify_targets, presence_fp2, presence_fp300",
         MISSING + "presence_entity",
     ]
 

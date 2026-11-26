@@ -5,12 +5,13 @@
 **Description:** A comprehensive lighting automation for the Living Room that adapts to human presence, circadian rhythms (sun position), and specific family routines. Optimized for a Philips Hue ecosystem, including Hue Infuse ceiling lights and ambient bulbs.
 
 ## 2. Core Features
-*   **Version:** v3.0.0 (dual presence: FP2 + FP300).
+*   **Version:** v3.1.0 (dual presence: FP2 + FP300; re-check on every trigger, RFC `docs/design/2026-11-26-living-room-lighting.md`).
 *   **Presence-Based Switching (dual presence):**
     *   Turn ON when either sensor reports presence: Aqara FP2 (`presence_fp2`) or Aqara FP300 on the couch (`presence_fp300`).
-    *   Turn OFF only when both sensors are clear (off, unavailable or unknown) for `presence_timeout` (default 5 min).
+    *   Turn OFF only when both sensors are clear (off, unavailable or unknown) for `presence_timeout` (default 5 min). A sensor missing from Home Assistant (renamed or removed) counts as clear, so the other sensor decides alone.
+    *   **Re-check:** every trigger recomputes one decision (off, on, update or nothing) from the current state. A 5-minute check, HA start and automation reload also re-check, so a missed timer or lux crossing is caught; these can turn lights off or refresh them, never turn them on.
     *   Late-night window: between 23:00 (`late_night_start`) and 06:30 (`late_night_end`), crossing midnight, the off delay is 1 min (`late_night_timeout`, 1-60). The end is exclusive; start equal to end means no window.
-    *   A both-clear countdown whose 1-min mark passed before 23:00 finishes on `presence_timeout` (up to 4 min later than the late-night delay); a clear that began just before 23:00 can still turn off at its 1-min mark just after 23:00. A countdown whose 1-min mark falls at or after 06:30 also finishes on `presence_timeout`; there is no extra trigger at the window edges.
+    *   A both-clear countdown whose 1-min mark passed before 23:00 turns off at the next 5-minute check (23:00 itself is one); a clear that began just before 23:00 can still turn off at its 1-min mark just after 23:00. A countdown whose 1-min mark falls at or after 06:30 finishes on `presence_timeout`; there is no extra trigger at the window edges beyond the 5-minute check.
     *   The FP300 counts like the FP2 at all hours, so the dog on its bench keeps the FP300, and so the lights, on, also at night. Accepted, still being tested; no cap or zone logic.
 *   **Native Circadian Algorithm:**
     *   Calculates Color Temperature (Kelvin) based on Sun Elevation (using `sun.sun`).
@@ -25,7 +26,7 @@
     *   **Dinner Mode (18:00-19:00):** Boost to high brightness (80-100%) for eating/tasks.
     *   **Evening/Relax:** Dim to ~40-50%.
     *   **Night (22:00-06:00):** Ultra-dim (~10-20%), independent of the late-night window.
-*   **Lux Thresholds (Daylight Harvesting):** FP2 illuminance only; FP300 lux is not read. Lights turn on only below `lux_on_threshold` (default 150 lx) and turn off above `lux_off_threshold` (default 400 lx) for `lux_off_duration` (default 5 min). These are blueprint defaults; each instance may override them (per instance).
+*   **Lux Thresholds (Daylight Harvesting):** FP2 illuminance only; FP300 lux is not read. Lights turn on only below `lux_on_threshold` (default 150 lx) and turn off above `lux_off_threshold` (default 400 lx) for `lux_off_duration` (default 5 min). Lights that daylight turned off come back on once lux stays below `lux_on_threshold` for `lux_on_duration` (default 5 min) while someone is present. Between the two thresholds the lights keep their current state. No lux reading means no lux decision (presence alone turns the lights on). These are blueprint defaults; each instance may override them (per instance); the living room instance uses 175 / 250 lx and 5 / 10 min.
 
 ## 3. Hardware & Inputs
 *   **Lights:** 
@@ -33,14 +34,14 @@
     *   **Philips Hue Infuse:** Ceiling lights (Main and Backlight entities supported).
 *   **Presence:** two occupancy binary_sensors: Aqara FP2 (`presence_fp2`) and Aqara FP300 on the couch (`presence_fp300`, via Zigbee2MQTT).
 *   **Illuminance:** Aqara FP2 only (sensor.lux); FP300 lux is not read.
-*   **Notifications:** optional `notify.*` services (`notify_targets`) for the FP300 offline push.
+*   **Notifications:** optional `notify.*` services (`notify_targets`) for the presence-sensor offline push.
 *   **Sun:** Home Assistant `sun.sun` entity.
 *   **Manual Override:** An optional `input_boolean` or switch entity. If ON, the automation halts.
 
 ## 4. Detailed Logic & Settings
 
 ### 4.1. Inputs
-All blueprint inputs of v3.0.0, in blueprint order. `required` means the input has no default.
+All blueprint inputs of v3.1.0, in blueprint order. `required` means the input has no default.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -58,6 +59,7 @@ All blueprint inputs of v3.0.0, in blueprint order. `required` means the input h
 | `lux_on_threshold` | `150` | Lights turn on only below this lux |
 | `lux_off_threshold` | `400` | Lights turn off above this lux... |
 | `lux_off_duration` | `5` | ...held for this many minutes |
+| `lux_on_duration` | `5` | Minutes lux must stay below `lux_on_threshold` before daylight-off lights come back on |
 | `time_dinner` | `18:00:00` | Dinner start |
 | `dinner_kelvin` | `3000` | Dinner colour (K) |
 | `dinner_bri` | `100` | Dinner brightness (%) |
@@ -74,7 +76,7 @@ All blueprint inputs of v3.0.0, in blueprint order. `required` means the input h
 | `night_effect` | `none` | Night Hue effect |
 | `max_kelvin` | `4500` | Day-mode upper Kelvin |
 | `min_kelvin` | `2200` | Day-mode lower Kelvin |
-| `notify_targets` | `[]` | Full `notify.<name>` services for the FP300 offline push; others ignored; empty disables |
+| `notify_targets` | `[]` | Full `notify.<name>` services for the presence-sensor offline push; others ignored; empty disables |
 
 ### 4.2. Per-Profile Effects
 *   **Evening/Night:** Users can select native Hue effects (Candlelight, Fireplace) which are applied to the `hue_ceiling` entities automatically when the profile starts.
@@ -105,16 +107,16 @@ All blueprint inputs of v3.0.0, in blueprint order. `required` means the input h
 *   **Override:** The specific time slots above take precedence over the sun calculation.
 
 ## 5. Transition Handling & Flicker Prevention
-*   **Turn ON Condition:** either sensor on (FP2 or FP300) AND FP2 lux below `lux_on_threshold` (default 150 lx).
-*   **Presence Timeout:** lights go off when both sensors are clear for `presence_timeout` (default 5 min); each sensor's own timer fires, then the other sensor must have been clear at least as long.
+*   **Turn ON Condition:** lights off, either sensor on (FP2 or FP300) AND FP2 lux below `lux_on_threshold` (default 150 lx) or no lux reading, on a presence-on, lux-low or override-resume trigger.
+*   **Presence Timeout:** lights go off when both sensors are clear for `presence_timeout` (default 5 min); any trigger checks that every sensor has been clear at least that long. A present sensor with no `last_changed` keeps the room occupied.
 *   **Late-Night Timeout:** inside 23:00-06:30 the delay is `late_night_timeout` (default 1 min); boundary as in section 2.
-*   **FP300 offline:** unavailable or unknown counts as clear. After 30 min in either state, one push goes to each `notify_targets` entry, after the light calls, also while the manual override is on. A target that does not exist aborts the run at the push step; check it exists after editing.
+*   **Sensor offline:** unavailable or unknown counts as clear. After 30 min in either state (FP2 or FP300), one push goes to each `notify_targets` entry, after the light calls, also while the manual override is on. A sensor missing from Home Assistant is pushed on the hourly 5-minute check (minute 0). A target that does not exist aborts the run at the push step; check it exists after editing.
 *   **Auto-OFF (Daylight Harvesting):**
-    *   If FP2 lux > `lux_off_threshold` (default 400 lx) for `lux_off_duration` (default 5 min), turn OFF even if presence is detected.
+    *   If FP2 lux > `lux_off_threshold` (default 400 lx) for `lux_off_duration` (default 5 min), turn OFF even if presence is detected. The 5-minute check also turns off when the current reading is above the threshold and has not changed for `lux_off_duration`.
 *   **Manual Override:**
     *   Input: `override_entity` (Switch/Input Boolean).
     *   Behavior: If ON, automation pauses. Off timers that expire while it is on are not replayed.
-    *   Resume: When turned OFF, automation resumes immediately.
+    *   Resume: When turned OFF, automation re-checks immediately: an empty room goes off, an occupied dark room comes on.
 *   **Seamless Transitions:**
     *   **Turn On/Off:** 2-5 seconds.
     *   **Circadian Updates:** 30 seconds.
