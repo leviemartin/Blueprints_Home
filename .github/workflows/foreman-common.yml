@@ -1,0 +1,18 @@
+# Every repo: secret scan and dependency audit on each push and PR. No model, no tokens.
+name: foreman-common
+on: [push, pull_request]
+permissions: {contents: read}
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: gitleaks/gitleaks-action@v2
+        env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+  osv-scanner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google/osv-scanner-action/osv-scanner-action@v1
+        with: {scan-args: "-r ."}

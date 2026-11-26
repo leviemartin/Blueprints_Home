@@ -1,0 +1,10 @@
+security_profile: OWASP ASVS basics
+test_command: ./blueprints-tests/bin/python -m pytest tests -q
+file_test_commands:
+  .py: ./blueprints-tests/bin/python -m pytest {file} -q
+ro_deps:
+- /home/martin/.venvs/blueprints-tests
+qa_control: 'none for servers. This project is a Home Assistant blueprint with no running app, so walk each story by running the project''s tests through the sandbox script. Inside the sandbox the test
+  venv is mounted read-only at the worktree, not at its host path. After the sandbox script and its options, put exactly: /home/martin/.foreman/work/Blueprints_Home-2026-11-10-bedroom-ac-pre-warm-v1-3-0-extend-bedroom-precoo/blueprints-tests/bin/python
+  -m pytest /home/martin/.foreman/work/Blueprints_Home-2026-11-10-bedroom-ac-pre-warm-v1-3-0-extend-bedroom-precoo/tests -q -p no:cacheprovider (about 50 seconds, 987 tests; add -k <story keyword> to narrow
+  it). The tests name the story id (US-nn) they cover.'

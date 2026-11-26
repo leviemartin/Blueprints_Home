@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/martin/projects/foreman/bin/foreman guard"
+          }
+        ],
+        "matcher": "Bash|mcp__.*(railway|supabase).*"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/martin/projects/foreman/bin/foreman hook session-start"
+          }
+        ]
+      }
+    ]
+  }
+}
