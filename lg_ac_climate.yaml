@@ -1,7 +1,7 @@
 blueprint:
-  name: "LG AC Climate Control v1.3.0"
+  name: "LG AC Climate Control v1.4.0"
   description: >
-    **Version: 1.3.0**
+    **Version: 1.4.0**
 
     Automates LG air conditioners per-floor using external temperature sensors
     for reliable ambient readings.
@@ -32,6 +32,14 @@ blueprint:
       band widens by a configurable delta — a setback, never off. Someone
       arriving, or an indicator turning on, restores the band at once.
       Unknown/unavailable presence counts as home.
+    - **Heating Setpoint Offset (v1.4.0):** The unit's own sensor sits in its
+      warm outlet air and reads high, so it throttles before the room is
+      warm. While actively heating below the comfort range, the commanded
+      setpoint is raised by this offset; the room sensors still decide when
+      heating stops. Maintenance mode is unchanged. 0 = v1.3.0 behavior. An
+      optional fan floor keeps heating at medium or above, so warm air reaches
+      the room instead of pooling at the unit; low stays for at-temperature
+      maintenance.
     - **Manual-Override Hold:** Optional input_text helper detects remote/app
       changes and pauses comfort control for a configurable window (vacation,
       schedule end, and door-open still force off). Reloading any automation
@@ -280,6 +288,24 @@ blueprint:
           step: 5
           unit_of_measurement: min
 
+    heat_setpoint_offset:
+      name: Heating Setpoint Offset (°C)
+      description: "Added to the heating setpoint while the room sensors are below the comfort range, to cancel the unit's own sensor reading high. The room sensors still decide when heating stops. 0 disables."
+      default: 0
+      selector:
+        number:
+          min: 0.0
+          max: 5.0
+          step: 0.5
+          unit_of_measurement: "°C"
+
+    heat_fan_floor_medium:
+      name: Heating Fan Floor = Medium
+      description: "While actively heating below the comfort range, never run the fan below medium (escalation to high still applies). Low stays for at-temperature maintenance. Off = v1.3.0 behavior."
+      default: false
+      selector:
+        boolean: {}
+
     # --- MANUAL OVERRIDE HOLD (v1.1.0, optional) ---
     manual_hold_helper:
       name: Manual Override State Helper (Optional)
@@ -436,6 +462,8 @@ variables:
 
   # --- Hysteresis / Robustness (v1.1.0) ---
   margin: !input comfort_margin
+  heat_offset: !input heat_setpoint_offset
+  heat_fan_floor: !input heat_fan_floor_medium
   sensor_staleness: !input sensor_staleness_minutes
   hold_helper: !input manual_hold_helper
   hold_minutes: !input manual_hold_minutes
@@ -648,6 +676,11 @@ action:
           {{ 0 }}
         {% endif %}
       deadband_active: "{{ (not weather_ok) or (outdoor_distance | float < deadband_thresh | float) }}"
+      # v1.4.0: offset applied on top of the HEAT branch setpoint only (after deadband_active: order is load-bearing).
+      setpoint_heat_boost_q: >-
+        {% set base = setpoint_heat_active_q if (deadband_active and heat_deep_ok) else setpoint_heat_q %}
+        {% set q = ((((base | float + heat_offset | float) / ac_temp_step) + 0.001) | round(0, 'floor')) * ac_temp_step %}
+        {{ ([([q, ac_max_temp] | min), ac_min_temp] | max) | round(1) }}
 
       # --- Fan Speed (Proportional) ---
       available_fan_modes: "{{ state_attr(climate_ac, 'fan_modes') | default(['low', 'mid', 'high'], true) }}"
@@ -712,6 +745,9 @@ action:
         {% else %}
           {{ base_fan }}
         {% endif %}
+      # v1.4.0: HEAT branch fan, floored at medium when enabled
+      target_fan_heat: >
+        {{ fan_mode_mid if (heat_fan_floor and target_fan == fan_mode_low) else target_fan }}
 
       # --- Manual Hold (v1.1.0) ---
       current_setpoint: "{{ state_attr(climate_ac, 'temperature') }}"
@@ -1147,8 +1183,8 @@ action:
         sequence:
           - variables:
               desired_mode: "heat"
-              desired_setpoint: "{{ setpoint_heat_active_q if (deadband_active and heat_deep_ok) else setpoint_heat_q }}"
-              desired_fan: "{{ target_fan }}"
+              desired_setpoint: "{{ setpoint_heat_boost_q }}"
+              desired_fan: "{{ target_fan_heat }}"
           - choose:
               - conditions:
                   - condition: template

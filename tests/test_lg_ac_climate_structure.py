@@ -1,4 +1,4 @@
-"""Structural + logic pins for lg_ac_climate.yaml (LG AC Climate Control v1.3.0).
+"""Structural + logic pins for lg_ac_climate.yaml (LG AC Climate Control v1.4.0).
 
 Run: cd ~/AI/projects/Blueprints_Home && \
      ~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests -q
@@ -109,8 +109,8 @@ def test_fan_discovery_untouched(bp):
 # ---- v1.1.0 additions ----
 
 def test_version_bumped(bp):
-    assert bp["blueprint"]["name"] == "LG AC Climate Control v1.3.0"
-    assert "**Version: 1.3.0**" in bp["blueprint"]["description"]
+    assert bp["blueprint"]["name"] == "LG AC Climate Control v1.4.0"
+    assert "**Version: 1.4.0**" in bp["blueprint"]["description"]
 
 
 def test_new_input_schemas(inputs):
@@ -310,11 +310,11 @@ def test_cool_heat_desired_values(bp):
     assert cv["desired_mode"] == "cool"
     assert " ".join(cv["desired_setpoint"].split()) == \
         "{{ setpoint_cool_active_q if (deadband_active and cool_deep_ok) else setpoint_cool_q }}"
-    assert " ".join(cv["desired_fan"].split()) == "{{ target_fan }}"
+    assert " ".join(cv["desired_fan"].split()) == "{{ target_fan }}"   # cooling fan unchanged
     hv = br["heat"]["sequence"][0]["variables"]
     assert hv["desired_mode"] == "heat"
-    assert " ".join(hv["desired_setpoint"].split()) == \
-        "{{ setpoint_heat_active_q if (deadband_active and heat_deep_ok) else setpoint_heat_q }}"
+    assert " ".join(hv["desired_fan"].split()) == "{{ target_fan_heat }}"
+    assert " ".join(hv["desired_setpoint"].split()) == "{{ setpoint_heat_boost_q }}"
 
 
 def test_off_branches_wrap_turn_off_in_guard(bp):
@@ -966,8 +966,9 @@ def test_rendered_presence_chain_reaches_the_commanded_setpoint(bp):
         c = {**presence_ctx, **dev, "current_temp": current_temp, "current_ac_mode": current_ac_mode,
              "deadband_active": deadband_active}
         for name in ("setpoint_cool_q", "setpoint_heat_q", "deep_pull_depth", "setpoint_cool_active_q",
-                     "setpoint_heat_active_q", "cool_deep_ok", "heat_deep_ok", "target_mode"):
-            c[name] = _reparse(render_var(bp, name, c, now=now))
+                     "setpoint_heat_active_q", "cool_deep_ok", "heat_deep_ok", "target_mode",
+                     "setpoint_heat_boost_q"):
+            c[name] = _reparse(render_var(bp, name, {"heat_offset": 0, **c}, now=now))
         env = Environment(); env.filters["float"] = _float
         for branch in ladder(bp):
             cond = branch_cond(branch)
@@ -1013,7 +1014,7 @@ def test_lg_instance_passes_the_deploy_dry_run_and_wires_presence():
     assert "dry-run: validation passed" in r.stdout
     inst = json.loads(LG_INSTANCE.read_text())
     i = inst["use_blueprint"]["input"]
-    assert inst["alias"].endswith("v1.3.0")
+    assert inst["alias"].endswith("v1.4.0")
     assert i["presence_entities"] == ["person.martin_levie", "person.savannah_levie"]
     assert i["home_indicators"] == ["input_boolean.climate_guest_mode",
                                     "input_boolean.security_ev_car_home",
@@ -1021,7 +1022,7 @@ def test_lg_instance_passes_the_deploy_dry_run_and_wires_presence():
     assert i["away_setback_delta"] == 2 and i["away_delay_minutes"] == 10
     # security_auto_away is the alarm's auto-arm feature toggle, not an away state (spec §2)
     assert "security_auto_away" not in json.dumps(inst)
-    assert (i["temp_range_low"], i["temp_range_high"]) == (21, 23.5)   # no comfort-band change
+    assert (i["temp_range_low"], i["temp_range_high"]) == (21.5, 23.5)   # mirrors the live UI band
     assert inst["trace"]["stored_traces"] >= 20
     # target_fan tests stage 2 before stage 1 (elif chain): s2 <= s1 makes the mid stage unreachable
     s1, s2 = i["escalation_stage_1_minutes"], i["escalation_stage_2_minutes"]
@@ -1058,3 +1059,66 @@ def test_presence_missing_notice_block_is_state_driven_and_keeps_step_indexes(bp
     assert step_kind(bp["action"][5]) == "choose" and bp["action"][5]["choose"][0]["conditions"][0]["id"] == "init"
     keys = list(bp["action"][0]["variables"].keys())
     assert keys.index("home_indicator_on") < keys.index("presence_missing") < keys.index("away_active")
+
+
+# ---- v1.4.0: heating setpoint offset (unit's own sensor reads ~3 °C high) ----
+
+def test_heat_offset_input_defaults_to_off(bp):
+    inp = bp["blueprint"]["input"]["heat_setpoint_offset"]
+    assert inp["default"] == 0
+    assert inp["selector"]["number"]["max"] == 5.0
+    assert bp["variables"]["heat_offset"] == _Input("heat_setpoint_offset")
+
+
+def test_heat_boost_declared_after_its_inputs(bp):
+    keys = list(bp["action"][0]["variables"].keys())
+    b = keys.index("setpoint_heat_boost_q")
+    for dep in ("setpoint_heat_q", "setpoint_heat_active_q", "heat_deep_ok", "deadband_active", "ac_temp_step"):
+        assert keys.index(dep) < b, dep
+
+
+def _boost(bp, **kw):
+    ctx = dict(ac_min_temp=16.0, ac_max_temp=30.0, ac_temp_step=0.5, setpoint_heat_q=21.5,
+               setpoint_heat_active_q=22.5, heat_deep_ok=True, deadband_active=False, heat_offset=0)
+    ctx.update(kw)
+    return render_var(bp, "setpoint_heat_boost_q", ctx)
+
+
+def test_heat_boost_rendered(bp):
+    assert _boost(bp) == "21.5"                                   # offset 0 = v1.3.0 cold-weather value
+    assert _boost(bp, deadband_active=True) == "22.5"             # offset 0 = v1.3.0 mild-weather deep pull
+    assert _boost(bp, heat_offset=3) == "24.5"
+    assert _boost(bp, heat_offset=3, deadband_active=True) == "25.5"
+    assert _boost(bp, heat_offset=2.5, ac_temp_step=1.0, setpoint_heat_q=22.0) == "24.0"  # floors to grid
+    assert _boost(bp, heat_offset=5, setpoint_heat_q=28.0) == "30.0"                   # clamped to max
+
+
+def test_maintenance_mode_keeps_unboosted_setpoint(bp):
+    text = BP_PATH.read_text()
+    assert "desired_setpoint: \"{{ setpoint_cool_q if desired_mode == 'cool' else setpoint_heat_q }}\"" in text
+    assert text.count("setpoint_heat_boost_q") == 2   # defined once, used only by the HEAT branch
+
+
+def test_lg_instance_sets_offset_and_0500_start():
+    i = json.loads(LG_INSTANCE.read_text())["use_blueprint"]["input"]
+    assert i["heat_setpoint_offset"] == 4
+    for d in ("mon", "tue", "wed", "thu", "fri", "sat", "sun"):
+        assert i[f"schedule_start_{d}"] == "05:00:00"
+        assert i[f"schedule_end_{d}"] == "22:30:00"
+
+
+def test_heat_fan_floor(bp):
+    assert bp["blueprint"]["input"]["heat_fan_floor_medium"]["default"] is False
+    keys = list(bp["action"][0]["variables"].keys())
+    assert keys.index("target_fan") < keys.index("target_fan_heat")
+    f = lambda floor, tf: render_var(bp, "target_fan_heat", dict(heat_fan_floor=floor, target_fan=tf,
+                                                                 fan_mode_low="low", fan_mode_mid="medium"))
+    assert f(True, "low") == "medium"
+    assert f(True, "medium") == "medium"
+    assert f(True, "high") == "high"          # escalation still reaches high
+    assert f(False, "low") == "low"           # off = v1.3.0
+
+
+def test_lg_instance_enables_heat_fan_floor():
+    i = json.loads(LG_INSTANCE.read_text())["use_blueprint"]["input"]
+    assert i["heat_fan_floor_medium"] is True
