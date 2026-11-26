@@ -74,8 +74,11 @@ check_entities() {
 import json, re, sys
 known = {s["entity_id"] for s in json.load(open(sys.argv[1]))}
 ent = re.compile(r"[a-z_]+\.[a-z0-9_]+")
-def values(v):
-    return [x for item in (v if isinstance(v, list) else [v]) for x in [item] if isinstance(x, str)]
+def values(v):  # strings, lists, and target-selector mappings like {"entity_id": [...]}
+    if isinstance(v, str): return [v]
+    if isinstance(v, list): return [x for item in v for x in values(item)]
+    if isinstance(v, dict): return [x for item in v.values() for x in values(item)]
+    return []
 missing = sorted({v for f in sys.argv[2:]
                   for val in json.load(open(f)).get("use_blueprint", {}).get("input", {}).values()
                   for v in values(val)

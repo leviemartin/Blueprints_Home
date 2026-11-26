@@ -31,9 +31,9 @@
    "depends_on": [
     "X0"
    ],
-   "status": "committed",
+   "status": "merged",
    "branch": "lighting-2026-11/S0-setup",
-   "merge_commit": null,
+   "merge_commit": "7cb17e9",
    "build": {
     "model": "claude-opus-5-5",
     "fresh_input": null,
@@ -55,11 +55,18 @@
    "depends_on": [
     "S0"
    ],
-   "status": "pending",
+   "status": "committed",
    "branch": "lighting-2026-11/J1-drift-test",
    "merge_commit": null,
-   "build": null,
-   "notes": ""
+   "build": {
+    "model": "claude-opus-5-5",
+    "fresh_input": null,
+    "cache_writes": null,
+    "cache_reads": null,
+    "output": null,
+    "codex_review_tokens": 96495
+   },
+   "notes": "Commit 1233418 plus a Codex fix commit. Codex: no P0/P1. P2 fixed: the entity check now reads target-selector mappings. P3 kept: the live-deploy test only reads the source text. Full suite 1010 passed. 2 failures in test_bedroom_precool_structure (precool alias) were already there on main before this RFC and are out of scope. A dry run against live /api/states passed. Instances not deployed yet: merge and HA deploy each wait for Martin's OK."
   },
   {
    "id": "J2",

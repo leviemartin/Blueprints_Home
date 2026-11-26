@@ -133,6 +133,15 @@ def test_entity_check_reports_missing_list_member(tmp_path):
     assert "entities missing in HA: switch.gone" in r.stdout
 
 
+def test_entity_check_reads_target_selector_mappings(tmp_path):
+    # Codex J1 P2: target selectors store {"entity_id": [...]}
+    states = states_file(tmp_path, [*REQUIRED.values(), "switch.b1"])
+    p = instance(tmp_path, boost_toggle={"entity_id": ["switch.b1", "switch.gone"]})
+    r = run_with_states(states, "--dry-run", str(BP), HA_PATH, str(p))
+    assert r.returncode == 1
+    assert "entities missing in HA: switch.gone" in r.stdout
+
+
 def test_dry_run_without_states_file_stays_offline(tmp_path):
     r = run("--dry-run", str(BP), HA_PATH, str(instance(tmp_path)))
     assert r.returncode == 0
