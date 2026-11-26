@@ -22,9 +22,9 @@ INSTANCES = [
     (iid, DEPLOY / f"adjacent_room_lights_{iid}.live-v1.0.0.json",
      DEPLOY / f"adjacent_room_lights_{iid}.json", sensor, count)
     for iid, sensor, count in [
-        (KITCHEN_ID, "binary_sensor.kitchen_motion_sensor", 16),
-        (FRONT_HALL_ID, "binary_sensor.frontdoor_hall_motion", 17),
-        (TOILET_ID, "binary_sensor.toilet_motion_sensor", 16),
+        (KITCHEN_ID, "binary_sensor.kitchen_motion_sensor", 19),
+        (FRONT_HALL_ID, "binary_sensor.frontdoor_hall_motion", 20),
+        (TOILET_ID, "binary_sensor.toilet_motion_sensor", 19),
     ]
 ]
 KITCHEN, FRONT_HALL, TOILET = [row[2] for row in INSTANCES]
@@ -32,6 +32,13 @@ ATTIC = DEPLOY / f"adjacent_room_lights_{ATTIC_ID}.json"
 R81 = DEPLOY / f"8_1_attic_main_motion_{R81_ID}.retired.json"
 R82 = DEPLOY / f"8_2_attic_stairs_motion_{R82_ID}.retired.json"
 FILES = [p for row in INSTANCES for p in row[1:3]] + [ATTIC, R81, R82]
+# RFC 2026-11-26 D7: the shared rhythm (pinned in test_lighting_rhythm_drift.py) changed these
+# keys after the v1 -> v2 migration; everything else must still match the live v1 snapshot.
+RHYTHM_KEYS = {
+    "time_dinner", "dinner_kelvin", "dinner_bri", "time_toddler", "toddler_kelvin", "toddler_bri",
+    "time_evening", "evening_kelvin", "evening_bri", "time_night", "night_kelvin", "night_bri",
+    "min_kelvin", "max_kelvin",
+}
 CREDENTIAL_PATTERNS = [
     r"eyJ[A-Za-z0-9_-]{8,}", r"(?i)bearer\s", r"(?i)https?://", r"\b\d{1,3}(\.\d{1,3}){3}\b",
     r"HASS_(TOKEN|SERVER)\s*=", r"(?i)\b(password|api[_-]?key)\b",
@@ -52,7 +59,7 @@ def test_all_instances_dry_run_pass():
     assert "blueprint: Adjacent Room Circadian Lights v2.0.0" in result.stdout
     for iid, _, _, _, count in INSTANCES:
         assert f"ok (id {iid}, {count} inputs)" in result.stdout
-    assert f"ok (id {ATTIC_ID}, 5 inputs)" in result.stdout
+    assert f"ok (id {ATTIC_ID}, 19 inputs)" in result.stdout
     assert "dry-run: validation passed" in result.stdout
 
 
@@ -64,12 +71,13 @@ def test_migrated_differs_from_live_only_in_sensor_key(iid, live, migrated, sens
     assert old == new
     assert old["id"] == iid
     assert old["use_blueprint"] == {"path": HA_PATH}
-    assert len(old_inputs) == len(new_inputs) == count
+    assert len(new_inputs) == count
     assert old_inputs.pop("motion_sensor") == sensor
     assert new_inputs.pop("motion_sensors") == [sensor]
     assert "motion_sensors" not in old_inputs
     assert "motion_sensor" not in new_inputs
-    assert old_inputs == new_inputs
+    strip = lambda d: {k: v for k, v in d.items() if k not in RHYTHM_KEYS}
+    assert strip(old_inputs) == strip(new_inputs)
 
 
 @pytest.mark.parametrize("iid,live,migrated,sensor,count", INSTANCES)
@@ -109,6 +117,11 @@ def test_attic_instance_inputs():
                 "time_to_stage1": 2,
                 "time_to_stage2": 4,
                 "time_to_off": 5,
+                "time_dinner": "17:45:00", "dinner_kelvin": 2300, "dinner_bri": 90,
+                "time_toddler": "18:45:00", "toddler_kelvin": 2100, "toddler_bri": 85,
+                "time_evening": "20:00:00", "evening_kelvin": 2000, "evening_bri": 70,
+                "time_night": "23:30:00", "night_kelvin": 2000, "night_bri": 29,
+                "min_kelvin": 2000, "max_kelvin": 4000,
             },
         },
     }

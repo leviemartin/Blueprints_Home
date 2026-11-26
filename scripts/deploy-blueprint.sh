@@ -9,6 +9,8 @@
 #                        to /api/config/automation/config/<id>; the endpoint reloads that automation.
 #   --dry-run            validate only (YAML parses, every instance input key exists in the
 #                        blueprint schema, every required input is present); no network.
+#                        With DEPLOY_STATES_FILE=<states.json> it also checks entity ids offline.
+#   A live deploy refuses to write if any entity id named by an instance is missing in HA.
 #
 # Credentials come from ~/.config/hass-cli/env (HASS_SERVER, HASS_TOKEN) and are never printed.
 # Previous instance configs are saved to deploy/<id>.prev.json before they are overwritten.
@@ -64,8 +66,35 @@ print(f"instance {sys.argv[1]}: ok (id {inst['id']}, {len(given)} inputs)")
 EOF
 }
 
+# Every entity id an instance names must exist in HA: a missing entity silently breaks an
+# automation (RFC 2026-11-26 D2). notify.* values are services, not entities.
+check_entities() {
+  local states=$1; shift
+  "$PY" - "$states" "$@" <<'EOF' || exit 1
+import json, re, sys
+known = {s["entity_id"] for s in json.load(open(sys.argv[1]))}
+ent = re.compile(r"[a-z_]+\.[a-z0-9_]+")
+def values(v):  # strings, lists, and target-selector mappings like {"entity_id": [...]}
+    if isinstance(v, str): return [v]
+    if isinstance(v, list): return [x for item in v for x in values(item)]
+    if isinstance(v, dict): return [x for item in v.values() for x in values(item)]
+    return []
+missing = sorted({v for f in sys.argv[2:]
+                  for val in json.load(open(f)).get("use_blueprint", {}).get("input", {}).values()
+                  for v in values(val)
+                  if ent.fullmatch(v) and not v.startswith("notify.") and v not in known})
+if missing:
+    print("entities missing in HA: " + ", ".join(missing)); sys.exit(1)
+print("entities: ok")
+EOF
+}
+
 for f in "$@"; do validate_instance "$f"; done
-if [ "$DRY_RUN" = 1 ]; then printf 'dry-run: validation passed, nothing deployed\n'; exit 0; fi
+if [ "$DRY_RUN" = 1 ]; then
+  # Offline entity check only when a states snapshot is supplied (tests use this seam).
+  if [ -n "${DEPLOY_STATES_FILE:-}" ] && [ $# -gt 0 ]; then check_entities "$DEPLOY_STATES_FILE" "$@"; fi
+  printf 'dry-run: validation passed, nothing deployed\n'; exit 0
+fi
 
 # --- 2. credentials ----------------------------------------------------------------------
 [ -f "$HOME/.config/hass-cli/env" ] && . "$HOME/.config/hass-cli/env"
@@ -78,6 +107,13 @@ chmod 600 "$HDR"
 printf 'Authorization: Bearer %s\n' "$HASS_TOKEN" > "$HDR"
 trap 'rm -f "$HDR"' EXIT
 api() { curl -sS --fail-with-body -H @"$HDR" -H 'Content-Type: application/json' "$@"; }
+
+if [ $# -gt 0 ]; then
+  STATES=$(mktemp) || die "mktemp failed"
+  trap 'rm -f "$HDR" "$STATES"' EXIT
+  api "$HASS_SERVER/api/states" > "$STATES" || die "could not read /api/states"
+  check_entities "$STATES" "$@"
+fi
 
 # --- 3. back up current instance configs -----------------------------------------------
 mkdir -p deploy
