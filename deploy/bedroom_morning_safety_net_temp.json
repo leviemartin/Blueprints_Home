@@ -1,30 +1,76 @@
 {
   "id": "bedroom_morning_safety_net_temp",
   "alias": "Bedroom morning safety net (temporary)",
-  "description": "Temporary, added 2026-11-15. At 06:50 records whether the LG power-on timer started climate.bedrooms; if the unit is still off in the heating season it starts it in heat at 20 C (one beep). Remove once the timer arming in bedroom_precool.yaml is fixed.",
+  "description": "Temporary, added 2026-11-15. At 06:50 records whether the LG power-on timer started climate.bedrooms; if the unit is still off in the heating season it starts it in heat at 24 C (one beep). Remove once the timer arming in bedroom_precool.yaml is fixed.",
   "mode": "single",
-  "triggers": [{"trigger": "time", "at": "06:50:00"}],
-  "conditions": [{"condition": "state", "entity_id": "input_boolean.heating_season", "state": "on"}],
+  "triggers": [
+    {
+      "trigger": "time",
+      "at": "06:50:00"
+    }
+  ],
+  "conditions": [
+    {
+      "condition": "state",
+      "entity_id": "input_boolean.heating_season",
+      "state": "on"
+    }
+  ],
   "actions": [
-    {"variables": {
-      "ac_state": "{{ states('climate.bedrooms') }}",
-      "ac_since": "{{ as_timestamp(states.climate.bedrooms.last_changed) | timestamp_custom('%H:%M:%S') }}",
-      "timer_state": "{{ states('number.bedrooms_schedule_turn_on') }}",
-      "master": "{{ states('sensor.master_bedroom_masterbedroom_sensor_temperature') }}",
-      "sammatt": "{{ states('sensor.samuel_sammatt_sensor_temperature') }}"
-    }},
-    {"choose": [{
-      "conditions": [{"condition": "template", "value_template": "{{ ac_state == 'off' }}"}],
-      "sequence": [
-        {"action": "climate.turn_on", "target": {"entity_id": "climate.bedrooms"}},
-        {"action": "climate.set_hvac_mode", "target": {"entity_id": "climate.bedrooms"}, "data": {"hvac_mode": "heat"}},
-        {"action": "climate.set_temperature", "target": {"entity_id": "climate.bedrooms"}, "data": {"temperature": 20}}
+    {
+      "variables": {
+        "ac_state": "{{ states('climate.bedrooms') }}",
+        "ac_since": "{{ as_timestamp(states.climate.bedrooms.last_changed) | timestamp_custom('%H:%M:%S') }}",
+        "timer_state": "{{ states('number.bedrooms_schedule_turn_on') }}",
+        "master": "{{ states('sensor.master_bedroom_masterbedroom_sensor_temperature') }}",
+        "sammatt": "{{ states('sensor.samuel_sammatt_sensor_temperature') }}"
+      }
+    },
+    {
+      "choose": [
+        {
+          "conditions": [
+            {
+              "condition": "template",
+              "value_template": "{{ ac_state == 'off' }}"
+            }
+          ],
+          "sequence": [
+            {
+              "action": "climate.turn_on",
+              "target": {
+                "entity_id": "climate.bedrooms"
+              }
+            },
+            {
+              "action": "climate.set_hvac_mode",
+              "target": {
+                "entity_id": "climate.bedrooms"
+              },
+              "data": {
+                "hvac_mode": "heat"
+              }
+            },
+            {
+              "action": "climate.set_temperature",
+              "target": {
+                "entity_id": "climate.bedrooms"
+              },
+              "data": {
+                "temperature": 24
+              }
+            }
+          ]
+        }
       ]
-    }]},
-    {"action": "persistent_notification.create", "data": {
-      "notification_id": "bedroom_morning_safety_net_{{ now().strftime('%Y%m%d') }}",
-      "title": "Bedroom morning check {{ now().strftime('%d %b') }}",
-      "message": "At 06:50 the AC was {{ ac_state }} (since {{ ac_since }}); timer entity read {{ timer_state }}. Master {{ master }} C, SamMatt {{ sammatt }} C. {{ 'LG timer did NOT start the unit; safety net started it in heat at 20 C.' if ac_state == 'off' else 'Unit was already on; safety net did nothing.' }}"
-    }}
+    },
+    {
+      "action": "persistent_notification.create",
+      "data": {
+        "notification_id": "bedroom_morning_safety_net_{{ now().strftime('%Y%m%d') }}",
+        "title": "Bedroom morning check {{ now().strftime('%d %b') }}",
+        "message": "At 06:50 the AC was {{ ac_state }} (since {{ ac_since }}); timer entity read {{ timer_state }}. Master {{ master }} C, SamMatt {{ sammatt }} C. {{ 'LG timer did NOT start the unit; safety net started it in heat at 24 C.' if ac_state == 'off' else 'Unit was already on; safety net did nothing.' }}"
+      }
+    }
   ]
 }
