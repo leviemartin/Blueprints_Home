@@ -21,6 +21,8 @@ FP2_PRESENCE = "binary_sensor.presence_sensor_fp2_e863_presence_sensor_1"
 FP2_LUX = "sensor.presence_sensor_fp2_e863_light_sensor_light_level"
 FP300_PRESENCE = "binary_sensor.living_room_main_fp300_couch_occupancy_sensor"
 FP300_BATTERY = "sensor.living_room_main_fp300_couch_battery_sensor"
+# RFC 2026-11-26 X0: the FP300 was re-paired around 25 Nov 2026 and got this new entity id.
+FP300_REPAIRED = "binary_sensor.aqara_presence_multisensor_fp300_occupancy"
 ENTITY_IDS = [FP2_PRESENCE, FP2_LUX, FP300_PRESENCE, FP300_BATTERY]
 CREDENTIAL_PATTERNS = [
     r"eyJ[A-Za-z0-9_-]{8,}", r"(?i)bearer\s", r"(?i)https?://", r"\b\d{1,3}(\.\d{1,3}){3}\b",
@@ -174,7 +176,7 @@ KEPT_KEYS = [
     "lux_off_threshold", "lux_on_threshold", "toddler_kelvin", "night_kelvin",
     "hue_bulbs", "hue_ceiling", "max_kelvin", "night_bri",
 ]
-MIGRATED_KEYS = ["presence_fp2", "presence_fp300", *KEPT_KEYS, "notify_targets"]
+MIGRATED_KEYS = ["presence_fp2", "presence_fp300", *KEPT_KEYS, "notify_targets", "time_evening"]  # time_evening: RFC 2026-11-26 D7
 LATE_NIGHT_KEYS = ["late_night_start", "late_night_end", "late_night_timeout"]
 V2_2_0_KEYS = [
     "hue_bulbs", "hue_ceiling", "ceiling_brightness_scale", "presence_entity",
@@ -206,7 +208,7 @@ def test_migrated_instance_dry_run_passes():
     assert r.returncode == 0, r.stdout + r.stderr
     assert r.stdout.splitlines() == [
         "blueprint: Circadian Living Room Lights v3.0.0",
-        f"instance {INSTANCE}: ok (id {INSTANCE_ID}, 21 inputs)",
+        f"instance {INSTANCE}: ok (id {INSTANCE_ID}, 22 inputs)",
         "dry-run: validation passed, nothing deployed",
     ]
     assert r.stderr == ""
@@ -235,7 +237,7 @@ def test_migration_drops_presence_entity_and_stale_keys():
 def test_presence_inputs_are_the_audited_entities():
     inp = json.loads(INSTANCE.read_text())["use_blueprint"]["input"]
     assert inp["presence_fp2"] == FP2_PRESENCE == LIVE_INPUT["presence_entity"]
-    assert inp["presence_fp300"] == FP300_PRESENCE
+    assert inp["presence_fp300"] == FP300_REPAIRED
     rows = [line for line in NOTE.read_text().splitlines() if line.lstrip().startswith("|")]
     for eid in (FP2_PRESENCE, FP300_PRESENCE):
         assert any(eid in line and "yes" in line for line in rows), eid

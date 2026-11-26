@@ -34,7 +34,8 @@
       "night_bri": 29,
       "notify_targets": [
         "notify.mobile_app_martin_fold"
-      ]
+      ],
+      "time_evening": "20:00:00"
     }
   }
 }

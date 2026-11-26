@@ -114,7 +114,9 @@ At night this gives about 2 min from the last motion on the couch to lights off 
 
    `bash scripts/deploy-blueprint.sh circadian_livingroom.yaml leviemartin/circadian_livingroom.yaml deploy/circadian_livingroom_1767031159524.json`
 
-   The script needs `hass-cli` and `jq` on PATH, PyYAML in the interpreter named by `PYTHON` (default `python3`), and Home Assistant credentials in `~/.config/hass-cli/env` (never in this repo). v3.0.0 removes `presence_entity`: an instance must set `presence_fp2` and `presence_fp300` before it is updated, or the dry-run refuses it.
+   The script needs `hass-cli` and `jq` on PATH, PyYAML in the interpreter named by `PYTHON` (default `python3`), and Home Assistant credentials in `~/.config/hass-cli/env` (never in this repo). v3.0.0 removes `presence_entity`: an instance must set `presence_fp2` and `presence_fp300` before it is updated, or the dry-run refuses it. A live deploy also refuses to write if any entity an instance names is missing in Home Assistant; add `DEPLOY_STATES_FILE=<states.json>` to run that check in a dry-run.
+
+   Times, colours and brightness are shared with the adjacent-room instances (kitchen, front hall, toilet, attic). `tests/test_lighting_rhythm_drift.py` fails if they differ, so change them in every instance together (RFC `docs/design/2026-11-26-living-room-lighting.md`, D7).
 2. Or import it by hand:
 
 [![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fleviemartin%2FBlueprints_Home%2Fmain%2Fcircadian_livingroom.yaml)

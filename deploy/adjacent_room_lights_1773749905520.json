@@ -13,16 +13,19 @@
       "motion_sensors": [
         "binary_sensor.kitchen_motion_sensor"
       ],
-      "night_bri": 30,
+      "night_bri": 29,
       "night_kelvin": 2000,
       "target_lights": [
         "light.kitchen_1"
       ],
+      "time_dinner": "17:45:00",
+      "time_evening": "20:00:00",
       "time_night": "23:30:00",
       "time_to_off": 8,
       "time_to_stage1": 3,
       "time_to_stage2": 6,
-      "toddler_bri": 80,
+      "time_toddler": "18:45:00",
+      "toddler_bri": 85,
       "toddler_kelvin": 2100
     },
     "path": "leviemartin/adjacent_room_lights.yaml"

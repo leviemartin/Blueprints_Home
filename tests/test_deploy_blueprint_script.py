@@ -1,5 +1,6 @@
 """Offline checks for scripts/deploy-blueprint.sh: syntax + the --dry-run input-key validation."""
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -83,3 +84,63 @@ def test_dry_run_rejects_bad_ha_path():
     r = run("--dry-run", str(BP), "bogus")
     assert r.returncode == 1
     assert "ha-blueprint-path must look like" in r.stderr
+
+
+# --- RFC 2026-11-26 D2: refuse instances whose entities do not exist ----------------------
+# Offline seam: DEPLOY_STATES_FILE names a file shaped like /api/states. When it is set,
+# --dry-run also runs the entity check against it; a live deploy fetches /api/states.
+
+def states_file(tmp_path, entity_ids):
+    p = tmp_path / "states.json"
+    p.write_text(json.dumps([{"entity_id": e, "state": "on"} for e in entity_ids]))
+    return p
+
+
+def run_with_states(states, *args):
+    env = dict(os.environ, DEPLOY_STATES_FILE=str(states))
+    return subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True, env=env)
+
+
+def test_entity_check_passes_when_all_entities_exist(tmp_path):
+    states = states_file(tmp_path, REQUIRED.values())
+    r = run_with_states(states, "--dry-run", str(BP), HA_PATH, str(instance(tmp_path)))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "entities: ok" in r.stdout
+
+
+def test_entity_check_rejects_missing_entity(tmp_path):
+    states = states_file(tmp_path, [v for k, v in REQUIRED.items() if k != "motion_sensor"])
+    r = run_with_states(states, "--dry-run", str(BP), HA_PATH, str(instance(tmp_path)))
+    assert r.returncode == 1
+    assert "entities missing in HA: binary_sensor.m" in r.stdout
+    assert "validation passed" not in r.stdout
+
+
+def test_entity_check_reads_lists_and_ignores_services_and_plain_values(tmp_path):
+    states = states_file(tmp_path, [*REQUIRED.values(), "switch.b1", "switch.b2"])
+    p = instance(tmp_path, notify_targets=["notify.mobile_app_x"], night_start="22:00:00",
+                 target_humidity=60, boost_toggle=["switch.b1", "switch.b2"])
+    r = run_with_states(states, "--dry-run", str(BP), HA_PATH, str(p))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "entities missing" not in r.stdout
+
+
+def test_entity_check_reports_missing_list_member(tmp_path):
+    states = states_file(tmp_path, [*REQUIRED.values(), "switch.b1"])
+    p = instance(tmp_path, boost_toggle=["switch.b1", "switch.gone"])
+    r = run_with_states(states, "--dry-run", str(BP), HA_PATH, str(p))
+    assert r.returncode == 1
+    assert "entities missing in HA: switch.gone" in r.stdout
+
+
+def test_dry_run_without_states_file_stays_offline(tmp_path):
+    r = run("--dry-run", str(BP), HA_PATH, str(instance(tmp_path)))
+    assert r.returncode == 0
+    assert "entities:" not in r.stdout
+
+
+def test_live_deploy_checks_entities_before_any_write():
+    src = SCRIPT.read_text()
+    backup = src.index("# --- 3. back up")
+    assert "check_entities" in src[src.index("# --- 2. credentials"):backup]
+    assert "/api/states" in src[src.index("# --- 2. credentials"):backup]
