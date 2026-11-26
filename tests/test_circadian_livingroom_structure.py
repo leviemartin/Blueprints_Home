@@ -336,8 +336,8 @@ def test_late_night_timeout_clamped(bp, value, expected):
     ("300", 599, "update_loop", "update"),  # not yet proven
     ("300", 0, "lux_high", "off"),          # the trigger itself proves the dwell
     ("250", 3600, "update_loop", "update"), # strictly above
-    ("251", 3600, "ha_start", "off"),
-    ("251", 3600, "reload", "off"),
+    ("251", 0, "ha_start", "off"),
+    ("251", 0, "reload", "off"),
     ("unavailable", 3600, "lux_high", "none"),  # no reading: no lux decision
 ])
 def test_daylight_off_needs_dwell(bp, lux, lux_age, tid, expected):
@@ -356,9 +356,19 @@ def test_lux_low_turns_on_only_with_presence(bp):
     assert decide(bp, tid="lux_low", lights="off", lux="100") == "none"
 
 
-@pytest.mark.parametrize("tid", ["update_loop", "ha_start", "reload", "lux_high"])
-def test_periodic_and_restart_triggers_never_turn_on(bp, tid):
+@pytest.mark.parametrize("tid", ["update_loop", "lux_high"])
+def test_tick_never_turns_on(bp, tid):
     assert decide(bp, tid=tid, fp2="on", lights="off", lux="10") == "none"
+
+
+@pytest.mark.parametrize("tid", ["ha_start", "reload"])
+def test_restart_acts_on_current_lux_at_once(bp, tid):
+    """HA drops numeric_state `for:` timers on restart/reload (Codex J2 P1)."""
+    assert decide(bp, tid=tid, fp2="on", lights="off", lux="100") == "on"
+    assert decide(bp, tid=tid, fp2="on", lights="off", lux="200") == "none"
+    assert decide(bp, tid=tid, lights="off", lux="100") == "none"
+    assert decide(bp, tid=tid, fp2="on", lights="on", lux="300", lux_age=0) == "off"
+    assert decide(bp, tid=tid, fp2="on", lights="on", lux="200", lux_age=0) == "update"
 
 
 def test_dead_band_keeps_the_current_state(bp):

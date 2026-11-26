@@ -13,7 +13,8 @@ blueprint:
     - **Native Hue Effects:** Optional "Candlelight" or "Fireplace" effects for Evening and Night modes.
     - **Manual Override:** Pause automation via a Switch or Input Boolean (e.g., for Movie Night).
     - **Re-check:** Every trigger, HA start, automation reload and a 5-min tick recompute whether
-      the lights should be on; the tick and restarts can only turn lights off, never on.
+      the lights should be on; the tick can only turn lights off, never on. Start and reload act on
+      the current lux at once, because HA drops the lux timers.
     - **Daylight Harvesting:** Off above lux_off_threshold held lux_off_duration; on again below
       lux_on_threshold held lux_on_duration. No lux reading means no lux decision.
     - **Dual Presence:** Either FP2 or FP300 on turns lights on.
@@ -491,9 +492,12 @@ action:
         {% set ns = namespace(v=false) %}
         {% for l in all_target_lights %}{% if is_state(l, 'on') %}{% set ns.v = true %}{% endif %}{% endfor %}
         {{ ns.v }}
+      # HA does not keep numeric_state `for:` timers across a restart or reload, and a trigger
+      # attached while already past its threshold stays unarmed; start and reload therefore
+      # act on the current reading at once (Codex J2 P1).
       bright: >
         {{ current_lux is number and current_lux > threshold_off | float(0)
-           and (trigger.id | default('') == 'lux_high'
+           and (trigger.id | default('') in ['lux_high', 'ha_start', 'reload']
                 or (lux_age is number and lux_age >= off_duration | float(0) * 60)) }}
       decision: >
         {% set tid = trigger.id | default('') %}
@@ -501,7 +505,7 @@ action:
         {% if lights_on and room_empty %}off
         {% elif lights_on and bright %}off
         {% elif not lights_on and is_presence_on and dark
-              and tid in ['presence_on_fp2', 'presence_on_fp300', 'lux_low', 'override_resume'] %}on
+              and tid in ['presence_on_fp2', 'presence_on_fp300', 'lux_low', 'override_resume', 'ha_start', 'reload'] %}on
         {% elif lights_on and is_presence_on and tid in ['presence_on_fp2', 'presence_on_fp300', 'override_resume'] %}update
         {% elif lights_on and tid in ['update_loop', 'ha_start', 'reload'] %}update
         {% else %}none{% endif %}
