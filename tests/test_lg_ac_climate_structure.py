@@ -508,7 +508,7 @@ def test_maintenance_desired_values(bp):
     sub = ladder(bp)[7]["sequence"][-1]["choose"][1]      # deadband DISABLED → maintenance
     mv = sub["sequence"][0]["variables"]
     assert " ".join(mv["desired_setpoint"].split()) == \
-        "{{ setpoint_cool_q if desired_mode == 'cool' else setpoint_heat_q }}"
+        "{{ setpoint_cool_q if desired_mode == 'cool' else setpoint_heat_maint_q }}"
     assert " ".join(mv["desired_fan"].split()) == "{{ fan_mode_low }}"
     dm = " ".join(mv["desired_mode"].split())
     assert dm.startswith("{% if current_ac_mode in ['cool', 'heat'] %}")
@@ -1066,7 +1066,7 @@ def test_presence_missing_notice_block_is_state_driven_and_keeps_step_indexes(bp
 def test_heat_offset_input_defaults_to_off(bp):
     inp = bp["blueprint"]["input"]["heat_setpoint_offset"]
     assert inp["default"] == 0
-    assert inp["selector"]["number"]["max"] == 5.0
+    assert inp["selector"]["number"]["max"] == 8.0
     assert bp["variables"]["heat_offset"] == _Input("heat_setpoint_offset")
 
 
@@ -1093,15 +1093,26 @@ def test_heat_boost_rendered(bp):
     assert _boost(bp, heat_offset=5, setpoint_heat_q=28.0) == "30.0"                   # clamped to max
 
 
-def test_maintenance_mode_keeps_unboosted_setpoint(bp):
+def test_maintenance_mode_uses_maintenance_offset_only(bp):
     text = BP_PATH.read_text()
-    assert "desired_setpoint: \"{{ setpoint_cool_q if desired_mode == 'cool' else setpoint_heat_q }}\"" in text
+    assert "desired_setpoint: \"{{ setpoint_cool_q if desired_mode == 'cool' else setpoint_heat_maint_q }}\"" in text
     assert text.count("setpoint_heat_boost_q") == 2   # defined once, used only by the HEAT branch
+    assert text.count("setpoint_heat_maint_q") == 2   # defined once, used only by maintenance
+    assert bp["blueprint"]["input"]["heat_maintain_offset"]["default"] == 0
+    keys = list(bp["action"][0]["variables"].keys())
+    assert keys.index("setpoint_heat_q") < keys.index("setpoint_heat_maint_q")
+    m = lambda off, base=21.5, step=0.5: render_var(bp, "setpoint_heat_maint_q", dict(
+        setpoint_heat_q=base, heat_maint_offset=off, ac_temp_step=step, ac_min_temp=16.0, ac_max_temp=30.0))
+    assert m(0) == "21.5"          # 0 = v1.3.0
+    assert m(2.5) == "24.0"
+    assert m(2.5, 22.0, 1.0) == "24.0"   # floors to a whole-degree grid
+    assert m(5, 28.0) == "30.0"          # clamped to device max
 
 
 def test_lg_instance_sets_offset_and_0500_start():
     i = json.loads(LG_INSTANCE.read_text())["use_blueprint"]["input"]
-    assert i["heat_setpoint_offset"] == 4
+    assert i["heat_setpoint_offset"] == 6
+    assert i["heat_maintain_offset"] == 2.5
     for d in ("mon", "tue", "wed", "thu", "fri", "sat", "sun"):
         assert i[f"schedule_start_{d}"] == "05:00:00"
         assert i[f"schedule_end_{d}"] == "22:30:00"

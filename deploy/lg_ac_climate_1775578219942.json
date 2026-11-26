@@ -48,8 +48,9 @@
       "away_setback_delta": 2,
       "away_delay_minutes": 10,
       "fan_speed_low_threshold": 1,
-      "heat_setpoint_offset": 4,
-      "heat_fan_floor_medium": true
+      "heat_setpoint_offset": 6,
+      "heat_fan_floor_medium": true,
+      "heat_maintain_offset": 2.5
     }
   },
   "trace": {

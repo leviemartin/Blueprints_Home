@@ -39,7 +39,9 @@ blueprint:
       heating stops. Maintenance mode is unchanged. 0 = v1.3.0 behavior. An
       optional fan floor keeps heating at medium or above, so warm air reaches
       the room instead of pooling at the unit; low stays for at-temperature
-      maintenance.
+      maintenance. A separate, smaller maintenance offset lets the unit hold
+      the room in the band at low fan in cold weather instead of letting it
+      sag back below the band.
     - **Manual-Override Hold:** Optional input_text helper detects remote/app
       changes and pauses comfort control for a configurable window (vacation,
       schedule end, and door-open still force off). Reloading any automation
@@ -295,6 +297,17 @@ blueprint:
       selector:
         number:
           min: 0.0
+          max: 8.0
+          step: 0.5
+          unit_of_measurement: "°C"
+
+    heat_maintain_offset:
+      name: Heating Maintenance Offset (°C)
+      description: "Added to the heating setpoint in cold-weather maintenance (room inside the comfort range, low fan). Keep it below the unit's sensor error so the room settles inside the band, not above it. 0 = v1.3.0 behavior."
+      default: 0
+      selector:
+        number:
+          min: 0.0
           max: 5.0
           step: 0.5
           unit_of_measurement: "°C"
@@ -463,6 +476,7 @@ variables:
   # --- Hysteresis / Robustness (v1.1.0) ---
   margin: !input comfort_margin
   heat_offset: !input heat_setpoint_offset
+  heat_maint_offset: !input heat_maintain_offset
   heat_fan_floor: !input heat_fan_floor_medium
   sensor_staleness: !input sensor_staleness_minutes
   hold_helper: !input manual_hold_helper
@@ -680,6 +694,9 @@ action:
       setpoint_heat_boost_q: >-
         {% set base = setpoint_heat_active_q if (deadband_active and heat_deep_ok) else setpoint_heat_q %}
         {% set q = ((((base | float + heat_offset | float) / ac_temp_step) + 0.001) | round(0, 'floor')) * ac_temp_step %}
+        {{ ([([q, ac_max_temp] | min), ac_min_temp] | max) | round(1) }}
+      setpoint_heat_maint_q: >-
+        {% set q = ((((setpoint_heat_q | float + heat_maint_offset | float) / ac_temp_step) + 0.001) | round(0, 'floor')) * ac_temp_step %}
         {{ ([([q, ac_max_temp] | min), ac_min_temp] | max) | round(1) }}
 
       # --- Fan Speed (Proportional) ---
@@ -1093,7 +1110,7 @@ action:
                         {% else %}
                           heat
                         {% endif %}
-                      desired_setpoint: "{{ setpoint_cool_q if desired_mode == 'cool' else setpoint_heat_q }}"
+                      desired_setpoint: "{{ setpoint_cool_q if desired_mode == 'cool' else setpoint_heat_maint_q }}"
                       desired_fan: "{{ fan_mode_low }}"
                   - choose:
                       - conditions:
