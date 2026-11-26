@@ -1,6 +1,6 @@
 """Structural + logic pins for lg_ac_climate.yaml (LG AC Climate Control v1.4.0).
 
-Run: cd ~/AI/projects/Blueprints_Home && \
+Run: cd ~/projects/Blueprints_Home && \
      ~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests -q
 """
 import ast

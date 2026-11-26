@@ -1,6 +1,6 @@
 """Structural + logic tests for nightlight.yaml (Toddler Sleep Trainer v1.3).
 
-Run: cd ~/AI/projects/Blueprints_Home && \
+Run: cd ~/projects/Blueprints_Home && \
      ~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests -q
 """
 import json

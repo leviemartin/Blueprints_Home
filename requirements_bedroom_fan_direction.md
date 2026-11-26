@@ -180,7 +180,7 @@ disabled-on-load rollback.
 
 ## Deploy runbook (T7)
 
-From `/home/martin/AI/projects/Blueprints_Home` after merge, Martin's go before each numbered live
+From `/home/martin/projects/Blueprints_Home` after merge, Martin's go before each numbered live
 write, run between 12:00 and 16:00 so the forced check's `decide_time` falls inside the valid 12:00–21:00
 range (**F10**) and completes before the real 18:00 evaluation.
 

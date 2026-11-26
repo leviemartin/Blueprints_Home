@@ -1,6 +1,6 @@
 """Structural + rendered-logic pins for bathroom_heating_rack.yaml (Bathroom Heating Rack v3.0.0).
 
-Run: cd ~/AI/projects/Blueprints_Home && \
+Run: cd ~/projects/Blueprints_Home && \
      ~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests -q
 """
 import ast

@@ -1,7 +1,7 @@
 """Structural pins for bedroom_precool.yaml (Bedroom Sleep Pre-Cool v1.2.0) and its
 deployed instance configs.
 
-Run: cd ~/AI/projects/Blueprints_Home && \
+Run: cd ~/projects/Blueprints_Home && \
      ~/projects/ceiling-fan-hue-blueprint/.venv/bin/python -m pytest tests -q
 
 Regression background (hotfix 2026-09-07): HA re-parses `variables:` results between
