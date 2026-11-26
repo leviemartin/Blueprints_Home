@@ -1,6 +1,6 @@
 {
   "id": "1767031159524",
-  "alias": "Circadian Living Room Lights v3.0.0",
+  "alias": "Circadian Living Room Lights v3.1.0",
   "description": "",
   "use_blueprint": {
     "path": "leviemartin/circadian_livingroom.yaml",
@@ -17,8 +17,8 @@
       "toddler_bri": 85,
       "evening_kelvin": 2000,
       "evening_bri": 70,
-      "lux_off_threshold": 611,
-      "lux_on_threshold": 394,
+      "lux_off_threshold": 250,
+      "lux_on_threshold": 175,
       "toddler_kelvin": 2100,
       "night_kelvin": 2000,
       "hue_bulbs": [
@@ -35,7 +35,9 @@
       "notify_targets": [
         "notify.mobile_app_martin_fold"
       ],
-      "time_evening": "20:00:00"
+      "time_evening": "20:00:00",
+      "lux_off_duration": 10,
+      "lux_on_duration": 5
     }
   }
 }
