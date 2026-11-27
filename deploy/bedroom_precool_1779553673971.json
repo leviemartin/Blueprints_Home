@@ -1,6 +1,6 @@
 {
   "id": "1779553673971",
-  "alias": "Bedroom Sleep Pre-Cool v1.3.0",
+  "alias": "Bedroom Sleep Pre-Cool v1.4.0",
   "description": "",
   "use_blueprint": {
     "path": "leviemartin/bedroom_precool.yaml",
@@ -48,6 +48,12 @@
       "weekend_morning_time": "06:30:00",
       "ac_power_on_timer": [
         "number.bedrooms_schedule_turn_on"
+      ],
+      "night_reheat_on_temp": 15.5,
+      "night_reheat_off_temp": 18,
+      "night_heat_fan": "medium",
+      "night_manual_off_helper": [
+        "input_boolean.bedroom_night_manual_off"
       ]
     }
   },
