@@ -5,14 +5,15 @@
 **Description:** A comprehensive lighting automation for the Living Room that adapts to human presence, circadian rhythms (sun position), and specific family routines. Optimized for a Philips Hue ecosystem, including Hue Infuse ceiling lights and ambient bulbs.
 
 ## 2. Core Features
-*   **Version:** v3.1.0 (dual presence: FP2 + FP300; re-check on every trigger, RFC `docs/design/2026-11-26-living-room-lighting.md`).
+*   **Version:** v3.2.0 (dual presence: FP2 + FP300; night window ignores the FP300; re-check on every trigger, RFC `docs/design/2026-11-26-living-room-lighting.md`).
 *   **Presence-Based Switching (dual presence):**
     *   Turn ON when either sensor reports presence: Aqara FP2 (`presence_fp2`) or Aqara FP300 on the couch (`presence_fp300`).
     *   Turn OFF only when both sensors are clear (off, unavailable or unknown) for `presence_timeout` (default 5 min). A sensor missing from Home Assistant (renamed or removed) counts as clear, so the other sensor decides alone.
     *   **Re-check:** every trigger recomputes one decision (off, on, update or nothing) from the current state. A 5-minute check, HA start and automation reload also re-check, so a missed timer or lux crossing is caught; the 5-minute check can turn lights off or refresh them, never turn them on. HA start and reload act on the current lux at once (HA drops the lux timers), so they can also turn lights on in an occupied dark room.
     *   Late-night window: between 23:00 (`late_night_start`) and 06:30 (`late_night_end`), crossing midnight, the off delay is 1 min (`late_night_timeout`, 1-60). The end is exclusive; start equal to end means no window.
     *   A both-clear countdown whose 1-min mark passed before 23:00 turns off at the next 5-minute check (23:00 itself is one); a clear that began just before 23:00 can still turn off at its 1-min mark just after 23:00. A countdown whose 1-min mark falls at or after 06:30 finishes on `presence_timeout`; there is no extra trigger at the window edges beyond the 5-minute check.
-    *   The FP300 counts like the FP2 at all hours, so the dog on its bench keeps the FP300, and so the lights, on, also at night. Accepted, still being tested; no cap or zone logic.
+    *   **Night window (dog on the bench):** between 01:00 (`fp300_ignore_start`) and 06:00 (`fp300_ignore_end`) the FP300 is ignored: it cannot turn the lights on or keep them on, and the FP2 alone decides. Lights the FP300 was holding at 01:00 dim after `late_night_timeout` and go off a minute later. Outside the window the FP300 counts like the FP2 (no cap). Still being tested.
+    *   **Dim warning:** inside the night window, the lights first dim to 30 % of the profile brightness (at least 1 %) when the FP2 has been clear for `late_night_timeout`, and go off one minute later; FP2 presence in that minute restores the profile. Inside the night window the timeout is always `late_night_timeout`.
 *   **Native Circadian Algorithm:**
     *   Calculates Color Temperature (Kelvin) based on Sun Elevation (using `sun.sun`).
     *   **Daylight (Sun > 10°):** Cool White (~4500K-5500K) for energy/focus.
@@ -41,7 +42,7 @@
 ## 4. Detailed Logic & Settings
 
 ### 4.1. Inputs
-All blueprint inputs of v3.1.0, in blueprint order. `required` means the input has no default.
+All blueprint inputs of v3.2.0, in blueprint order. `required` means the input has no default.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -54,6 +55,8 @@ All blueprint inputs of v3.1.0, in blueprint order. `required` means the input h
 | `late_night_timeout` | `1` | Minutes both clear inside the late-night window (1-60) |
 | `late_night_start` | `23:00:00` | Start of the late-night window |
 | `late_night_end` | `06:30:00` | End of the window (exclusive; may cross midnight; equal to start = no window) |
+| `fp300_ignore_start` | `01:00:00` | Start of the night window in which the FP300 is ignored |
+| `fp300_ignore_end` | `06:00:00` | End of the night window (exclusive; may cross midnight; equal to start = no window) |
 | `illuminance_entity` | required | FP2 illuminance sensor (FP300 lux is not read) |
 | `override_entity` | `[]` | Switch/input_boolean; while on, no light calls |
 | `lux_on_threshold` | `150` | Lights turn on only below this lux |
