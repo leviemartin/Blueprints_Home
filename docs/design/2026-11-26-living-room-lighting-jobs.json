@@ -233,6 +233,24 @@
    },
    "notes": "Instance-only change. Live at 13:50: FP2 109 with the lamps on, front garden 7267. Martin wanted the lights off in this light.",
    "deploy": "2026-11-27 ~13:52 CET: deployed. The reload switched the lights off at once (FP2 109 > 90); afterwards FP2 83 without lamps, and the auto-off helper is on."
+  },
+  {
+   "id": "T1c",
+   "title": "Revert to 70 / 125 (D4c)",
+   "changes": [
+    "D4c"
+   ],
+   "depends_on": [
+    "T1b"
+   ],
+   "status": "committed",
+   "branch": "lighting-2026-11/T1c-revert-70-125",
+   "merge_commit": null,
+   "build": {
+    "model": "claude-opus-5-5",
+    "note": "tokens counted with build_after_j5"
+   },
+   "notes": "Martin: at 45 / 90, with the lights off, the room felt dark around the FP2. Front sensor (T2) not built: simulation showed little gain and a later relight at dusk."
   }
  ],
  "followups": [
