@@ -1,4 +1,4 @@
-"""Contract tests for circadian_livingroom.yaml v3.2.0 (RFC 2026-11-26, jobs J2 and J3).
+"""Contract tests for circadian_livingroom.yaml v3.3.0 (RFC 2026-11-26, jobs J2, J3 and J4).
 
 Every trigger recomputes one `decision` (off / on / update / none) from the current state.
 HA owns the state-trigger timers; these tests render the templates with fake states.
@@ -20,7 +20,7 @@ NOTICE = ["fp2_unavailable_30m", "fp2_unknown_30m", "fp300_unavailable_30m", "fp
 CLAMP = "{{ [1, [60, late_night_timeout | int(1)] | min] | max }}"
 CHAIN = ["current_lux", "lux_age", "presence_sensors", "missing_sensors", "in_dog_window",
          "window_age", "is_presence_on", "late_night_minutes", "in_late_window", "off_minutes",
-         "empty_age", "room_empty", "dim_due", "lights_on", "bright", "decision"]
+         "empty_age", "room_empty", "dim_due", "was_empty", "lights_on", "bright", "decision"]
 
 
 @pytest.fixture
@@ -34,8 +34,9 @@ def bp(text):
 
 
 class _St:
-    def __init__(self, state, last_changed):
+    def __init__(self, state, last_changed, attributes=None):
         self.state, self.last_changed = state, last_changed
+        self.attributes = attributes or {}
 
 
 class _NoLc:
@@ -86,8 +87,9 @@ def _chain(bp, names, now, ctx):
 
 
 def state(bp, tid="update_loop", time="14:00:00", fp2="off", fp300="off", age=300,
-          lux="100", lux_age=3600, lights="on", table=None, **changes):
-    """Run the decision chain. `age` is how long both sensors have been in their state."""
+          lux="100", lux_age=3600, lights="on", table=None, gap=3600, **changes):
+    """Run the decision chain. `age` is how long both sensors have been in their state;
+    `gap` is how long the sensor that fired a presence_on trigger had been clear before."""
     now = at(time)
     if table is None:
         table = {FP2: _St(fp2, now - timedelta(seconds=age)),
@@ -100,6 +102,9 @@ def state(bp, tid="update_loop", time="14:00:00", fp2="off", fp300="off", age=30
                dog_start="01:00:00", dog_end="06:00:00",
                threshold_on=175, threshold_off=250, off_duration=10,
                all_target_lights=LIGHTS, trigger={"id": tid}, table=table)
+    if tid.startswith("presence_on_"):
+        ctx["trigger"] = {"id": tid, "entity_id": FP2 if tid.endswith("fp2") else FP300,
+                          "from_state": _St("off", now - timedelta(seconds=gap))}
     ctx.update(changes)
     return _chain(bp, CHAIN, now, ctx)
 
@@ -138,9 +143,9 @@ def test_the_fakes_are_strict():
         env.from_string("{{ missing }}").render()
 
 
-def test_version_is_3_2_0(bp):
-    assert bp["blueprint"]["name"].endswith("v3.2.0")
-    assert "**Version: 3.2.0" in bp["blueprint"]["description"]
+def test_version_is_3_3_0(bp):
+    assert bp["blueprint"]["name"].endswith("v3.3.0")
+    assert "**Version: 3.3.0" in bp["blueprint"]["description"]
 
 
 def test_presence_inputs(bp, text):
@@ -232,8 +237,13 @@ def test_trigger_table(bp):
                  "for": {"minutes": "{{ [1, [60, late_night_timeout | int(1)] | min] | max + 1 }}"}}
     for tid in ("dog_window_dim", "dog_window_off"):
         assert ts[tid]["platform"] == "template"
+    profiles = [("profile_day", "06:00:00"), ("profile_dinner", "time_dinner"),
+                ("profile_toddler", "time_toddler"), ("profile_evening", "time_evening"),
+                ("profile_night", "time_night")]
+    for tid, at_ in profiles:
+        assert plain(ts[tid]) == {"platform": "time", "at": at_, "id": tid}
     assert list(ts) == (expected_ids + ["presence_off_night_fp2"] + [t["id"] for t in rest]
-                        + ["dog_window_dim", "dog_window_off"] + NOTICE)
+                        + ["dog_window_dim", "dog_window_off"] + [t for t, _ in profiles] + NOTICE)
     assert len(bp["trigger"]) == len(ts)
     assert bp["mode"] == "restart"
     assert bp["max_exceeded"] == "silent"
@@ -358,8 +368,8 @@ def test_daylight_off_needs_dwell(bp, lux, lux_age, tid, expected):
 @pytest.mark.parametrize("lux,expected", [("174", "on"), ("175", "none"), ("200", "none"),
                                           ("unavailable", "on"), ("", "on")])
 def test_presence_turns_on_only_when_dark(bp, lux, expected):
-    for tid in ("presence_on_fp2", "presence_on_fp300"):
-        assert decide(bp, tid=tid, fp2="on", lights="off", lux=lux) == expected
+    assert decide(bp, tid="presence_on_fp2", fp2="on", lights="off", lux=lux) == expected
+    assert decide(bp, tid="presence_on_fp300", fp300="on", lights="off", lux=lux) == expected
 
 
 def test_lux_low_turns_on_only_with_presence(bp):
@@ -622,3 +632,93 @@ def test_fp300_changes_inside_window_do_not_reset_the_room(bp, fp300):
 def test_window_end_does_not_turn_lights_on_for_a_held_fp300(bp):
     """By design (Codex J3 P1 #2 declined): at 06:00 a still-on FP300 is most likely the dog."""
     assert decide(bp, tid="update_loop", time="06:00:00", fp300="on", lights="off", lux="0") == "none"
+
+
+# --- J4: manual changes (D6, D12, D20) ---------------------------------------------------
+
+@pytest.mark.parametrize("gap,fp300,expected", [
+    (3600, "off", "on"),   # fresh entry: room had been empty for the timeout
+    (299, "off", "none"),  # the FP2 only blinked: lights were switched off by hand
+    (3600, "on", "none"),  # the FP300 kept the room occupied
+])
+def test_manual_off_stays_off_until_the_room_was_empty(bp, gap, fp300, expected):
+    assert decide(bp, tid="presence_on_fp2", fp2="on", fp300=fp300, lights="off", lux="0", gap=gap) == expected
+
+
+def test_fresh_entry_in_late_window_uses_its_timeout(bp):
+    assert decide(bp, tid="presence_on_fp2", time="23:30:00", fp2="on", lights="off", lux="0", gap=60) == "on"
+    assert decide(bp, tid="presence_on_fp2", time="23:30:00", fp2="on", lights="off", lux="0", gap=59) == "none"
+
+
+def test_fresh_entry_in_dog_window_ignores_the_fp300(bp):
+    assert decide(bp, tid="presence_on_fp2", time="03:00:00", fp2="on", fp300="on",
+                  lights="off", lux="0", gap=120) == "on"
+
+
+def test_missing_from_state_is_not_a_fresh_entry(bp):
+    assert decide(bp, tid="presence_on_fp2", fp2="on", lights="off", lux="0",
+                  trigger={"id": "presence_on_fp2", "entity_id": FP2, "from_state": None}) == "none"
+
+
+@pytest.mark.parametrize("tid", ["profile_day", "profile_dinner", "profile_toddler",
+                                 "profile_evening", "profile_night"])
+def test_profile_boundary_refreshes_lit_lights(bp, tid):
+    assert decide(bp, tid=tid, fp2="on") == "update"
+    assert decide(bp, tid=tid, fp2="on", lights="off") == "none"
+    assert decide(bp, tid=tid, age=300) == "off"
+
+
+def _lit(bri_pct, kelvin=2500, mode="color_temp"):
+    return _St("on", at("14:00:00"), {"brightness": round(bri_pct * 2.55),
+                                      "color_temp_kelvin": kelvin, "color_mode": mode})
+
+
+def _update(bp, table, tid="update_loop", bulbs=("light.a",), ceiling=("light.c",), **kw):
+    ctx = dict(hue_list_bulbs=list(bulbs), hue_list_ceiling=list(ceiling), target_brightness=50,
+               ceiling_bri=30, target_kelvin=2500, dim_pct=15, c_scale=0.6, target_effect="none",
+               trigger={"id": tid})
+    ctx.update(kw)
+    out = _chain(bp, ["force_update", "update_bulbs", "update_ceiling"], at("14:00:00"), {**ctx, "table": table})
+    return out["update_bulbs"], out["update_ceiling"]
+
+
+def test_update_skips_manually_changed_lights(bp):
+    table = {"light.a": _lit(50), "light.b": _lit(80), "light.c": _lit(30), "light.d": _lit(30, 3500)}
+    bulbs, ceiling = _update(bp, table, bulbs=("light.a", "light.b"), ceiling=("light.c", "light.d"))
+    assert bulbs == ["light.a"]
+    assert ceiling == ["light.c"]
+
+
+@pytest.mark.parametrize("bri,kelvin,mode,kept", [
+    (54, 2500, "color_temp", True),    # within 5 %
+    (56, 2500, "color_temp", False),
+    (50, 2640, "color_temp", True),    # within 150 K (day-mode drift between ticks)
+    (50, 2660, "color_temp", False),
+    (15, 2500, "color_temp", True),    # our own night dim level
+    (50, 2500, "xy", False),           # someone picked a colour
+    (50, None, "color_temp", True),    # no kelvin reported: brightness decides
+])
+def test_manual_tolerance(bp, bri, kelvin, mode, kept):
+    bulbs, _ = _update(bp, {"light.a": _lit(bri, kelvin, mode)}, ceiling=())
+    assert bulbs == (["light.a"] if kept else [])
+
+
+def test_off_lights_are_not_updated(bp):
+    table = {"light.a": _St("off", at("14:00:00")), "light.c": _lit(30)}
+    assert _update(bp, table) == ([], ["light.c"])
+
+
+def test_profile_boundary_overrides_manual_changes(bp):
+    table = {"light.a": _lit(90), "light.c": _lit(70, 4000, "xy")}
+    for tid in ("profile_dinner", "profile_day"):
+        assert _update(bp, table, tid=tid) == (["light.a"], ["light.c"])
+    assert _update(bp, table, tid="presence_on_fp2") == ([], [])
+
+
+def test_update_branch_targets_the_filtered_lists(bp):
+    steps = bp["action"][2]["choose"][2]["sequence"]
+    assert steps[0]["if"][0]["value_template"] == "{{ update_bulbs | count > 0 }}"
+    assert steps[0]["then"][0]["target"]["entity_id"] == "{{ update_bulbs }}"
+    assert steps[1]["if"][0]["value_template"] == "{{ update_ceiling | count > 0 }}"
+    ceiling_targets = [c["sequence"][0]["target"]["entity_id"] for c in steps[1]["then"][0]["choose"]]
+    assert ceiling_targets == ["{{ update_ceiling }}", "{{ update_ceiling }}"]

@@ -167,7 +167,7 @@ def test_every_run_call_passes_dry_run():
 
 
 INSTANCE = ROOT / "deploy" / f"circadian_livingroom_{INSTANCE_ID}.json"
-V3_ALIAS = "Circadian Living Room Lights v3.2.0"
+V3_ALIAS = "Circadian Living Room Lights v3.3.0"
 NOTIFY_TARGET = "notify.mobile_app_martin_fold"
 DROPPED_KEYS = ["presence_entity", *STALE_KEYS]
 KEPT_KEYS = [
@@ -208,7 +208,7 @@ def test_migrated_instance_dry_run_passes():
     r = dry(str(BP), HA_PATH, str(INSTANCE))
     assert r.returncode == 0, r.stdout + r.stderr
     assert r.stdout.splitlines() == [
-        "blueprint: Circadian Living Room Lights v3.2.0",
+        "blueprint: Circadian Living Room Lights v3.3.0",
         f"instance {INSTANCE}: ok (id {INSTANCE_ID}, 24 inputs)",
         "dry-run: validation passed, nothing deployed",
     ]
@@ -270,7 +270,7 @@ def test_late_night_inputs_left_unset():
 def test_unmigrated_snapshot_fails_v3_dry_run():
     r = dry(str(BP), HA_PATH, str(SNAPSHOT))
     assert r.returncode == 1, r.stdout + r.stderr
-    assert "blueprint: Circadian Living Room Lights v3.2.0" in r.stdout
+    assert "blueprint: Circadian Living Room Lights v3.3.0" in r.stdout
     assert problems(r) == [
         UNKNOWN + "govee_brightness_scale, govee_lights, hue_lights, light_entity, presence_entity",
         MISSING + "presence_fp2, presence_fp300",

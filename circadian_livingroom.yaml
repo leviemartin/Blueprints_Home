@@ -1,7 +1,7 @@
 blueprint:
-  name: "Circadian Living Room Lights v3.2.0"
+  name: "Circadian Living Room Lights v3.3.0"
   description: >
-    **Version: 3.2.0 - Night window ignores the FP300 (RFC 2026-11-26)**
+    **Version: 3.3.0 - Manual changes respected (RFC 2026-11-26)**
     
     A comprehensive lighting automation for the Living Room that adapts to human presence, 
     circadian rhythms, and specific family routines. Optimized for Philips Hue Infuse and Bulbs.
@@ -24,6 +24,9 @@ blueprint:
     - **Night Window:** Between fp300_ignore_start and fp300_ignore_end (01:00-06:00) the FP300 is
       ignored (it cannot turn lights on or keep them on). Before turning off in the window the lights
       dim to 30 % of the profile brightness for 1 min; FP2 presence restores them.
+    - **Manual Changes:** A light whose colour or brightness was changed by hand is left alone by
+      the 5-min update until the next profile start (day, dinner, toddler, evening, night). Lights
+      switched off by hand stay off until the room has been empty for the timeout.
     - **Sensor Offline:** After 30 min unavailable or unknown, push to each notify target; a sensor
       missing from Home Assistant is pushed once an hour.
     
@@ -421,6 +424,23 @@ trigger:
         {{ ns.m == [1, [60, late_night_timeout | int(1)] | min] | max + 1 }}
     id: "dog_window_off"
 
+  # Profile starts re-apply colour and brightness even to lights changed by hand (D6).
+  - platform: time
+    at: "06:00:00"
+    id: "profile_day"
+  - platform: time
+    at: !input time_dinner
+    id: "profile_dinner"
+  - platform: time
+    at: !input time_toddler
+    id: "profile_toddler"
+  - platform: time
+    at: !input time_evening
+    id: "profile_evening"
+  - platform: time
+    at: !input time_night
+    id: "profile_night"
+
   - platform: state
     entity_id: !input presence_fp2
     to: "unavailable"
@@ -560,6 +580,36 @@ action:
         {{ ns.a }}
       room_empty: "{{ empty_age >= (off_minutes + (1 if in_dog_window else 0)) * 60 }}"
       dim_due: "{{ in_dog_window and not room_empty and empty_age >= off_minutes * 60 }}"
+      # A presence_on only switches lights on when the room had been empty for the timeout
+      # before it; a sensor blinking while someone sits there does not undo a manual off (D12).
+      was_empty: >
+        {% set tid = trigger.id | default('') %}
+        {% if tid not in ['presence_on_fp2', 'presence_on_fp300'] %}{{ false }}
+        {% else %}
+          {% set me = trigger.entity_id | default('') %}
+          {% set fs = trigger.from_state | default(none) %}
+          {% set ns = namespace(a=1000000000) %}
+          {% for s in presence_sensors %}
+            {% if s == me %}
+              {% if fs is not none and fs.state in ['off', 'unavailable', 'unknown']
+                    and fs.last_changed is defined and fs.last_changed is not none %}
+                {% set age = as_timestamp(now()) - as_timestamp(fs.last_changed) %}
+              {% else %}{% set age = 0 %}{% endif %}
+            {% elif in_dog_window and s == presence_fp300 %}{% set age = 1000000000 %}
+            {% else %}
+              {% set st = states[s] %}
+              {% if st is none %}{% set age = 1000000000 %}
+              {% else %}
+                {% set lc = st.last_changed if st.last_changed is defined else none %}
+                {% if st.state in ['off', 'unavailable', 'unknown'] and lc is not none %}
+                  {% set age = as_timestamp(now()) - as_timestamp(lc) %}
+                {% else %}{% set age = 0 %}{% endif %}
+              {% endif %}
+            {% endif %}
+            {% set ns.a = [ns.a, age] | min %}
+          {% endfor %}
+          {{ ns.a >= (off_minutes + (1 if in_dog_window else 0)) * 60 }}
+        {% endif %}
       lights_on: >
         {% set ns = namespace(v=false) %}
         {% for l in all_target_lights %}{% if is_state(l, 'on') %}{% set ns.v = true %}{% endif %}{% endfor %}
@@ -578,9 +628,10 @@ action:
         {% elif lights_on and dim_due %}dim
         {% elif lights_on and bright %}off
         {% elif not lights_on and is_presence_on and dark
-              and tid in ['presence_on_fp2', 'presence_on_fp300', 'lux_low', 'override_resume', 'ha_start', 'reload'] %}on
+              and (tid in ['lux_low', 'override_resume', 'ha_start', 'reload']
+                   or (tid in ['presence_on_fp2', 'presence_on_fp300'] and was_empty)) %}on
         {% elif lights_on and is_presence_on and tid in ['presence_on_fp2', 'presence_on_fp300', 'override_resume'] %}update
-        {% elif lights_on and tid in ['update_loop', 'ha_start', 'reload'] %}update
+        {% elif lights_on and (tid in ['update_loop', 'ha_start', 'reload'] or tid.startswith('profile_')) %}update
         {% else %}none{% endif %}
       notify_list: "{{ (notify_targets if (notify_targets is iterable and notify_targets is not string) else ([notify_targets] if notify_targets else [])) | select('match', '^notify[.][a-z0-9_]+$') | list }}"
 
@@ -617,6 +668,40 @@ action:
 
       ceiling_bri: "{{ (target_brightness | float * c_scale | float) | round(0) | int }}"
       dim_pct: "{{ [1, (target_brightness | float * 0.3) | round(0) | int] | max }}"
+      # Lit lights the update may touch. A light more than 5 % or 150 K away from the target (and
+      # not at our own dim level), or in a colour mode, was changed by hand: skip it until the
+      # next profile start (D6, D20).
+      force_update: "{{ (trigger.id | default('')).startswith('profile_') }}"
+      update_bulbs: >
+        {% set ns = namespace(l=[]) %}
+        {% for l in hue_list_bulbs %}
+          {% set st = states[l] %}
+          {% if st is not none and st.state == 'on' %}
+            {% set a = st.attributes %}
+            {% set pct = (a.get('brightness') | float(0)) / 2.55 %}
+            {% set k = a.get('color_temp_kelvin') %}
+            {% set bri_ok = (pct - target_brightness | float(0)) | abs <= 5 or (pct - dim_pct | float(0)) | abs <= 5 %}
+            {% set k_ok = k is none or (k | float(0) - target_kelvin | float(0)) | abs <= 150 %}
+            {% set mode_ok = target_effect != 'none' or a.get('color_mode') in [none, 'color_temp', 'brightness', 'onoff'] %}
+            {% if force_update or (bri_ok and k_ok and mode_ok) %}{% set ns.l = ns.l + [l] %}{% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.l }}
+      update_ceiling: >
+        {% set ns = namespace(l=[]) %}
+        {% for l in hue_list_ceiling %}
+          {% set st = states[l] %}
+          {% if st is not none and st.state == 'on' %}
+            {% set a = st.attributes %}
+            {% set pct = (a.get('brightness') | float(0)) / 2.55 %}
+            {% set k = a.get('color_temp_kelvin') %}
+            {% set bri_ok = (pct - ceiling_bri | float(0)) | abs <= 5 or (pct - [1, (dim_pct * c_scale | float) | round(0) | int] | max) | abs <= 5 %}
+            {% set k_ok = k is none or (k | float(0) - target_kelvin | float(0)) | abs <= 150 %}
+            {% set mode_ok = target_effect != 'none' or a.get('color_mode') in [none, 'color_temp', 'brightness', 'onoff'] %}
+            {% if force_update or (bri_ok and k_ok and mode_ok) %}{% set ns.l = ns.l + [l] %}{% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.l }}
 
       target_effect: >
         {% if mode == 'evening' %} {{ e_evening }}
@@ -694,12 +779,11 @@ action:
           # Update Active Bulbs (Native 30s)
           - if:
               - condition: template
-                value_template: "{{ expand(hue_list_bulbs) | selectattr('state', 'eq', 'on') | list | count > 0 }}"
+                value_template: "{{ update_bulbs | count > 0 }}"
             then:
               - service: light.turn_on
                 target:
-                  entity_id: >
-                    {{ expand(hue_list_bulbs) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
+                  entity_id: "{{ update_bulbs }}"
                 data:
                   color_temp_kelvin: "{{ target_kelvin }}"
                   brightness_pct: "{{ target_brightness }}"
@@ -707,11 +791,8 @@ action:
           # Update Active Ceiling Lights (Native 30s)
           - if:
               - condition: template
-                value_template: "{{ expand(hue_list_ceiling) | selectattr('state', 'eq', 'on') | list | count > 0 }}"
+                value_template: "{{ update_ceiling | count > 0 }}"
             then:
-              - variables:
-                  on_ceiling: >
-                    {{ expand(hue_list_ceiling) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
               - choose:
                   # Update with Effect
                   - conditions:
@@ -720,7 +801,7 @@ action:
                     sequence:
                       - service: light.turn_on
                         target:
-                          entity_id: "{{ on_ceiling }}"
+                          entity_id: "{{ update_ceiling }}"
                         data:
                           color_temp_kelvin: "{{ target_kelvin }}"
                           brightness_pct: "{{ ceiling_bri }}"
@@ -733,7 +814,7 @@ action:
                     sequence:
                       - service: light.turn_on
                         target:
-                          entity_id: "{{ on_ceiling }}"
+                          entity_id: "{{ update_ceiling }}"
                         data:
                           color_temp_kelvin: "{{ target_kelvin }}"
                           brightness_pct: "{{ ceiling_bri }}"

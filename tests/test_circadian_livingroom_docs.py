@@ -1,4 +1,4 @@
-"""Documentation contract for Circadian Living Room Lights v3.2.0."""
+"""Documentation contract for Circadian Living Room Lights v3.3.0."""
 import json
 import re
 from pathlib import Path
@@ -119,12 +119,12 @@ def test_blueprint_without_inputs_fails(tmp_path):
             _inputs(path)
 
 
-def test_version_3_2_0_in_both_docs():
+def test_version_3_3_0_in_both_docs():
     _bp()
     data = yaml.load(_read(ROOT / "circadian_livingroom.yaml"), Loader=HassLoader)
-    assert data["blueprint"]["name"].endswith("v3.2.0")
+    assert data["blueprint"]["name"].endswith("v3.3.0")
     for text in _docs():
-        assert "v3.2.0" in text
+        assert "v3.3.0" in text
 
 
 def test_no_stale_text():

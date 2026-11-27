@@ -5,7 +5,7 @@
 **Description:** A comprehensive lighting automation for the Living Room that adapts to human presence, circadian rhythms (sun position), and specific family routines. Optimized for a Philips Hue ecosystem, including Hue Infuse ceiling lights and ambient bulbs.
 
 ## 2. Core Features
-*   **Version:** v3.2.0 (dual presence: FP2 + FP300; night window ignores the FP300; re-check on every trigger, RFC `docs/design/2026-11-26-living-room-lighting.md`).
+*   **Version:** v3.3.0 (dual presence: FP2 + FP300; night window ignores the FP300; manual changes respected; re-check on every trigger, RFC `docs/design/2026-11-26-living-room-lighting.md`).
 *   **Presence-Based Switching (dual presence):**
     *   Turn ON when either sensor reports presence: Aqara FP2 (`presence_fp2`) or Aqara FP300 on the couch (`presence_fp300`).
     *   Turn OFF only when both sensors are clear (off, unavailable or unknown) for `presence_timeout` (default 5 min). A sensor missing from Home Assistant (renamed or removed) counts as clear, so the other sensor decides alone.
@@ -42,7 +42,7 @@
 ## 4. Detailed Logic & Settings
 
 ### 4.1. Inputs
-All blueprint inputs of v3.2.0, in blueprint order. `required` means the input has no default.
+All blueprint inputs of v3.3.0, in blueprint order. `required` means the input has no default.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -116,6 +116,9 @@ All blueprint inputs of v3.2.0, in blueprint order. `required` means the input h
 *   **Sensor offline:** unavailable or unknown counts as clear. After 30 min in either state (FP2 or FP300), one push goes to each `notify_targets` entry, after the light calls, also while the manual override is on. A sensor missing from Home Assistant is pushed on the hourly 5-minute check (minute 0). A target that does not exist aborts the run at the push step; check it exists after editing.
 *   **Auto-OFF (Daylight Harvesting):**
     *   If FP2 lux > `lux_off_threshold` (default 400 lx) for `lux_off_duration` (default 5 min), turn OFF even if presence is detected. The 5-minute check also turns off when the current reading is above the threshold and has not changed for `lux_off_duration`.
+*   **Manual changes (no helper):**
+    *   A lit light more than 5 % or 150 K away from the profile target (and not at the night dim level), or in a colour mode (xy, hs, rgb), counts as changed by hand. The 5-minute update and presence refreshes leave it alone until the next profile start (06:00 day, `time_dinner`, `time_toddler`, `time_evening`, `time_night`), which re-applies the profile to every lit light. Switching the lights off ends it too.
+    *   Lights switched off by hand stay off: a presence trigger switches lights on only when the room had been empty for the timeout before it (`presence_timeout`, or `late_night_timeout` in the late-night window, plus 1 min in the night window). Lux-low, override resume, HA start and reload can still switch them on.
 *   **Manual Override:**
     *   Input: `override_entity` (Switch/Input Boolean).
     *   Behavior: If ON, automation pauses. Off timers that expire while it is on are not replayed.
