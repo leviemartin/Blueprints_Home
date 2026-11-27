@@ -22,9 +22,9 @@ INSTANCES = [
     (iid, DEPLOY / f"adjacent_room_lights_{iid}.live-v1.0.0.json",
      DEPLOY / f"adjacent_room_lights_{iid}.json", sensor, count)
     for iid, sensor, count in [
-        (KITCHEN_ID, "binary_sensor.kitchen_motion_sensor", 19),
-        (FRONT_HALL_ID, "binary_sensor.frontdoor_hall_motion", 20),
-        (TOILET_ID, "binary_sensor.toilet_motion_sensor", 19),
+        (KITCHEN_ID, "binary_sensor.kitchen_motion_sensor", 20),
+        (FRONT_HALL_ID, "binary_sensor.frontdoor_hall_motion", 24),
+        (TOILET_ID, "binary_sensor.toilet_motion_sensor", 20),
     ]
 ]
 KITCHEN, FRONT_HALL, TOILET = [row[2] for row in INSTANCES]
@@ -34,6 +34,8 @@ R82 = DEPLOY / f"8_2_attic_stairs_motion_{R82_ID}.retired.json"
 FILES = [p for row in INSTANCES for p in row[1:3]] + [ATTIC, R81, R82]
 # RFC 2026-11-26 D7: the shared rhythm (pinned in test_lighting_rhythm_drift.py) changed these
 # keys after the v1 -> v2 migration; everything else must still match the live v1 snapshot.
+# RFC 2026-11-26 J5: per-room auto-off helper; front hall lux recalibrated (D17).
+J5_KEYS = {"auto_off_helper", "lux_off_threshold", "lux_off_duration", "lux_on_duration"}
 RHYTHM_KEYS = {
     "time_dinner", "dinner_kelvin", "dinner_bri", "time_toddler", "toddler_kelvin", "toddler_bri",
     "time_evening", "evening_kelvin", "evening_bri", "time_night", "night_kelvin", "night_bri",
@@ -56,10 +58,10 @@ def read(path):
 def test_all_instances_dry_run_pass():
     result = dry(BP, HA_PATH, KITCHEN, FRONT_HALL, TOILET, ATTIC)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "blueprint: Adjacent Room Circadian Lights v2.0.0" in result.stdout
+    assert "blueprint: Adjacent Room Circadian Lights v2.1.0" in result.stdout
     for iid, _, _, _, count in INSTANCES:
         assert f"ok (id {iid}, {count} inputs)" in result.stdout
-    assert f"ok (id {ATTIC_ID}, 19 inputs)" in result.stdout
+    assert f"ok (id {ATTIC_ID}, 20 inputs)" in result.stdout
     assert "dry-run: validation passed" in result.stdout
 
 
@@ -76,7 +78,7 @@ def test_migrated_differs_from_live_only_in_sensor_key(iid, live, migrated, sens
     assert new_inputs.pop("motion_sensors") == [sensor]
     assert "motion_sensors" not in old_inputs
     assert "motion_sensor" not in new_inputs
-    strip = lambda d: {k: v for k, v in d.items() if k not in RHYTHM_KEYS}
+    strip = lambda d: {k: v for k, v in d.items() if k not in RHYTHM_KEYS | J5_KEYS}
     assert strip(old_inputs) == strip(new_inputs)
 
 
@@ -122,6 +124,7 @@ def test_attic_instance_inputs():
                 "time_evening": "20:00:00", "evening_kelvin": 2000, "evening_bri": 70,
                 "time_night": "23:30:00", "night_kelvin": 2000, "night_bri": 29,
                 "min_kelvin": 2000, "max_kelvin": 4000,
+                "auto_off_helper": "input_boolean.attic_lights_auto_off",
             },
         },
     }
