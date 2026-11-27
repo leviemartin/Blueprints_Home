@@ -1113,6 +1113,10 @@ def test_lg_instance_sets_offset_and_0500_start():
     i = json.loads(LG_INSTANCE.read_text())["use_blueprint"]["input"]
     assert i["heat_setpoint_offset"] == 6
     assert i["heat_maintain_offset"] == 2.5
+    # 11-27: the kitchen sits by the door and read ~1 °C low; the seating-area sensors decide
+    assert i["temperature_sensors"] == ["sensor.temperature_sensor_6",
+                                        "sensor.aqara_presence_multisensor_fp300_temperature"]
+    assert i["sensor_strategy"] == "average"
     for d in ("mon", "tue", "wed", "thu", "fri", "sat", "sun"):
         assert i[f"schedule_start_{d}"] == "05:00:00"
         assert i[f"schedule_end_{d}"] == "22:30:00"

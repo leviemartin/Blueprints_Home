@@ -8,7 +8,7 @@
       "climate_entity": "climate.livingroom",
       "temperature_sensors": [
         "sensor.temperature_sensor_6",
-        "sensor.temperature_sensor_5"
+        "sensor.aqara_presence_multisensor_fp300_temperature"
       ],
       "temp_range_high": 23.5,
       "temp_range_low": 21.5,
@@ -27,7 +27,7 @@
       "schedule_start_sun": "05:00:00",
       "schedule_end_sun": "22:30:00",
       "vacation_toggle": "input_boolean.vacation_mode",
-      "sensor_strategy": "min",
+      "sensor_strategy": "average",
       "door_sensor": [
         "binary_sensor.contact_sensor"
       ],
