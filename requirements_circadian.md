@@ -59,6 +59,7 @@ All blueprint inputs of v3.3.0, in blueprint order. `required` means the input h
 | `fp300_ignore_end` | `06:00:00` | End of the night window (exclusive; may cross midnight; equal to start = no window) |
 | `illuminance_entity` | required | FP2 illuminance sensor (FP300 lux is not read) |
 | `override_entity` | `[]` | Switch/input_boolean; while on, no light calls |
+| `override_timeout` | `30` | Minutes the room must be empty before a forgotten override switches itself off (0 = never) |
 | `auto_off_helper` | `[]` | input_boolean the automation turns on when it switches the lights off; empty disables manual-off protection |
 | `lux_on_threshold` | `150` | Lights turn on only below this lux |
 | `lux_off_threshold` | `400` | Lights turn off above this lux... |
@@ -124,6 +125,7 @@ All blueprint inputs of v3.3.0, in blueprint order. `required` means the input h
     *   Input: `override_entity` (Switch/Input Boolean).
     *   Behavior: If ON, automation pauses. Off timers that expire while it is on are not replayed.
     *   Resume: When turned OFF, automation re-checks immediately: an empty room goes off, an occupied dark room comes on.
+    *   Auto-resume: the 5-minute check switches a forgotten override off once both sensors have been clear for `override_timeout` (default 30 min; the FP300 is ignored in the night window, so the dog cannot keep it on). 0 disables it. Use it for a film or a dinner party: switch it on, and it ends by hand or when everyone has left.
 *   **Seamless Transitions:**
     *   **Turn On/Off:** 2-5 seconds.
     *   **Circadian Updates:** 30 seconds.

@@ -124,6 +124,17 @@ blueprint:
           domain: 
             - input_boolean
             - switch
+    override_timeout:
+      name: Override Auto-Resume
+      description: >-
+        Minutes the room must be empty before a forgotten override switches itself off (checked
+        every 5 min; the FP300 is ignored in the night window). 0 = never.
+      default: 30
+      selector:
+        number:
+          min: 0
+          max: 240
+          unit_of_measurement: min
     auto_off_helper:
       name: Auto-Off Memory (Input Boolean)
       description: >-
@@ -495,6 +506,7 @@ variables:
   notify_targets: !input notify_targets
   entity_override: !input override_entity
   auto_off_helper: !input auto_off_helper
+  override_timeout: !input override_timeout
   threshold_on: !input lux_on_threshold
   threshold_off: !input lux_off_threshold
   off_duration: !input lux_off_duration
@@ -524,8 +536,36 @@ variables:
   e_night: !input night_effect
 
 action:
-  # 1. Manual override pauses everything except the offline notices.
+  # 1. Manual override pauses everything except the offline notices. A forgotten override ends
+  #    itself once the room has been empty for override_timeout; switching it off re-checks.
   - choose:
+      - conditions:
+          - condition: template
+            value_template: >
+              {% set on = entity_override != [] and is_state(entity_override, 'on') %}
+              {% if not on or trigger.id | default('') != 'update_loop' or override_timeout | float(0) <= 0 %}{{ false }}
+              {% else %}
+                {% set t = now().strftime('%H:%M:%S') %}
+                {% set in_win = (dog_start < dog_end and dog_start <= t and t < dog_end)
+                                or (dog_start > dog_end and (dog_start <= t or t < dog_end)) %}
+                {% set ns = namespace(empty=true) %}
+                {% for s in [presence_fp2, presence_fp300] | select('string') | reject('eq', '') %}
+                  {% set st = states[s] %}
+                  {% if st is not none and not (in_win and s == presence_fp300) %}
+                    {% set lc = st.last_changed if st.last_changed is defined else none %}
+                    {% if st.state not in ['off', 'unavailable', 'unknown'] or lc is none
+                          or as_timestamp(now()) - as_timestamp(lc) < override_timeout | float(0) * 60 %}
+                      {% set ns.empty = false %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+                {{ ns.empty }}
+              {% endif %}
+        sequence:
+          - service: homeassistant.turn_off
+            target:
+              entity_id: "{{ entity_override }}"
+          - stop: "Override expired: the room was empty. override_resume re-checks."
       - conditions:
           - condition: template
             value_template: "{{ entity_override != [] and is_state(entity_override, 'on') and trigger.id | default('') not in ['fp2_unavailable_30m', 'fp2_unknown_30m', 'fp300_unavailable_30m', 'fp300_unknown_30m'] }}"

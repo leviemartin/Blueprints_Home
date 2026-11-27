@@ -444,8 +444,8 @@ def test_light_branches_follow_the_decision(bp):
 
 
 def test_override_stops_everything_but_notices(bp):
-    assert "stop" in bp["action"][0]["choose"][0]["sequence"][0]
-    template = bp["action"][0]["choose"][0]["conditions"][0]["value_template"]
+    assert "stop" in bp["action"][0]["choose"][1]["sequence"][0]
+    template = bp["action"][0]["choose"][1]["conditions"][0]["value_template"]
     for tid in NOTICE + ["presence_on_fp2", "update_loop", "ha_start"]:
         assert render(template, at("14:00:00"), {"input_boolean.override": _St("on", None)},
                       entity_override="input_boolean.override", trigger={"id": tid}) is (tid not in NOTICE)
@@ -805,3 +805,43 @@ def test_bulb_colour_counts_as_manual_even_with_an_effect(bp):
     """Codex J4 P2: effects only run on the ceiling, so a bulb in xy was changed by hand."""
     table = {"light.a": _lit(50, 2500, "xy"), "light.c": _lit(30, 2500, "xy")}
     assert _update(bp, table, target_effect="candlelight") == ([], ["light.c"])
+
+
+
+# --- override auto-resume (movie / dinner mode) ------------------------------------------
+
+def _expire(bp, time="21:00:00", fp2_age=1800, fp300="off", fp300_age=1800, override="on",
+            tid="update_loop", timeout=30, fp300_missing=False):
+    now = at(time)
+    table = {FP2: _St("off", now - timedelta(seconds=fp2_age)), "input_boolean.movie": _St(override, now)}
+    if not fp300_missing:
+        table[FP300] = _St(fp300, now - timedelta(seconds=fp300_age))
+    template = bp["action"][0]["choose"][0]["conditions"][0]["value_template"]
+    return render(template, now, table, entity_override="input_boolean.movie", trigger={"id": tid},
+                  override_timeout=timeout, presence_fp2=FP2, presence_fp300=FP300,
+                  dog_start="01:00:00", dog_end="06:00:00")
+
+
+def test_override_expires_after_the_room_was_empty(bp):
+    assert _expire(bp) is True
+    assert _expire(bp, fp2_age=1799) is False
+    assert _expire(bp, fp300="on") is False            # someone on the couch
+    assert _expire(bp, override="off") is False
+    assert _expire(bp, tid="presence_off_long_fp2") is False   # only the tick expires it
+    assert _expire(bp, timeout=0) is False
+    assert _expire(bp, fp300_missing=True) is True
+
+
+def test_dog_does_not_keep_the_override_alive_at_night(bp):
+    assert _expire(bp, time="03:00:00", fp300="on") is True
+    assert _expire(bp, time="00:30:00", fp300="on") is False
+
+
+def test_override_expiry_switches_it_off_then_stops(bp):
+    seq = bp["action"][0]["choose"][0]["sequence"]
+    assert seq[0] == {"service": "homeassistant.turn_off", "target": {"entity_id": "{{ entity_override }}"}}
+    assert "stop" in seq[1]
+    item = bp["blueprint"]["input"]["override_timeout"]
+    assert item["default"] == 30
+    assert item["selector"]["number"]["min"] == 0
+    assert bp["variables"]["override_timeout"].name == "override_timeout"

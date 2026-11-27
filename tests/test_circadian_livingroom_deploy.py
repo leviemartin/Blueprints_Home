@@ -177,7 +177,8 @@ KEPT_KEYS = [
     "hue_bulbs", "hue_ceiling", "max_kelvin", "night_bri",
 ]
 MIGRATED_KEYS = ["presence_fp2", "presence_fp300", *KEPT_KEYS, "notify_targets", "time_evening",
-                 "lux_off_duration", "lux_on_duration", "auto_off_helper"]  # RFC 2026-11-26: D7, D4, J4
+                 "lux_off_duration", "lux_on_duration", "auto_off_helper",
+                 "override_entity", "override_timeout"]  # RFC 2026-11-26: D7, D4, J4
 LATE_NIGHT_KEYS = ["late_night_start", "late_night_end", "late_night_timeout"]
 V2_2_0_KEYS = [
     "hue_bulbs", "hue_ceiling", "ceiling_brightness_scale", "presence_entity",
@@ -209,7 +210,7 @@ def test_migrated_instance_dry_run_passes():
     assert r.returncode == 0, r.stdout + r.stderr
     assert r.stdout.splitlines() == [
         "blueprint: Circadian Living Room Lights v3.3.0",
-        f"instance {INSTANCE}: ok (id {INSTANCE_ID}, 25 inputs)",
+        f"instance {INSTANCE}: ok (id {INSTANCE_ID}, 27 inputs)",
         "dry-run: validation passed, nothing deployed",
     ]
     assert r.stderr == ""
@@ -371,7 +372,7 @@ def test_migrated_instance_fails_against_v2_2_0_blueprint(tmp_path):
     assert r.returncode == 1
     assert "validation passed" not in r.stdout
     assert problems(r) == [
-        UNKNOWN + "auto_off_helper, lux_on_duration, notify_targets, presence_fp2, presence_fp300",
+        UNKNOWN + "auto_off_helper, lux_on_duration, notify_targets, override_timeout, presence_fp2, presence_fp300",
         MISSING + "presence_entity",
     ]
 
