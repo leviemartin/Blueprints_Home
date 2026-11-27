@@ -259,7 +259,7 @@ def test_non_presence_inputs_keep_audit_literals():
             continue  # recalibrated by RFC 2026-11-26 D4, pinned below
         assert inp[key] == LIVE_INPUT[key], key
         assert type(inp[key]) is type(LIVE_INPUT[key]), key
-    assert (inp["lux_on_threshold"], inp["lux_off_threshold"]) == (45, 90)  # RFC 2026-11-26 D4, lowered 27 Nov (D4a, D4b)
+    assert (inp["lux_on_threshold"], inp["lux_off_threshold"]) == (70, 125)  # RFC 2026-11-26 D4a (D4b reverted, D4c)
     assert (inp["lux_on_duration"], inp["lux_off_duration"]) == (5, 10)
 
 

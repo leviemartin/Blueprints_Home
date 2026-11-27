@@ -27,7 +27,7 @@
     *   **Dinner Mode (18:00-19:00):** Boost to high brightness (80-100%) for eating/tasks.
     *   **Evening/Relax:** Dim to ~40-50%.
     *   **Night (22:00-06:00):** Ultra-dim (~10-20%), independent of the late-night window.
-*   **Lux Thresholds (Daylight Harvesting):** FP2 illuminance only; FP300 lux is not read. Lights turn on only below `lux_on_threshold` (default 150 lx) and turn off above `lux_off_threshold` (default 400 lx) for `lux_off_duration` (default 5 min). Lights that daylight turned off come back on once lux stays below `lux_on_threshold` for `lux_on_duration` (default 5 min) while someone is present. Between the two thresholds the lights keep their current state. No lux reading means no lux decision (presence alone turns the lights on). These are blueprint defaults; each instance may override them (per instance); the living room instance uses 45 / 90 lx and 5 / 10 min (lowered from 175 / 250 on 27 Nov 2026, RFC D4a/D4b).
+*   **Lux Thresholds (Daylight Harvesting):** FP2 illuminance only; FP300 lux is not read. Lights turn on only below `lux_on_threshold` (default 150 lx) and turn off above `lux_off_threshold` (default 400 lx) for `lux_off_duration` (default 5 min). Lights that daylight turned off come back on once lux stays below `lux_on_threshold` for `lux_on_duration` (default 5 min) while someone is present. Between the two thresholds the lights keep their current state. No lux reading means no lux decision (presence alone turns the lights on). These are blueprint defaults; each instance may override them (per instance); the living room instance uses 70 / 125 lx and 5 / 10 min (lowered from 175 / 250 on 27 Nov 2026, RFC D4a; 45 / 90 was tried and reverted, D4b/D4c).
 
 ## 3. Hardware & Inputs
 *   **Lights:** 

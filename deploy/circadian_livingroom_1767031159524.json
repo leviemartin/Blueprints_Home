@@ -17,8 +17,8 @@
       "toddler_bri": 85,
       "evening_kelvin": 2000,
       "evening_bri": 70,
-      "lux_off_threshold": 90,
-      "lux_on_threshold": 45,
+      "lux_off_threshold": 125,
+      "lux_on_threshold": 70,
       "toddler_kelvin": 2100,
       "night_kelvin": 2000,
       "hue_bulbs": [
