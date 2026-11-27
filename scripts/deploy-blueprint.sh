@@ -126,7 +126,22 @@ done
 
 # --- 4. blueprint/save ---------------------------------------------------------------------
 frame=$(jq -n --arg p "$BP_PATH" --rawfile y "$BP_FILE" '{domain:"automation", path:$p, yaml:$y, allow_override:true}')
-resp=$(hass-cli -o json raw ws blueprint/save --json "$frame") || die "blueprint/save transport failure"
+# The frame goes over stdin: a large blueprint no longer fits in one argv entry (hass-cli --json hit ARG_MAX).
+# The token is read from the 0600 header file, so it never reaches argv or the environment of another tool.
+resp=$(printf '%s' "$frame" | "$PY" -c '
+import json, os, sys, websocket
+url = os.environ["HASS_SERVER"].rstrip("/").replace("https://", "wss://").replace("http://", "ws://") + "/api/websocket"
+ws = websocket.create_connection(url, timeout=60)
+ws.recv()
+ws.send(json.dumps({"type": "auth", "access_token": open(sys.argv[1]).read().split("Bearer ", 1)[1].strip()}))
+if json.loads(ws.recv()).get("type") != "auth_ok":
+    sys.exit("auth failed")
+ws.send(json.dumps({"id": 1, "type": "blueprint/save", **json.loads(sys.stdin.read())}))
+while True:
+    r = json.loads(ws.recv())
+    if r.get("id") == 1:
+        print(json.dumps(r)); break
+' "$HDR") || die "blueprint/save transport failure"
 printf '%s' "$resp" | jq -e '.success == true' >/dev/null \
   || die "blueprint/save rejected: $(printf '%s' "$resp" | jq -c '.error // .')"
 printf 'blueprint/save: ok (%s)\n' "$BP_PATH"
