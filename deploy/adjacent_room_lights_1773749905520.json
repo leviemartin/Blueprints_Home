@@ -4,6 +4,7 @@
   "id": "1773749905520",
   "use_blueprint": {
     "input": {
+      "auto_off_helper": "input_boolean.kitchen_lights_auto_off",
       "dinner_bri": 90,
       "dinner_kelvin": 2300,
       "evening_bri": 70,

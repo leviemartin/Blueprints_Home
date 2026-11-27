@@ -68,3 +68,22 @@ def test_shared_values_set_explicitly(path):
     """Pinning in the instance means a blueprint default change cannot shift one room alone."""
     inp = json.loads(path.read_text())["use_blueprint"]["input"]
     assert [k for k in SHARED_KEYS if k not in inp] == []
+
+
+def _formula(blueprint, name):
+    from test_bedroom_precool_structure import HassLoader, _var_template
+    bp = yaml.load((ROOT / blueprint).read_text(), Loader=HassLoader)
+    return " ".join(_var_template(bp, name).replace(" | int", "").split())
+
+
+@pytest.mark.parametrize("name", ["mode", "target_kelvin", "target_brightness"])
+def test_both_blueprints_share_the_rhythm_formulas(name):
+    """RFC 2026-11-26 J5: same mode boundaries and kelvin maths in both blueprints."""
+    assert _formula("circadian_livingroom.yaml", name) == _formula("adjacent_room_lights.yaml", name)
+
+
+def test_every_room_has_its_own_auto_off_helper():
+    helpers = [json.loads(p.read_text())["use_blueprint"]["input"].get("auto_off_helper")
+               for p in [LIVING, *ADJACENT]]
+    assert all(h and h.startswith("input_boolean.") for h in helpers)
+    assert len(set(helpers)) == len(helpers)

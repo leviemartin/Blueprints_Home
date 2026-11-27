@@ -132,6 +132,20 @@ Full contract: `requirements_circadian.md`.
 
 ---
 
+## Adjacent Room Circadian Lights Blueprint
+
+### Overview
+Motion lighting for the kitchen, front hall, toilet and attic (v2.1.0) on the same rhythm as the living room: the same profile times, colours and brightness, enforced by `tests/test_lighting_rhythm_drift.py`.
+
+### Features
+*   **Re-check on every trigger:** HA start, reload and a 5-minute check catch missed timers; the 5-minute check never turns lights on.
+*   **Staged turn-off:** warning, dim, off by how long every motion sensor has been clear (`time_to_stage1`, `time_to_stage2`, `time_to_off`). A dead or missing sensor counts as clear and raises one persistent notification per room.
+*   **Daylight (front hall):** off above 220 lx held 10 min, on again below 150 lx held 5 min with motion (`lux_off_threshold`, `lux_off_duration`, `lux_on_threshold`, `lux_on_duration`; RFC `docs/design/2026-11-26-living-room-lighting.md`, D17).
+*   **Manual changes:** a light changed by hand is left alone until the next profile start; with `auto_off_helper` (one input_boolean per room, e.g. `input_boolean.kitchen_lights_auto_off`) lights switched off by hand stay off until the room has been empty for the off time.
+
+### Installation
+`bash scripts/deploy-blueprint.sh adjacent_room_lights.yaml leviemartin/adjacent_room_lights.yaml deploy/adjacent_room_lights_1773749905520.json deploy/adjacent_room_lights_1773750307485.json deploy/adjacent_room_lights_1773750379398.json deploy/adjacent_room_lights_1792275807786.json` (dry-run first with `--dry-run`). The four auto-off helpers must exist first.
+
 ## LG AC Sleep & Movie Mode Blueprint
 
 ### Overview
