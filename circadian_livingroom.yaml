@@ -542,8 +542,8 @@ action:
         {% else %}{{ false }}{% endif %}
       off_minutes: "{{ late_night_minutes if (in_late_window or in_dog_window) else presence_timeout | float(5) }}"
       # Seconds every counted sensor has been clear. A missing sensor is skipped; a present one
-      # with no last_changed counts as just changed. In the night window an FP300 that is on
-      # counts as clear since the window start.
+      # with no last_changed counts as just changed. In the night window the FP300 counts as clear
+      # since the window start at the latest, whatever it does inside the window.
       empty_age: >
         {% set ns = namespace(a=1000000000) %}
         {% for s in presence_sensors %}
@@ -551,9 +551,9 @@ action:
           {% if st is not none %}
             {% set lc = st.last_changed if st.last_changed is defined else none %}
             {% set clear = st.state in ['off', 'unavailable', 'unknown'] %}
-            {% if in_dog_window and s == presence_fp300 and not clear %}{% set age = window_age %}
-            {% elif clear and lc is not none %}{% set age = as_timestamp(now()) - as_timestamp(lc) %}
-            {% else %}{% set age = 0 %}{% endif %}
+            {% set own = as_timestamp(now()) - as_timestamp(lc) if clear and lc is not none else 0 %}
+            {# In the window FP300 changes do not count: never younger than the window itself. #}
+            {% set age = [own, window_age] | max if in_dog_window and s == presence_fp300 else own %}
             {% set ns.a = [ns.a, age] | min %}
           {% endif %}
         {% endfor %}

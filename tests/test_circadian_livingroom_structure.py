@@ -606,3 +606,19 @@ def test_dog_window_wake_triggers(bp, time, dim, off):
     assert render(ts["dog_window_off"]["value_template"], at(time), **ctx) is off
     assert render(ts["dog_window_dim"]["value_template"], at("01:01:00"),
                   dog_start="01:00:00", dog_end="01:00:00", late_night_timeout=1) is False
+
+
+@pytest.mark.parametrize("fp300", ["off", "unknown", "unavailable", "on"])
+def test_fp300_changes_inside_window_do_not_reset_the_room(bp, fp300):
+    """Codex J3 P1: an FP300 flip at 02:59 must not re-brighten a dimmed, FP2-empty room."""
+    now = at("03:00:00")
+    table = {FP2: _St("off", now - timedelta(seconds=90)), FP300: _St(fp300, now - timedelta(seconds=5)),
+             LUX: _St("0", now), "light.a": _St("on", now), "light.b": _St("on", now)}
+    assert state(bp, time="03:00:00", table=table)["decision"] == "dim"
+    table[FP2] = _St("off", now - timedelta(seconds=120))
+    assert state(bp, time="03:00:00", table=table)["decision"] == "off"
+
+
+def test_window_end_does_not_turn_lights_on_for_a_held_fp300(bp):
+    """By design (Codex J3 P1 #2 declined): at 06:00 a still-on FP300 is most likely the dog."""
+    assert decide(bp, tid="update_loop", time="06:00:00", fp300="on", lights="off", lux="0") == "none"
