@@ -124,6 +124,17 @@ blueprint:
           domain: 
             - input_boolean
             - switch
+    auto_off_helper:
+      name: Auto-Off Memory (Input Boolean)
+      description: >-
+        Optional input_boolean the automation switches on when IT turns the lights off and off when
+        it turns them on. Lights that are off while it is off were switched off by hand: they stay
+        off until someone enters a room that had been empty for the timeout. Leave empty to disable
+        manual-off protection.
+      default: []
+      selector:
+        entity:
+          domain: input_boolean
     
     # --- Thresholds ---
     lux_on_threshold:
@@ -483,6 +494,7 @@ variables:
   dog_end: !input fp300_ignore_end
   notify_targets: !input notify_targets
   entity_override: !input override_entity
+  auto_off_helper: !input auto_off_helper
   threshold_on: !input lux_on_threshold
   threshold_off: !input lux_off_threshold
   off_duration: !input lux_off_duration
@@ -617,6 +629,9 @@ action:
       # HA does not keep numeric_state `for:` timers across a restart or reload, and a trigger
       # attached while already past its threshold stays unarmed; start and reload therefore
       # act on the current reading at once (Codex J2 P1).
+      manual_off: >
+        {{ auto_off_helper is string and auto_off_helper | length > 0 and not lights_on
+           and is_state(auto_off_helper, 'off') }}
       bright: >
         {{ current_lux is number and current_lux > threshold_off | float(0)
            and (trigger.id | default('') in ['lux_high', 'ha_start', 'reload']
@@ -628,8 +643,9 @@ action:
         {% elif lights_on and dim_due %}dim
         {% elif lights_on and bright %}off
         {% elif not lights_on and is_presence_on and dark
-              and (tid in ['lux_low', 'override_resume', 'ha_start', 'reload']
-                   or (tid in ['presence_on_fp2', 'presence_on_fp300'] and was_empty)) %}on
+              and ((tid in ['lux_low', 'ha_start', 'reload'] and not manual_off)
+                   or tid == 'override_resume'
+                   or (tid in ['presence_on_fp2', 'presence_on_fp300'] and (was_empty or not manual_off))) %}on
         {% elif lights_on and is_presence_on and tid in ['presence_on_fp2', 'presence_on_fp300', 'override_resume'] %}update
         {% elif lights_on and (tid in ['update_loop', 'ha_start', 'reload'] or tid.startswith('profile_')) %}update
         {% else %}none{% endif %}
@@ -716,6 +732,13 @@ action:
         sequence:
           - if:
               - condition: template
+                value_template: "{{ auto_off_helper is string and auto_off_helper | length > 0 }}"
+            then:
+              - service: input_boolean.turn_on
+                target:
+                  entity_id: "{{ auto_off_helper }}"
+          - if:
+              - condition: template
                 value_template: "{{ all_target_lights != [] }}"
             then:
               - service: light.turn_off
@@ -728,6 +751,13 @@ action:
           - condition: template
             value_template: "{{ decision == 'on' }}"
         sequence:
+          - if:
+              - condition: template
+                value_template: "{{ auto_off_helper is string and auto_off_helper | length > 0 and is_state(auto_off_helper, 'on') }}"
+            then:
+              - service: input_boolean.turn_off
+                target:
+                  entity_id: "{{ auto_off_helper }}"
           # Turn on Bulbs (Native transition)
           - if:
               - condition: template
@@ -776,6 +806,13 @@ action:
           - condition: template
             value_template: "{{ decision == 'update' }}"
         sequence:
+          - if:
+              - condition: template
+                value_template: "{{ auto_off_helper is string and auto_off_helper | length > 0 and is_state(auto_off_helper, 'on') }}"
+            then:
+              - service: input_boolean.turn_off
+                target:
+                  entity_id: "{{ auto_off_helper }}"
           # Update Active Bulbs (Native 30s)
           - if:
               - condition: template
@@ -824,6 +861,13 @@ action:
           - condition: template
             value_template: "{{ decision == 'dim' }}"
         sequence:
+          - if:
+              - condition: template
+                value_template: "{{ auto_off_helper is string and auto_off_helper | length > 0 and is_state(auto_off_helper, 'on') }}"
+            then:
+              - service: input_boolean.turn_off
+                target:
+                  entity_id: "{{ auto_off_helper }}"
           - if:
               - condition: template
                 value_template: "{{ expand(hue_list_bulbs) | selectattr('state', 'eq', 'on') | list | count > 0 }}"

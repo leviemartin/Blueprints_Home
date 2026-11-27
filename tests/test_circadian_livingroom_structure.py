@@ -20,7 +20,9 @@ NOTICE = ["fp2_unavailable_30m", "fp2_unknown_30m", "fp300_unavailable_30m", "fp
 CLAMP = "{{ [1, [60, late_night_timeout | int(1)] | min] | max }}"
 CHAIN = ["current_lux", "lux_age", "presence_sensors", "missing_sensors", "in_dog_window",
          "window_age", "is_presence_on", "late_night_minutes", "in_late_window", "off_minutes",
-         "empty_age", "room_empty", "dim_due", "was_empty", "lights_on", "bright", "decision"]
+         "empty_age", "room_empty", "dim_due", "was_empty", "lights_on", "manual_off", "bright",
+         "decision"]
+HELPER = "input_boolean.auto_off"
 
 
 @pytest.fixture
@@ -87,7 +89,7 @@ def _chain(bp, names, now, ctx):
 
 
 def state(bp, tid="update_loop", time="14:00:00", fp2="off", fp300="off", age=300,
-          lux="100", lux_age=3600, lights="on", table=None, gap=3600, **changes):
+          lux="100", lux_age=3600, lights="on", table=None, gap=3600, helper=None, **changes):
     """Run the decision chain. `age` is how long both sensors have been in their state;
     `gap` is how long the sensor that fired a presence_on trigger had been clear before."""
     now = at(time)
@@ -97,11 +99,14 @@ def state(bp, tid="update_loop", time="14:00:00", fp2="off", fp300="off", age=30
                  LUX: _St(lux, now - timedelta(seconds=lux_age))}
         for light in LIGHTS:
             table[light] = _St(lights, now)
+        if helper is not None:
+            table[HELPER] = _St(helper, now)
     ctx = dict(presence_fp2=FP2, presence_fp300=FP300, sensor_lux=LUX, presence_timeout=5,
                late_night_timeout=1, late_night_start="23:00:00", late_night_end="06:30:00",
                dog_start="01:00:00", dog_end="06:00:00",
                threshold_on=175, threshold_off=250, off_duration=10,
-               all_target_lights=LIGHTS, trigger={"id": tid}, table=table)
+               all_target_lights=LIGHTS, trigger={"id": tid}, table=table,
+               auto_off_helper=HELPER if helper is not None else [])
     if tid.startswith("presence_on_"):
         ctx["trigger"] = {"id": tid, "entity_id": FP2 if tid.endswith("fp2") else FP300,
                           "from_state": _St("off", now - timedelta(seconds=gap))}
@@ -435,7 +440,7 @@ def test_light_branches_follow_the_decision(bp):
         [{"condition": "template", "value_template": "{{ decision == 'update' }}"}],
         [{"condition": "template", "value_template": "{{ decision == 'dim' }}"}],
     ]
-    assert branches[0]["sequence"][0]["then"][0]["service"] == "light.turn_off"
+    assert branches[0]["sequence"][1]["then"][0]["service"] == "light.turn_off"
 
 
 def test_override_stops_everything_but_notices(bp):
@@ -600,7 +605,7 @@ def test_dim_level_is_thirty_percent_of_target(bp):
     for target, expected in ((29, 9), (100, 30), (2, 1), (1, 1)):
         assert render(template, at("03:00:00"), target_brightness=target) == expected
     branch = bp["action"][2]["choose"][3]
-    services = [step["then"][0] for step in branch["sequence"]]
+    services = [step["then"][0] for step in branch["sequence"][1:]]
     assert [s["service"] for s in services] == ["light.turn_on", "light.turn_on"]
     assert services[0]["data"]["brightness_pct"] == "{{ dim_pct }}"
     assert services[1]["data"]["brightness_pct"] == "{{ [1, (dim_pct * c_scale | float) | round(0) | int] | max }}"
@@ -642,22 +647,69 @@ def test_window_end_does_not_turn_lights_on_for_a_held_fp300(bp):
     (3600, "on", "none"),  # the FP300 kept the room occupied
 ])
 def test_manual_off_stays_off_until_the_room_was_empty(bp, gap, fp300, expected):
-    assert decide(bp, tid="presence_on_fp2", fp2="on", fp300=fp300, lights="off", lux="0", gap=gap) == expected
+    assert decide(bp, tid="presence_on_fp2", fp2="on", fp300=fp300, lights="off", lux="0", gap=gap,
+                  helper="off") == expected
+
+
+@pytest.mark.parametrize("gap,fp300", [(3600, "off"), (299, "off"), (3600, "on")])
+def test_our_own_off_always_relights_on_presence(bp, gap, fp300):
+    """Codex J4 P1: after a daylight or timeout off (helper on) any presence relights."""
+    assert decide(bp, tid="presence_on_fp2", fp2="on", fp300=fp300, lights="off", lux="0", gap=gap,
+                  helper="on") == "on"
+
+
+@pytest.mark.parametrize("gap,fp300", [(299, "off"), (3600, "on")])
+def test_without_helper_presence_relights_as_before(bp, gap, fp300):
+    assert decide(bp, tid="presence_on_fp2", fp2="on", fp300=fp300, lights="off", lux="0", gap=gap) == "on"
+
+
+@pytest.mark.parametrize("tid", ["lux_low", "ha_start", "reload"])
+def test_manual_off_survives_lux_low_and_restarts(bp, tid):
+    """Codex J4 P1: these paths must not undo a manual off."""
+    assert decide(bp, tid=tid, fp2="on", lights="off", lux="0", helper="off") == "none"
+    assert decide(bp, tid=tid, fp2="on", lights="off", lux="0", helper="on") == "on"
+
+
+def test_override_resume_still_relights_after_manual_off(bp):
+    assert decide(bp, tid="override_resume", fp2="on", lights="off", lux="0", helper="off") == "on"
+
+
+def test_manual_off_needs_lights_off_and_helper_off(bp):
+    assert state(bp, lights="off", helper="off")["manual_off"] is True
+    assert state(bp, lights="off", helper="on")["manual_off"] is False
+    assert state(bp, lights="on", helper="off")["manual_off"] is False
+    assert state(bp, lights="off")["manual_off"] is False
 
 
 def test_fresh_entry_in_late_window_uses_its_timeout(bp):
-    assert decide(bp, tid="presence_on_fp2", time="23:30:00", fp2="on", lights="off", lux="0", gap=60) == "on"
-    assert decide(bp, tid="presence_on_fp2", time="23:30:00", fp2="on", lights="off", lux="0", gap=59) == "none"
+    kw = dict(tid="presence_on_fp2", time="23:30:00", fp2="on", lights="off", lux="0", helper="off")
+    assert decide(bp, gap=60, **kw) == "on"
+    assert decide(bp, gap=59, **kw) == "none"
 
 
 def test_fresh_entry_in_dog_window_ignores_the_fp300(bp):
     assert decide(bp, tid="presence_on_fp2", time="03:00:00", fp2="on", fp300="on",
-                  lights="off", lux="0", gap=120) == "on"
+                  lights="off", lux="0", gap=120, helper="off") == "on"
 
 
 def test_missing_from_state_is_not_a_fresh_entry(bp):
-    assert decide(bp, tid="presence_on_fp2", fp2="on", lights="off", lux="0",
+    assert decide(bp, tid="presence_on_fp2", fp2="on", lights="off", lux="0", helper="off",
                   trigger={"id": "presence_on_fp2", "entity_id": FP2, "from_state": None}) == "none"
+
+
+def test_auto_off_helper_input(bp):
+    item = bp["blueprint"]["input"]["auto_off_helper"]
+    assert item["default"] == []
+    assert item["selector"] == {"entity": {"domain": "input_boolean"}}
+    assert bp["variables"]["auto_off_helper"].name == "auto_off_helper"
+
+
+def test_helper_bookkeeping_in_every_branch(bp):
+    branches = bp["action"][2]["choose"]
+    first = [b["sequence"][0]["then"][0]["service"] for b in branches]
+    assert first == ["input_boolean.turn_on", "input_boolean.turn_off",
+                     "input_boolean.turn_off", "input_boolean.turn_off"]
+    assert branches[0]["sequence"][1]["then"][0]["service"] == "light.turn_off"
 
 
 @pytest.mark.parametrize("tid", ["profile_day", "profile_dinner", "profile_toddler",
@@ -716,7 +768,7 @@ def test_profile_boundary_overrides_manual_changes(bp):
 
 
 def test_update_branch_targets_the_filtered_lists(bp):
-    steps = bp["action"][2]["choose"][2]["sequence"]
+    steps = bp["action"][2]["choose"][2]["sequence"][1:]
     assert steps[0]["if"][0]["value_template"] == "{{ update_bulbs | count > 0 }}"
     assert steps[0]["then"][0]["target"]["entity_id"] == "{{ update_bulbs }}"
     assert steps[1]["if"][0]["value_template"] == "{{ update_ceiling | count > 0 }}"

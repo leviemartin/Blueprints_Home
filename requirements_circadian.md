@@ -59,6 +59,7 @@ All blueprint inputs of v3.3.0, in blueprint order. `required` means the input h
 | `fp300_ignore_end` | `06:00:00` | End of the night window (exclusive; may cross midnight; equal to start = no window) |
 | `illuminance_entity` | required | FP2 illuminance sensor (FP300 lux is not read) |
 | `override_entity` | `[]` | Switch/input_boolean; while on, no light calls |
+| `auto_off_helper` | `[]` | input_boolean the automation turns on when it switches the lights off; empty disables manual-off protection |
 | `lux_on_threshold` | `150` | Lights turn on only below this lux |
 | `lux_off_threshold` | `400` | Lights turn off above this lux... |
 | `lux_off_duration` | `5` | ...held for this many minutes |
@@ -118,7 +119,7 @@ All blueprint inputs of v3.3.0, in blueprint order. `required` means the input h
     *   If FP2 lux > `lux_off_threshold` (default 400 lx) for `lux_off_duration` (default 5 min), turn OFF even if presence is detected. The 5-minute check also turns off when the current reading is above the threshold and has not changed for `lux_off_duration`.
 *   **Manual changes (no helper):**
     *   A lit light more than 5 % or 150 K away from the profile target (and not at the night dim level), or in a colour mode (xy, hs, rgb), counts as changed by hand. The 5-minute update and presence refreshes leave it alone until the next profile start (06:00 day, `time_dinner`, `time_toddler`, `time_evening`, `time_night`), which re-applies the profile to every lit light. Switching the lights off ends it too.
-    *   Lights switched off by hand stay off: a presence trigger switches lights on only when the room had been empty for the timeout before it (`presence_timeout`, or `late_night_timeout` in the late-night window, plus 1 min in the night window). Lux-low, override resume, HA start and reload can still switch them on.
+    *   Lights switched off by hand stay off (needs `auto_off_helper`): the automation turns the helper on whenever it switches the lights off itself and off whenever it turns them on or sees them on, so lights that are off while the helper is off were switched off by hand. A presence trigger then switches them on only when the room had been empty for the timeout before it (`presence_timeout`, or `late_night_timeout` in the late-night window, plus 1 min in the night window); lux-low, HA start and reload do not. Turning the override off does. Without the helper, presence switches lights on as in v3.2.0.
 *   **Manual Override:**
     *   Input: `override_entity` (Switch/Input Boolean).
     *   Behavior: If ON, automation pauses. Off timers that expire while it is on are not replayed.
