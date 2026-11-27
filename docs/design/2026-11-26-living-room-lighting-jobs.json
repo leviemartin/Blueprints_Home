@@ -162,9 +162,9 @@
     "J2",
     "J4"
    ],
-   "status": "committed",
+   "status": "deployed",
    "branch": "lighting-2026-11/J5-adjacent",
-   "merge_commit": null,
+   "merge_commit": "f53deea",
    "build": {
     "model": "claude-opus-5-5",
     "fresh_input": null,
@@ -173,7 +173,8 @@
     "output": null,
     "codex_review_tokens": 77772
    },
-   "notes": "Commit abe3a84. Codex: no P0/P1. P2 kept: (a) an active override suppresses the dead-sensor notification, which also stops the run; (b) a sensor that is already unavailable at start/reload gets no notification until it changes, because the hourly backstop covers missing entities only. Stages now come from how long the room has been empty, which removes the 2000 K guard bug. Lux uses template triggers because the sensor is optional; the hall is set to 220/150 lx and 10/5 min. lux_off_duration is now wired. Per-room helpers: input_boolean.kitchen_lights_auto_off, front_hall_lights_auto_off, toilet_lights_auto_off, attic_lights_auto_off. The drift test pins identical mode/kelvin/brightness formulas across both blueprints. Full suite 1172 passed, plus the 2 old precool failures. Merge, creating the helpers and the deploy wait for Martin's OK."
+   "notes": "Commit abe3a84. Codex: no P0/P1. P2 kept: (a) an active override suppresses the dead-sensor notification, which also stops the run; (b) a sensor that is already unavailable at start/reload gets no notification until it changes, because the hourly backstop covers missing entities only. Stages now come from how long the room has been empty, which removes the 2000 K guard bug. Lux uses template triggers because the sensor is optional; the hall is set to 220/150 lx and 10/5 min. lux_off_duration is now wired. Per-room helpers: input_boolean.kitchen_lights_auto_off, front_hall_lights_auto_off, toilet_lights_auto_off, attic_lights_auto_off. The drift test pins identical mode/kelvin/brightness formulas across both blueprints. Full suite 1172 passed, plus the 2 old precool failures. Merge, creating the helpers and the deploy wait for Martin's OK.",
+   "deploy": "2026-11-27 ~10:24 CET: created the 4 auto-off helpers. The kitchen helper is off because its lights were on; hall, toilet and attic are on because their lights were off. Deployed adjacent v2.1.0 and the 4 instances: every automation is on and every live config equals the repo. First runs: kitchen reload decided update; hall motion at 87 lx decided on; toilet reload decided none (empty 11 min, lights off); attic occupancy decided on. No template errors."
   }
  ],
  "followups": [
@@ -181,6 +182,17 @@
    "id": "F1",
    "due": "2027-04-15",
    "what": "Re-check living room 250/175 and hall 220/150 against spring lux data; look for cloud flicker (switches per day)."
+  },
+  {
+   "id": "F2",
+   "due": "2026-11-28",
+   "what": "Read the living room traces for 01:00-06:00 on 27-28 Nov: dog_window_dim/off and presence_off_night_fp2 fired, lights dimmed then went off, and the FP300 did not relight them."
+  },
+  {
+   "id": "F3",
+   "due": "when convenient",
+   "what": "The 2 test_bedroom_precool_structure failures predate this RFC (precool alias/version pins); they belong to the precool work, not lighting."
   }
- ]
+ ],
+ "closed": "2026-11-27: S0 and J1-J5 merged to local main and deployed; nothing pushed."
 }
