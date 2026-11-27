@@ -132,11 +132,18 @@
    "depends_on": [
     "J2"
    ],
-   "status": "pending",
+   "status": "committed",
    "branch": "lighting-2026-11/J4-manual",
    "merge_commit": null,
-   "build": null,
-   "notes": "If stateless detection proves unreliable, stop and ask Martin about an input_boolean per room (D20 fallback)."
+   "build": {
+    "model": "claude-opus-5-5",
+    "fresh_input": null,
+    "cache_writes": null,
+    "cache_reads": null,
+    "output": null,
+    "codex_review_tokens": 143901
+   },
+   "notes": "Commits 400e680, 29ae0c3, ef8e8a6, 483ccef. Review 1: P0 fixed (target_effect was rendered after the update lists); P2 fixed (bulb colour always counts as manual). Two P1s showed that stateless manual-off detection cannot tell who switched the lights off, so the D20 fallback applies: Martin chose one input_boolean per room (auto_off_helper). Review 2 of the helper: P1 fixed (helper cleared only after the light calls). P1 fixed (a light change more than 30 s after our off counts as manual, which needs no self-trigger). P1 declined: override resume re-lights an occupied dark room even after a manual off, by design and documented. P2 kept: the helper is set before light.turn_off, so a failed call leaves the helper on and the next update resets it. Decided by orchestrator: tolerance 5 % brightness / 150 K; the night dim level counts as ours; a colour mode counts as manual; profile starts at 06:00 and the 4 profile times re-apply to every lit light. Deploy prerequisite: create input_boolean.living_room_lights_auto_off in HA. Note: during this job another process edited bedroom_precool.yaml, the LG deploy JSON and 2 precool/LG tests in this checkout; those are not part of J4 (one accidental staging was undone). Lighting tests 298+ passed."
   },
   {
    "id": "J5",
