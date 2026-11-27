@@ -1,4 +1,4 @@
-"""Contract tests for circadian_livingroom.yaml v3.1.0 (RFC 2026-11-26, job J2).
+"""Contract tests for circadian_livingroom.yaml v3.2.0 (RFC 2026-11-26, jobs J2 and J3).
 
 Every trigger recomputes one `decision` (off / on / update / none) from the current state.
 HA owns the state-trigger timers; these tests render the templates with fake states.
@@ -18,9 +18,9 @@ FP2, FP300, LUX = "binary_sensor.fp2", "binary_sensor.fp300", "sensor.lux"
 LIGHTS = ["light.a", "light.b"]
 NOTICE = ["fp2_unavailable_30m", "fp2_unknown_30m", "fp300_unavailable_30m", "fp300_unknown_30m"]
 CLAMP = "{{ [1, [60, late_night_timeout | int(1)] | min] | max }}"
-CHAIN = ["current_lux", "lux_age", "presence_sensors", "missing_sensors", "is_presence_on",
-         "late_night_minutes", "in_late_window", "off_minutes", "room_empty", "lights_on",
-         "bright", "decision"]
+CHAIN = ["current_lux", "lux_age", "presence_sensors", "missing_sensors", "in_dog_window",
+         "window_age", "is_presence_on", "late_night_minutes", "in_late_window", "off_minutes",
+         "empty_age", "room_empty", "dim_due", "lights_on", "bright", "decision"]
 
 
 @pytest.fixture
@@ -97,6 +97,7 @@ def state(bp, tid="update_loop", time="14:00:00", fp2="off", fp300="off", age=30
             table[light] = _St(lights, now)
     ctx = dict(presence_fp2=FP2, presence_fp300=FP300, sensor_lux=LUX, presence_timeout=5,
                late_night_timeout=1, late_night_start="23:00:00", late_night_end="06:30:00",
+               dog_start="01:00:00", dog_end="06:00:00",
                threshold_on=175, threshold_off=250, off_duration=10,
                all_target_lights=LIGHTS, trigger={"id": tid}, table=table)
     ctx.update(changes)
@@ -137,9 +138,9 @@ def test_the_fakes_are_strict():
         env.from_string("{{ missing }}").render()
 
 
-def test_version_is_3_1_0(bp):
-    assert bp["blueprint"]["name"].endswith("v3.1.0")
-    assert "**Version: 3.1.0" in bp["blueprint"]["description"]
+def test_version_is_3_2_0(bp):
+    assert bp["blueprint"]["name"].endswith("v3.2.0")
+    assert "**Version: 3.2.0" in bp["blueprint"]["description"]
 
 
 def test_presence_inputs(bp, text):
@@ -187,6 +188,9 @@ def test_inputs_reach_templates(bp):
                       ("threshold_on", "lux_on_threshold"), ("threshold_off", "lux_off_threshold"),
                       ("off_duration", "lux_off_duration")):
         assert bp["variables"][key].name == name, key
+    for key in ("dog_start", "dog_end"):
+        assert bp["variables"][key].name == "fp300_ignore_" + key.split("_")[1]
+        assert bp["trigger_variables"][key].name == "fp300_ignore_" + key.split("_")[1]
     assert bp["trigger_variables"]["late_night_timeout"].name == "late_night_timeout"
 
 
@@ -222,7 +226,14 @@ def test_trigger_table(bp):
         sensor, st = tid.split("_")[0], tid.split("_")[1]
         assert plain(ts[tid]) == {"platform": "state", "entity_id": "presence_" + sensor,
                                   "to": st, "for": {"minutes": 30}, "id": tid}
-    assert list(ts) == expected_ids + [t["id"] for t in rest] + NOTICE
+    t = plain(dict(ts["presence_off_night_fp2"]))
+    assert t == {"platform": "state", "entity_id": "presence_fp2", "id": "presence_off_night_fp2",
+                 "to": ["off", "unavailable", "unknown"],
+                 "for": {"minutes": "{{ [1, [60, late_night_timeout | int(1)] | min] | max + 1 }}"}}
+    for tid in ("dog_window_dim", "dog_window_off"):
+        assert ts[tid]["platform"] == "template"
+    assert list(ts) == (expected_ids + ["presence_off_night_fp2"] + [t["id"] for t in rest]
+                        + ["dog_window_dim", "dog_window_off"] + NOTICE)
     assert len(bp["trigger"]) == len(ts)
     assert bp["mode"] == "restart"
     assert bp["max_exceeded"] == "silent"
@@ -412,6 +423,7 @@ def test_light_branches_follow_the_decision(bp):
         [{"condition": "template", "value_template": "{{ decision == 'off' }}"}],
         [{"condition": "template", "value_template": "{{ decision == 'on' }}"}],
         [{"condition": "template", "value_template": "{{ decision == 'update' }}"}],
+        [{"condition": "template", "value_template": "{{ decision == 'dim' }}"}],
     ]
     assert branches[0]["sequence"][0]["then"][0]["service"] == "light.turn_off"
 
@@ -487,3 +499,126 @@ def test_night_profile_independent_of_window(bp):
 
 def test_no_lux_guard_on_updates(bp, text):
     assert "threshold_on + 300" not in text
+
+
+# --- J3: night window (D9-D11, D18, D19) --------------------------------------------------
+
+def test_night_window_inputs(bp):
+    inputs = bp["blueprint"]["input"]
+    for key, value in (("fp300_ignore_start", "01:00:00"), ("fp300_ignore_end", "06:00:00")):
+        assert inputs[key]["default"] == value
+        assert inputs[key]["selector"] == {"time": None}
+    keys = list(inputs)
+    assert keys.index("fp300_ignore_start") == keys.index("late_night_end") + 1
+    assert keys.index("fp300_ignore_end") == keys.index("fp300_ignore_start") + 1
+
+
+@pytest.mark.parametrize("time,expected", [
+    ("01:00:00", True), ("03:00:00", True), ("05:59:59", True),
+    ("00:59:59", False), ("06:00:00", False), ("14:00:00", False)])
+def test_dog_window_edges(bp, time, expected):
+    assert state(bp, time=time)["in_dog_window"] is expected
+
+
+def test_dog_window_start_equals_end_is_empty(bp):
+    assert state(bp, time="03:00:00", dog_start="03:00:00", dog_end="03:00:00")["in_dog_window"] is False
+
+
+def test_dog_window_can_cross_midnight(bp):
+    assert state(bp, time="23:30:00", dog_start="23:00:00", dog_end="02:00:00")["in_dog_window"] is True
+    assert state(bp, time="02:30:00", dog_start="23:00:00", dog_end="02:00:00")["in_dog_window"] is False
+
+
+def test_fp300_ignored_in_window_only(bp):
+    assert state(bp, time="03:00:00", fp300="on")["is_presence_on"] is False
+    assert state(bp, time="03:00:00", fp2="on")["is_presence_on"] is True
+    assert state(bp, time="00:30:00", fp300="on")["is_presence_on"] is True
+    assert state(bp, time="06:00:00", fp300="on")["is_presence_on"] is True
+
+
+def test_fp300_presence_on_cannot_turn_lights_on_in_window(bp):
+    assert decide(bp, tid="presence_on_fp300", time="03:00:00", fp300="on", lights="off", lux="0") == "none"
+    assert decide(bp, tid="presence_on_fp2", time="03:00:00", fp2="on", lights="off", lux="0") == "on"
+
+
+@pytest.mark.parametrize("age,expected", [(59, "update"), (60, "dim"), (119, "dim"), (120, "off")])
+def test_fp2_clear_dims_then_turns_off(bp, age, expected):
+    assert decide(bp, time="03:00:00", age=age, lux="0") == expected
+    assert decide(bp, time="03:00:00", age=age, fp300="on", lux="0") == expected
+
+
+def _held_by_fp300(bp, time, **kw):
+    now = at(time)
+    table = {FP2: _St("off", now - timedelta(hours=2)), FP300: _St("on", now - timedelta(hours=2)),
+             LUX: _St("0", now), "light.a": _St("on", now), "light.b": _St("on", now)}
+    return state(bp, time=time, table=table, **kw)
+
+
+@pytest.mark.parametrize("time,expected", [
+    ("00:59:00", "update"), ("01:00:30", "update"), ("01:01:00", "dim"), ("01:01:59", "dim"), ("01:02:00", "off")])
+def test_fp300_held_lights_dim_then_off_after_window_start(bp, time, expected):
+    """The FP300 stops counting at the window start: dim after late_night_timeout, off a minute later."""
+    assert _held_by_fp300(bp, time)["decision"] == expected
+
+
+def test_fp300_cleared_before_window_counts_its_own_age(bp):
+    now = at("01:00:30")
+    table = {FP2: _St("off", now - timedelta(hours=2)), FP300: _St("off", now - timedelta(minutes=30)),
+             LUX: _St("0", now), "light.a": _St("on", now), "light.b": _St("on", now)}
+    assert state(bp, time="01:00:30", table=table)["decision"] == "off"
+
+
+def test_fp2_return_restores_from_dim(bp):
+    assert decide(bp, tid="presence_on_fp2", time="03:00:00", fp2="on", lux="0") == "update"
+
+
+def test_late_window_outside_dog_window_unchanged(bp):
+    assert decide(bp, time="23:30:00", age=60) == "off"
+    assert decide(bp, time="06:15:00", age=60) == "off"
+    assert decide(bp, time="00:30:00", age=60) == "off"
+
+
+def test_missing_fp300_in_window(bp):
+    now = at("03:00:00")
+    table = {FP2: _St("off", now - timedelta(seconds=120)), LUX: _St("0", now),
+             "light.a": _St("on", now), "light.b": _St("on", now)}
+    assert state(bp, time="03:00:00", table=table)["decision"] == "off"
+
+
+def test_dim_level_is_thirty_percent_of_target(bp):
+    template = _var_template(bp, "dim_pct")
+    for target, expected in ((29, 9), (100, 30), (2, 1), (1, 1)):
+        assert render(template, at("03:00:00"), target_brightness=target) == expected
+    branch = bp["action"][2]["choose"][3]
+    services = [step["then"][0] for step in branch["sequence"]]
+    assert [s["service"] for s in services] == ["light.turn_on", "light.turn_on"]
+    assert services[0]["data"]["brightness_pct"] == "{{ dim_pct }}"
+    assert services[1]["data"]["brightness_pct"] == "{{ [1, (dim_pct * c_scale | float) | round(0) | int] | max }}"
+
+
+@pytest.mark.parametrize("time,dim,off", [
+    ("00:59:00", False, False), ("01:00:00", False, False), ("01:01:00", True, False),
+    ("01:01:59", True, False), ("01:02:00", False, True), ("01:03:00", False, False), ("13:01:00", False, False)])
+def test_dog_window_wake_triggers(bp, time, dim, off):
+    ts = triggers(bp)
+    ctx = dict(dog_start="01:00:00", dog_end="06:00:00", late_night_timeout=1)
+    assert render(ts["dog_window_dim"]["value_template"], at(time), **ctx) is dim
+    assert render(ts["dog_window_off"]["value_template"], at(time), **ctx) is off
+    assert render(ts["dog_window_dim"]["value_template"], at("01:01:00"),
+                  dog_start="01:00:00", dog_end="01:00:00", late_night_timeout=1) is False
+
+
+@pytest.mark.parametrize("fp300", ["off", "unknown", "unavailable", "on"])
+def test_fp300_changes_inside_window_do_not_reset_the_room(bp, fp300):
+    """Codex J3 P1: an FP300 flip at 02:59 must not re-brighten a dimmed, FP2-empty room."""
+    now = at("03:00:00")
+    table = {FP2: _St("off", now - timedelta(seconds=90)), FP300: _St(fp300, now - timedelta(seconds=5)),
+             LUX: _St("0", now), "light.a": _St("on", now), "light.b": _St("on", now)}
+    assert state(bp, time="03:00:00", table=table)["decision"] == "dim"
+    table[FP2] = _St("off", now - timedelta(seconds=120))
+    assert state(bp, time="03:00:00", table=table)["decision"] == "off"
+
+
+def test_window_end_does_not_turn_lights_on_for_a_held_fp300(bp):
+    """By design (Codex J3 P1 #2 declined): at 06:00 a still-on FP300 is most likely the dog."""
+    assert decide(bp, tid="update_loop", time="06:00:00", fp300="on", lights="off", lux="0") == "none"

@@ -1,7 +1,7 @@
 blueprint:
-  name: "Circadian Living Room Lights v3.1.0"
+  name: "Circadian Living Room Lights v3.2.0"
   description: >
-    **Version: 3.1.0 - Re-check on every trigger (RFC 2026-11-26)**
+    **Version: 3.2.0 - Night window ignores the FP300 (RFC 2026-11-26)**
     
     A comprehensive lighting automation for the Living Room that adapts to human presence, 
     circadian rhythms, and specific family routines. Optimized for Philips Hue Infuse and Bulbs.
@@ -21,6 +21,9 @@ blueprint:
     - **Presence Timeout:** Lights turn off only after both sensors are clear for presence_timeout,
       or late_night_timeout inside the late-night window. A missing, unavailable or unknown sensor
       counts as clear.
+    - **Night Window:** Between fp300_ignore_start and fp300_ignore_end (01:00-06:00) the FP300 is
+      ignored (it cannot turn lights on or keep them on). Before turning off in the window the lights
+      dim to 30 % of the profile brightness for 1 min; FP2 presence restores them.
     - **Sensor Offline:** After 30 min unavailable or unknown, push to each notify target; a sensor
       missing from Home Assistant is pushed once an hour.
     
@@ -89,6 +92,18 @@ blueprint:
     late_night_end:
       name: Late-Night End
       default: "06:30:00"
+      selector:
+        time:
+    fp300_ignore_start:
+      name: Ignore FP300 From
+      description: "Start of the night window in which the FP300 is ignored (e.g. a dog on the couch). Equal start and end means no window."
+      default: "01:00:00"
+      selector:
+        time:
+    fp300_ignore_end:
+      name: Ignore FP300 Until
+      description: "End of the night window (exclusive; may cross midnight)."
+      default: "06:00:00"
       selector:
         time:
     illuminance_entity:
@@ -307,6 +322,8 @@ max_exceeded: silent
 
 trigger_variables:
   late_night_timeout: !input late_night_timeout
+  dog_start: !input fp300_ignore_start
+  dog_end: !input fp300_ignore_end
 
 trigger:
   # Either sensor can turn the room on.
@@ -344,6 +361,13 @@ trigger:
     for:
       minutes: "{{ [1, [60, late_night_timeout | int(1)] | min] | max }}"
     id: "presence_off_short_fp300"
+  # Night window: FP2 clear for late_night_timeout dims (short trigger above), one minute more turns off.
+  - platform: state
+    entity_id: !input presence_fp2
+    to: ["off", "unavailable", "unknown"]
+    for:
+      minutes: "{{ [1, [60, late_night_timeout | int(1)] | min] | max + 1 }}"
+    id: "presence_off_night_fp2"
 
   # Re-check: circadian shift, missed timers and missed lux crossings. Never turns lights on.
   - platform: time_pattern
@@ -374,6 +398,28 @@ trigger:
     entity_id: !input override_entity
     to: "off"
     id: "override_resume"
+
+  # Night window start: lights the FP300 was holding dim, then go off (re-checked by the decision).
+  - platform: template
+    value_template: >
+        {% set ns = namespace(m=-1) %}
+        {% if dog_start != dog_end %}
+          {% set start = today_at(dog_start) %}
+          {% if start > now() %}{% set start = start - timedelta(days=1) %}{% endif %}
+          {% set ns.m = ((as_timestamp(now()) - as_timestamp(start)) // 60) | int %}
+        {% endif %}
+        {{ ns.m == [1, [60, late_night_timeout | int(1)] | min] | max }}
+    id: "dog_window_dim"
+  - platform: template
+    value_template: >
+        {% set ns = namespace(m=-1) %}
+        {% if dog_start != dog_end %}
+          {% set start = today_at(dog_start) %}
+          {% if start > now() %}{% set start = start - timedelta(days=1) %}{% endif %}
+          {% set ns.m = ((as_timestamp(now()) - as_timestamp(start)) // 60) | int %}
+        {% endif %}
+        {{ ns.m == [1, [60, late_night_timeout | int(1)] | min] | max + 1 }}
+    id: "dog_window_off"
 
   - platform: state
     entity_id: !input presence_fp2
@@ -413,6 +459,8 @@ variables:
   late_night_timeout: !input late_night_timeout
   late_night_start: !input late_night_start
   late_night_end: !input late_night_end
+  dog_start: !input fp300_ignore_start
+  dog_end: !input fp300_ignore_end
   notify_targets: !input notify_targets
   entity_override: !input override_entity
   threshold_on: !input lux_on_threshold
@@ -464,9 +512,25 @@ action:
         {% set ns = namespace(m=[]) %}
         {% for s in presence_sensors %}{% if states[s] is none %}{% set ns.m = ns.m + [s] %}{% endif %}{% endfor %}
         {{ ns.m }}
+      in_dog_window: >
+        {% set t = now().strftime('%H:%M:%S') %}
+        {% if dog_start < dog_end %}
+          {{ dog_start <= t and t < dog_end }}
+        {% elif dog_start > dog_end %}
+          {{ dog_start <= t or t < dog_end }}
+        {% else %}{{ false }}{% endif %}
+      window_age: >
+        {% if in_dog_window %}
+          {% set start = today_at(dog_start) %}
+          {% if start > now() %}{% set start = start - timedelta(days=1) %}{% endif %}
+          {{ as_timestamp(now()) - as_timestamp(start) }}
+        {% else %}{{ 0 }}{% endif %}
+      # Inside the night window the FP300 does not count (D9).
       is_presence_on: >
         {% set ns = namespace(v=false) %}
-        {% for s in presence_sensors %}{% if is_state(s, 'on') %}{% set ns.v = true %}{% endif %}{% endfor %}
+        {% for s in presence_sensors %}
+          {% if is_state(s, 'on') and not (in_dog_window and s == presence_fp300) %}{% set ns.v = true %}{% endif %}
+        {% endfor %}
         {{ ns.v }}
       late_night_minutes: "{{ [1, [60, late_night_timeout | int(1)] | min] | max }}"
       in_late_window: >
@@ -476,18 +540,26 @@ action:
         {% elif late_night_start > late_night_end %}
           {{ late_night_start <= t or t < late_night_end }}
         {% else %}{{ false }}{% endif %}
-      off_minutes: "{{ late_night_minutes if in_late_window else presence_timeout | float(5) }}"
-      room_empty: >
-        {% set ns = namespace(v=true) %}
+      off_minutes: "{{ late_night_minutes if (in_late_window or in_dog_window) else presence_timeout | float(5) }}"
+      # Seconds every counted sensor has been clear. A missing sensor is skipped; a present one
+      # with no last_changed counts as just changed. In the night window the FP300 counts as clear
+      # since the window start at the latest, whatever it does inside the window.
+      empty_age: >
+        {% set ns = namespace(a=1000000000) %}
         {% for s in presence_sensors %}
           {% set st = states[s] %}
           {% if st is not none %}
             {% set lc = st.last_changed if st.last_changed is defined else none %}
-            {% if st.state not in ['off', 'unavailable', 'unknown'] or lc is none
-                  or as_timestamp(now()) - as_timestamp(lc) < off_minutes * 60 %}{% set ns.v = false %}{% endif %}
+            {% set clear = st.state in ['off', 'unavailable', 'unknown'] %}
+            {% set own = as_timestamp(now()) - as_timestamp(lc) if clear and lc is not none else 0 %}
+            {# In the window FP300 changes do not count: never younger than the window itself. #}
+            {% set age = [own, window_age] | max if in_dog_window and s == presence_fp300 else own %}
+            {% set ns.a = [ns.a, age] | min %}
           {% endif %}
         {% endfor %}
-        {{ ns.v }}
+        {{ ns.a }}
+      room_empty: "{{ empty_age >= (off_minutes + (1 if in_dog_window else 0)) * 60 }}"
+      dim_due: "{{ in_dog_window and not room_empty and empty_age >= off_minutes * 60 }}"
       lights_on: >
         {% set ns = namespace(v=false) %}
         {% for l in all_target_lights %}{% if is_state(l, 'on') %}{% set ns.v = true %}{% endif %}{% endfor %}
@@ -503,6 +575,7 @@ action:
         {% set tid = trigger.id | default('') %}
         {% set dark = current_lux is not number or current_lux < threshold_on | float(0) %}
         {% if lights_on and room_empty %}off
+        {% elif lights_on and dim_due %}dim
         {% elif lights_on and bright %}off
         {% elif not lights_on and is_presence_on and dark
               and tid in ['presence_on_fp2', 'presence_on_fp300', 'lux_low', 'override_resume', 'ha_start', 'reload'] %}on
@@ -543,6 +616,7 @@ action:
         {% else %} 100 {% endif %}
 
       ceiling_bri: "{{ (target_brightness | float * c_scale | float) | round(0) | int }}"
+      dim_pct: "{{ [1, (target_brightness | float * 0.3) | round(0) | int] | max }}"
 
       target_effect: >
         {% if mode == 'evening' %} {{ e_evening }}
@@ -664,6 +738,33 @@ action:
                           color_temp_kelvin: "{{ target_kelvin }}"
                           brightness_pct: "{{ ceiling_bri }}"
                           transition: 30
+
+      - conditions:
+          - condition: template
+            value_template: "{{ decision == 'dim' }}"
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ expand(hue_list_bulbs) | selectattr('state', 'eq', 'on') | list | count > 0 }}"
+            then:
+              - service: light.turn_on
+                target:
+                  entity_id: >
+                    {{ expand(hue_list_bulbs) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
+                data:
+                  brightness_pct: "{{ dim_pct }}"
+                  transition: 2
+          - if:
+              - condition: template
+                value_template: "{{ expand(hue_list_ceiling) | selectattr('state', 'eq', 'on') | list | count > 0 }}"
+            then:
+              - service: light.turn_on
+                target:
+                  entity_id: >
+                    {{ expand(hue_list_ceiling) | selectattr('state', 'eq', 'on') | map(attribute='entity_id') | list }}
+                data:
+                  brightness_pct: "{{ [1, (dim_pct * c_scale | float) | round(0) | int] | max }}"
+                  transition: 2
 
   # 4. Offline notices, after the light calls. mode: restart can interrupt a push.
   - choose:
