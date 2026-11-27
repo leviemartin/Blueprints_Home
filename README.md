@@ -104,12 +104,12 @@ Living room lighting that follows presence, the sun and the family routine (v3.3
 *   Hue bulbs and/or Hue Infuse ceiling lights; `sun.sun`
 *   Optional: an override switch or `input_boolean`; `notify.*` services for the offline push
 
-### FP300 setup (Zigbee2MQTT)
-Set by hand in Zigbee2MQTT; the blueprint writes no device settings.
-*   Presence source: mmWave + PIR.
-*   `absence_delay_timer`: 60 s.
+### FP300 setup (Matter)
+Paired over Matter since 22 Nov 2026 (`binary_sensor.aqara_presence_multisensor_fp300_occupancy`); the blueprint writes no device settings.
+*   Matter exposes one occupancy setting: **Hold time** (`number.aqara_presence_multisensor_fp300_hold_time`), currently 10 s.
+*   The mmWave/PIR detection mode and sensitivity are not exposed over Matter; the device default (mmWave + PIR) is used.
 
-At night this gives about 2 min from the last motion on the couch to lights off (60 s absence delay plus the 1 min `late_night_timeout`), when the FP2 is already clear.
+Outside the night window this gives about 1 min 10 s from the last motion on the couch to lights off in the late-night window (10 s hold time plus the 1 min `late_night_timeout`), when the FP2 is already clear. Inside the night window (01:00-06:00) the FP300 is ignored.
 
 ### Installation
 1. Update the blueprint and the living room instance with the deploy script, dry-run first:
