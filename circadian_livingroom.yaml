@@ -668,6 +668,10 @@ action:
 
       ceiling_bri: "{{ (target_brightness | float * c_scale | float) | round(0) | int }}"
       dim_pct: "{{ [1, (target_brightness | float * 0.3) | round(0) | int] | max }}"
+      target_effect: >
+        {% if mode == 'evening' %} {{ e_evening }}
+        {% elif mode == 'night' %} {{ e_night }}
+        {% else %} none {% endif %}
       # Lit lights the update may touch. A light more than 5 % or 150 K away from the target (and
       # not at our own dim level), or in a colour mode, was changed by hand: skip it until the
       # next profile start (D6, D20).
@@ -682,7 +686,7 @@ action:
             {% set k = a.get('color_temp_kelvin') %}
             {% set bri_ok = (pct - target_brightness | float(0)) | abs <= 5 or (pct - dim_pct | float(0)) | abs <= 5 %}
             {% set k_ok = k is none or (k | float(0) - target_kelvin | float(0)) | abs <= 150 %}
-            {% set mode_ok = target_effect != 'none' or a.get('color_mode') in [none, 'color_temp', 'brightness', 'onoff'] %}
+            {% set mode_ok = a.get('color_mode') in [none, 'color_temp', 'brightness', 'onoff'] %}
             {% if force_update or (bri_ok and k_ok and mode_ok) %}{% set ns.l = ns.l + [l] %}{% endif %}
           {% endif %}
         {% endfor %}
@@ -703,10 +707,6 @@ action:
         {% endfor %}
         {{ ns.l }}
 
-      target_effect: >
-        {% if mode == 'evening' %} {{ e_evening }}
-        {% elif mode == 'night' %} {{ e_night }}
-        {% else %} none {% endif %}
 
   # 3. Apply the decision.
   - choose:

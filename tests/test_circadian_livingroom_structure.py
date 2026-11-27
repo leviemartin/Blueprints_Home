@@ -722,3 +722,18 @@ def test_update_branch_targets_the_filtered_lists(bp):
     assert steps[1]["if"][0]["value_template"] == "{{ update_ceiling | count > 0 }}"
     ceiling_targets = [c["sequence"][0]["target"]["entity_id"] for c in steps[1]["then"][0]["choose"]]
     assert ceiling_targets == ["{{ update_ceiling }}", "{{ update_ceiling }}"]
+
+
+def test_update_lists_render_after_target_effect(bp):
+    """Codex J4 P0: HA renders variables in order; the lists must not read later names."""
+    step = next(a for a in bp["action"] if "variables" in a)["variables"]
+    names = list(step)
+    for later in ("update_bulbs", "update_ceiling"):
+        assert names.index("target_effect") < names.index(later)
+        assert names.index("dim_pct") < names.index(later)
+
+
+def test_bulb_colour_counts_as_manual_even_with_an_effect(bp):
+    """Codex J4 P2: effects only run on the ceiling, so a bulb in xy was changed by hand."""
+    table = {"light.a": _lit(50, 2500, "xy"), "light.c": _lit(30, 2500, "xy")}
+    assert _update(bp, table, target_effect="candlelight") == ([], ["light.c"])
