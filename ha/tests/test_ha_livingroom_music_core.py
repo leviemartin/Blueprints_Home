@@ -6,7 +6,7 @@ from homeassistant.core import State, callback
 from conftest import REPO, advance, settle
 
 FP2 = "binary_sensor.presence_sensor_fp2_e863_presence_sensor_1"
-FP300 = "binary_sensor.living_room_main_fp300_couch_occupancy_sensor"
+FP300 = "binary_sensor.aqara_presence_multisensor_fp300_occupancy"
 SONOS = "media_player.sonos"
 BEDROOM = "media_player.bedroom"
 LG = "media_player.lg_webos_tv_oled65c9pla"

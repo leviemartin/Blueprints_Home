@@ -171,7 +171,7 @@ script:
       - condition: template
         value_template: "{{ s in [0, 1, 2, 3, 4, 5] }}"
       - condition: template
-        value_template: "{{ s <= 3 or down or (is_state('input_boolean.livingroom_music_kids', 'on') and is_state('timer.livingroom_music_kids', 'active') and is_state('input_boolean.livingroom_music_approved', 'on') and (states('input_number.livingroom_music_approval_session') | int(-2)) == (states('input_number.livingroom_music_kids_session') | int(-1)) and (is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on') or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on'))) }}"
+        value_template: "{{ s <= 3 or down or (is_state('input_boolean.livingroom_music_kids', 'on') and is_state('timer.livingroom_music_kids', 'active') and is_state('input_boolean.livingroom_music_approved', 'on') and (states('input_number.livingroom_music_approval_session') | int(-2)) == (states('input_number.livingroom_music_kids_session') | int(-1)) and (is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on') or is_state('binary_sensor.aqara_presence_multisensor_fp300_occupancy', 'on'))) }}"
       - condition: template
         value_template: "{{ session is not defined or (session | int(-2)) == (states('input_number.livingroom_music_kids_session') | int(-1)) }}"
       - &volume_start_guard
@@ -204,7 +204,7 @@ script:
       - *volume_available
       - *volume_start_guard
       - condition: template
-        value_template: "{{ (session is not defined or (session | int(-2)) == (states('input_number.livingroom_music_kids_session') | int(-1))) and (level <= 0.20 or (is_state('input_boolean.livingroom_music_kids', 'on') and is_state('timer.livingroom_music_kids', 'active') and is_state('input_boolean.livingroom_music_approved', 'on') and (states('input_number.livingroom_music_approval_session') | int(-2)) == (states('input_number.livingroom_music_kids_session') | int(-1)) and (down or is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on') or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on')))) }}"
+        value_template: "{{ (session is not defined or (session | int(-2)) == (states('input_number.livingroom_music_kids_session') | int(-1))) and (level <= 0.20 or (is_state('input_boolean.livingroom_music_kids', 'on') and is_state('timer.livingroom_music_kids', 'active') and is_state('input_boolean.livingroom_music_approved', 'on') and (states('input_number.livingroom_music_approval_session') | int(-2)) == (states('input_number.livingroom_music_kids_session') | int(-1)) and (down or is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on') or is_state('binary_sensor.aqara_presence_multisensor_fp300_occupancy', 'on')))) }}"
       - action: media_player.volume_set
         target:
           entity_id:
@@ -334,7 +334,7 @@ script:
         continue_on_timeout: false
       - *may_start
       - condition: "template"
-        value_template: "{{ is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on') or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on') }}"
+        value_template: "{{ is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on') or is_state('binary_sensor.aqara_presence_multisensor_fp300_occupancy', 'on') }}"
       - condition: "state"
         entity_id: "input_boolean.livingroom_music_kids"
         state: "off"
@@ -463,7 +463,7 @@ script:
                 entity_id: "media_player.sonos"
                 state: "playing"
               - condition: "template"
-                value_template: "{{ is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on') or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on') }}"
+                value_template: "{{ is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on') or is_state('binary_sensor.aqara_presence_multisensor_fp300_occupancy', 'on') }}"
               - *may_start
             sequence:
               - action: "script.livingroom_music_fresh_start"
@@ -478,7 +478,7 @@ script:
                 entity_id: "input_boolean.livingroom_music_hands_off"
                 state: "off"
               - condition: "template"
-                value_template: "{{ not (is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on') or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on')) or states('media_player.lg_webos_tv_oled65c9pla') not in ['off', 'standby', 'unknown', 'unavailable'] or states('media_player.marantz_cinema_50') not in ['off', 'standby', 'unknown', 'unavailable'] or states('alarm_control_panel.house_alarm') in ['armed_away', 'armed_night', 'arming', 'pending', 'triggered'] or now().strftime('%H:%M:%S') < '07:30:00' or now().strftime('%H:%M:%S') >= '22:00:00' }}"
+                value_template: "{{ not (is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on') or is_state('binary_sensor.aqara_presence_multisensor_fp300_occupancy', 'on')) or states('media_player.lg_webos_tv_oled65c9pla') not in ['off', 'standby', 'unknown', 'unavailable'] or states('media_player.marantz_cinema_50') not in ['off', 'standby', 'unknown', 'unavailable'] or states('alarm_control_panel.house_alarm') in ['armed_away', 'armed_night', 'arming', 'pending', 'triggered'] or now().strftime('%H:%M:%S') < '07:30:00' or now().strftime('%H:%M:%S') >= '22:00:00' }}"
               - condition: "template"
                 value_template: "{{ not (state_attr('media_player.sonos', 'source') == 'Spotify Connect' and ((state_attr('media_player.sonos', 'media_content_id') or '') | string).startswith('x-sonos-vli:')) }}"
             sequence:
@@ -825,7 +825,7 @@ automation:
         id: occupied
         value_template: >-
           {{ is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on')
-             or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on') }}
+             or is_state('binary_sensor.aqara_presence_multisensor_fp300_occupancy', 'on') }}
       - trigger: template
         id: unblocked
         value_template: >-
@@ -847,7 +847,7 @@ automation:
       - condition: template
         value_template: >-
           {{ is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on')
-             or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on') }}
+             or is_state('binary_sensor.aqara_presence_multisensor_fp300_occupancy', 'on') }}
       - *may_start
       - condition: state
         entity_id: input_boolean.livingroom_music_kids
@@ -966,12 +966,12 @@ automation:
         id: empty
         value_template: >-
           {{ not (is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on')
-             or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on')) }}
+             or is_state('binary_sensor.aqara_presence_multisensor_fp300_occupancy', 'on')) }}
       - trigger: template
         id: occupied
         value_template: >-
           {{ is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on')
-             or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on') }}
+             or is_state('binary_sensor.aqara_presence_multisensor_fp300_occupancy', 'on') }}
       - trigger: homeassistant
         id: restart
         event: start
@@ -996,7 +996,7 @@ automation:
                 value_template: >-
                   {{ trigger.id in ['restart', 'playing']
                      and not (is_state('binary_sensor.presence_sensor_fp2_e863_presence_sensor_1', 'on')
-                       or is_state('binary_sensor.living_room_main_fp300_couch_occupancy_sensor', 'on')) }}
+                       or is_state('binary_sensor.aqara_presence_multisensor_fp300_occupancy', 'on')) }}
               - condition: state
                 entity_id: timer.livingroom_music_empty
                 state: idle
