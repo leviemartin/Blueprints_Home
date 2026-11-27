@@ -243,14 +243,15 @@
    "depends_on": [
     "T1b"
    ],
-   "status": "committed",
+   "status": "deployed",
    "branch": "lighting-2026-11/T1c-revert-70-125",
-   "merge_commit": null,
+   "merge_commit": "7fdb09d",
    "build": {
     "model": "claude-opus-5-5",
     "note": "tokens counted with build_after_j5"
    },
-   "notes": "Martin: at 45 / 90, with the lights off, the room felt dark around the FP2. Front sensor (T2) not built: simulation showed little gain and a later relight at dusk."
+   "notes": "Martin: at 45 / 90, with the lights off, the room felt dark around the FP2. Front sensor (T2) not built: simulation showed little gain and a later relight at dusk.",
+   "deploy": "2026-11-27 ~13:56 CET: deployed, live config equals the repo. Lights stayed off: FP2 read 71 without the lamps, just above 70."
   }
  ],
  "followups": [
