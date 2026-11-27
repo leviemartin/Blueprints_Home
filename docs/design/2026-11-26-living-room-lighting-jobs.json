@@ -107,9 +107,9 @@
    "depends_on": [
     "J2"
    ],
-   "status": "committed",
+   "status": "deployed",
    "branch": "lighting-2026-11/J3-night-window",
-   "merge_commit": null,
+   "merge_commit": "909c392",
    "build": {
     "model": "claude-opus-5-5",
     "fresh_input": null,
@@ -118,7 +118,8 @@
     "output": null,
     "codex_review_tokens": 76508
    },
-   "notes": "Commits cf5024c and 266d7fd. Codex: P1 fixed. An FP300 change inside the window reset empty_age, so the tick could re-brighten a dimmed empty room. In the window the FP300's age is now at least the window age. P1 declined: Codex wanted lights to come on at 06:00 when the FP300 still reads on. By design they do not, because that is most likely the dog; a new detection turns them on. This is documented and tested. Decided by orchestrator: inside the window the timeout is always late_night_timeout. An FP300 that is on at the window start counts as clear from the start. The dim is 30 % of the profile target brightness, at least 1 %, with the ceiling scaled. Two template wake triggers fire at window start + L and + L+1 minutes, plus an FP2 timer at L+1. The first Codex run hit the 10-min timeout and was rerun. Full suite 1073 passed, plus the 2 old precool failures. Dry run against live states passed."
+   "notes": "Commits cf5024c and 266d7fd. Codex: P1 fixed. An FP300 change inside the window reset empty_age, so the tick could re-brighten a dimmed empty room. In the window the FP300's age is now at least the window age. P1 declined: Codex wanted lights to come on at 06:00 when the FP300 still reads on. By design they do not, because that is most likely the dog; a new detection turns them on. This is documented and tested. Decided by orchestrator: inside the window the timeout is always late_night_timeout. An FP300 that is on at the window start counts as clear from the start. The dim is 30 % of the profile target brightness, at least 1 %, with the ceiling scaled. Two template wake triggers fire at window start + L and + L+1 minutes, plus an FP2 timer at L+1. The first Codex run hit the 10-min timeout and was rerun. Full suite 1073 passed, plus the 2 old precool failures. Dry run against live states passed.",
+   "deploy": "2026-11-27 ~08:08 CET: v3.2.0 blueprint and instance deployed. Automation on, live config equals the repo, and the reload trace shows no errors. The dim and wake triggers are not yet seen live; check tonight's 01:00-06:00 traces. Overnight 27 Nov on v3.1.0 the lights were off from 00:08. Three short FP2 visits at 04:06-04:23 each switched them on and back off within 1-6 min, which confirms the J2 off path live (T1)."
   },
   {
    "id": "J4",
