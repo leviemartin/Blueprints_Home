@@ -205,14 +205,15 @@
    "depends_on": [
     "J5"
    ],
-   "status": "committed",
+   "status": "deployed",
    "branch": "lighting-2026-11/T1-lux-70-125",
-   "merge_commit": null,
+   "merge_commit": "73c30eb",
    "build": {
     "model": "claude-opus-5-5",
     "note": "tokens counted with build_after_j5"
    },
-   "notes": "Instance-only change. Live check 27 Nov 13:30: the FP2 read 90-105 lx with the lamps on (about 65-80 lx of daylight). Every switch that morning matched the 175/250 design. Martin chose 70/125 over 90/150. F1 (April re-check) still applies."
+   "notes": "Instance-only change. Live check 27 Nov 13:30: the FP2 read 90-105 lx with the lamps on (about 65-80 lx of daylight). Every switch that morning matched the 175/250 design. Martin chose 70/125 over 90/150. F1 (April re-check) still applies.",
+   "deploy": "2026-11-27 ~13:34 CET: instance deployed, live config equals the repo. Lights stayed on: FP2 read 105 with the lamps on, below 125."
   }
  ],
  "followups": [
