@@ -95,7 +95,7 @@ Living room lighting that follows presence, the sun and the family routine (v3.3
     *   **Auto-ON:** lights turn on when someone is present and the FP2 reads below 150 lx (`lux_on_threshold`), or when you are already sitting there and it stays darker than that for 5 min (`lux_on_duration`). With no lux reading, presence alone turns them on.
     *   **Auto-OFF:** lights turn off when the FP2 reads above 400 lx (`lux_off_threshold`) for 5 min (`lux_off_duration`).
     *   Between the two thresholds the lights keep their current state.
-    *   These are the blueprint defaults; each instance can set its own values (per instance). The living room uses 70 / 125 lx and 5 / 10 min (RFC `docs/design/2026-11-26-living-room-lighting.md`, D4a: lowered on 27 Nov because the wall-mounted FP2 reads only 65-80 lx of daylight in a room that looks bright).
+    *   These are the blueprint defaults; each instance can set its own values (per instance). The living room uses 45 / 90 lx and 5 / 10 min (RFC `docs/design/2026-11-26-living-room-lighting.md`, D4a/D4b: lowered on 27 Nov because the wall-mounted FP2 reads only 65-80 lx of daylight in a room that looks bright).
 *   **✨ Seamless Transitions:** Uses long transitions (30s) for color shifts and fast transitions (2s) for presence, ensuring a premium feel.
 
 ### Requirements
