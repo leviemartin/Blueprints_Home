@@ -707,9 +707,25 @@ def test_auto_off_helper_input(bp):
 def test_helper_bookkeeping_in_every_branch(bp):
     branches = bp["action"][2]["choose"]
     first = [b["sequence"][0]["then"][0]["service"] for b in branches]
-    assert first == ["input_boolean.turn_on", "input_boolean.turn_off",
-                     "input_boolean.turn_off", "input_boolean.turn_off"]
+    assert first == ["input_boolean.turn_on", "light.turn_on", "input_boolean.turn_off", "input_boolean.turn_off"]
     assert branches[0]["sequence"][1]["then"][0]["service"] == "light.turn_off"
+    # Codex J4 P1: the on branch clears the helper only after both light calls
+    assert branches[1]["sequence"][-1]["then"][0]["service"] == "input_boolean.turn_off"
+
+
+def test_manual_on_and_off_after_our_off_counts_as_manual(bp):
+    """Codex J4 P1: helper still on from our off, but the lights changed since."""
+    now = at("14:00:00")
+    def table(light_age, helper_age):
+        t = {FP2: _St("on", now - timedelta(seconds=300)), FP300: _St("off", now - timedelta(seconds=300)),
+             LUX: _St("0", now), HELPER: _St("on", now - timedelta(seconds=helper_age))}
+        for light in LIGHTS:
+            t[light] = _St("off", now - timedelta(seconds=light_age))
+        return t
+    assert state(bp, table=table(590, 600), helper="on")["manual_off"] is False   # our own off, 10 s later
+    assert state(bp, table=table(60, 600), helper="on")["manual_off"] is True     # changed 9 min after it
+    assert decide(bp, tid="lux_low", table=table(60, 600), helper="on") == "none"
+    assert decide(bp, tid="lux_low", table=table(590, 600), helper="on") == "on"
 
 
 @pytest.mark.parametrize("tid", ["profile_day", "profile_dinner", "profile_toddler",

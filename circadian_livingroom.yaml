@@ -629,9 +629,22 @@ action:
       # HA does not keep numeric_state `for:` timers across a restart or reload, and a trigger
       # attached while already past its threshold stays unarmed; start and reload therefore
       # act on the current reading at once (Codex J2 P1).
+      # Off by hand: the helper was not set by our own off, or a light changed more than 30 s
+      # after it (a manual on and off since) (Codex J4 P1).
       manual_off: >
-        {{ auto_off_helper is string and auto_off_helper | length > 0 and not lights_on
-           and is_state(auto_off_helper, 'off') }}
+        {% set h = states[auto_off_helper] if auto_off_helper is string and auto_off_helper | length > 0 else none %}
+        {% if h is none or lights_on %}{{ false }}
+        {% elif h.state != 'on' %}{{ true }}
+        {% else %}
+          {% set ns = namespace(t=0) %}
+          {% for l in all_target_lights %}
+            {% set st = states[l] %}
+            {% if st is not none and st.last_changed is defined and st.last_changed is not none %}
+              {% set ns.t = [ns.t, as_timestamp(st.last_changed)] | max %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.t > as_timestamp(h.last_changed) + 30 }}
+        {% endif %}
       bright: >
         {{ current_lux is number and current_lux > threshold_off | float(0)
            and (trigger.id | default('') in ['lux_high', 'ha_start', 'reload']
@@ -751,13 +764,6 @@ action:
           - condition: template
             value_template: "{{ decision == 'on' }}"
         sequence:
-          - if:
-              - condition: template
-                value_template: "{{ auto_off_helper is string and auto_off_helper | length > 0 and is_state(auto_off_helper, 'on') }}"
-            then:
-              - service: input_boolean.turn_off
-                target:
-                  entity_id: "{{ auto_off_helper }}"
           # Turn on Bulbs (Native transition)
           - if:
               - condition: template
@@ -802,6 +808,14 @@ action:
                           brightness_pct: "{{ ceiling_bri }}"
                           transition: 2
 
+          # Cleared only after the lights are on: a restart in between must not look like a manual off.
+          - if:
+              - condition: template
+                value_template: "{{ auto_off_helper is string and auto_off_helper | length > 0 and is_state(auto_off_helper, 'on') }}"
+            then:
+              - service: input_boolean.turn_off
+                target:
+                  entity_id: "{{ auto_off_helper }}"
       - conditions:
           - condition: template
             value_template: "{{ decision == 'update' }}"
