@@ -252,6 +252,24 @@
    },
    "notes": "Martin: at 45 / 90, with the lights off, the room felt dark around the FP2. Front sensor (T2) not built: simulation showed little gain and a later relight at dusk.",
    "deploy": "2026-11-27 ~13:56 CET: deployed, live config equals the repo. Lights stayed off: FP2 read 71 without the lamps, just above 70."
+  },
+  {
+   "id": "T1d",
+   "title": "Living room lux 75 / 130 (D4d)",
+   "changes": [
+    "D4d"
+   ],
+   "depends_on": [
+    "T1c"
+   ],
+   "status": "committed",
+   "branch": "lighting-2026-11/T1d-lux-75-130",
+   "merge_commit": null,
+   "build": {
+    "model": "claude-opus-5-5",
+    "note": "tokens counted with build_after_j5"
+   },
+   "notes": "Martin's values. At deploy the FP2 read 71 with the lamps off, below 75, so the reload is expected to switch the lights on."
   }
  ],
  "followups": [
