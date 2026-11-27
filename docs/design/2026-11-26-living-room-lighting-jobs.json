@@ -16,11 +16,7 @@
    "deploy": "2026-11-26 ~23:10 CET, instance-only POST to automation config 1767031159524; HA result ok, automation on, live presence_fp300 = binary_sensor.aqara_presence_multisensor_fp300_occupancy",
    "build": {
     "model": "claude-opus-5-5",
-    "fresh_input": null,
-    "cache_writes": null,
-    "cache_reads": null,
-    "output": null,
-    "codex_review_tokens": 0
+    "note": "counted inside S0's window"
    },
    "notes": "Approved by Martin in the grilling session. Backup: deploy/1767031159524.prev.json. The deploy JSON change is committed with S0."
   },
@@ -36,11 +32,35 @@
    "merge_commit": "7cb17e9",
    "build": {
     "model": "claude-opus-5-5",
-    "fresh_input": null,
-    "cache_writes": null,
-    "cache_reads": null,
-    "output": null,
-    "codex_review_tokens": 0
+    "fresh_input": 106,
+    "cache_writes": 203354,
+    "cache_reads": 6730394,
+    "output": 54980,
+    "codex_review_tokens": 0,
+    "subagents": {
+     "a6400da0": {
+      "fresh_input": 68,
+      "cache_writes": 157913,
+      "cache_reads": 3637686,
+      "output": 36830,
+      "model": "claude-opus-5-5"
+     },
+     "a305545e": {
+      "fresh_input": 20,
+      "cache_writes": 134749,
+      "cache_reads": 936222,
+      "output": 26844,
+      "model": "claude-opus-5-5"
+     },
+     "ac6105b1": {
+      "fresh_input": 24,
+      "cache_writes": 161583,
+      "cache_reads": 1240176,
+      "output": 21709,
+      "model": "claude-opus-5-5"
+     }
+    },
+    "scope": "session start to the S0 commit: research, 3 research subagents (listed separately), grilling, RFC and X0"
    },
    "notes": "Commit 616eda7 on the branch. Docs only: no tests and no Codex review. Merge to local main waits for Martin's OK. Build tokens to be filled in from the session logs."
   },
@@ -60,10 +80,10 @@
    "merge_commit": "c420d68",
    "build": {
     "model": "claude-opus-5-5",
-    "fresh_input": null,
-    "cache_writes": null,
-    "cache_reads": null,
-    "output": null,
+    "fresh_input": 80,
+    "cache_writes": 50557,
+    "cache_reads": 8992307,
+    "output": 26583,
     "codex_review_tokens": 96495
    },
    "notes": "Commit 1233418 plus a Codex fix commit. Codex: no P0/P1. P2 fixed: the entity check now reads target-selector mappings. P3 kept: the live-deploy test only reads the source text. Full suite 1010 passed. 2 failures in test_bedroom_precool_structure (precool alias) were already there on main before this RFC and are out of scope. A dry run against live /api/states passed. Instances not deployed yet: merge and HA deploy each wait for Martin's OK. The deploy overwrote deploy/1767031159524.prev.json with the post-X0 config. The pre-X0 config is still in git (deploy/circadian_livingroom_1767031159524.json at 6d8e223).",
@@ -85,10 +105,10 @@
    "merge_commit": "0d8fe9c",
    "build": {
     "model": "claude-opus-5-5",
-    "fresh_input": null,
-    "cache_writes": null,
-    "cache_reads": null,
-    "output": null,
+    "fresh_input": 70,
+    "cache_writes": 74255,
+    "cache_reads": 10057231,
+    "output": 46612,
     "codex_review_tokens": 102419
    },
    "notes": "Commits eea93fa and 22ce707. Codex: 2x P1 fixed. HA drops numeric_state for: timers on restart/reload, so start and reload now act on the current lux at once. That means start and reload can turn lights on in an occupied dark room; the 5-min tick still never turns them on. P2 kept: (a) if both sensors are missing, the lights go off at the first trigger rather than after the timeout, but the deploy entity check prevents this; (b) a sensor flipping between unavailable and unknown can push more than once an hour; (c) mode: restart can cancel a push. Decided by orchestrator: no raw lux state trigger, because the tick plus numeric_state triggers cover it and a raw trigger would run about every 44 s. Full suite 1036 passed, plus the 2 old precool failures. Dry run against live states passed. Merge and deploy wait for Martin's OK.",
@@ -112,10 +132,10 @@
    "merge_commit": "909c392",
    "build": {
     "model": "claude-opus-5-5",
-    "fresh_input": null,
-    "cache_writes": null,
-    "cache_reads": null,
-    "output": null,
+    "fresh_input": 46,
+    "cache_writes": 394910,
+    "cache_reads": 6715287,
+    "output": 26278,
     "codex_review_tokens": 76508
    },
    "notes": "Commits cf5024c and 266d7fd. Codex: P1 fixed. An FP300 change inside the window reset empty_age, so the tick could re-brighten a dimmed empty room. In the window the FP300's age is now at least the window age. P1 declined: Codex wanted lights to come on at 06:00 when the FP300 still reads on. By design they do not, because that is most likely the dog; a new detection turns them on. This is documented and tested. Decided by orchestrator: inside the window the timeout is always late_night_timeout. An FP300 that is on at the window start counts as clear from the start. The dim is 30 % of the profile target brightness, at least 1 %, with the ceiling scaled. Two template wake triggers fire at window start + L and + L+1 minutes, plus an FP2 timer at L+1. The first Codex run hit the 10-min timeout and was rerun. Full suite 1073 passed, plus the 2 old precool failures. Dry run against live states passed.",
@@ -137,10 +157,10 @@
    "merge_commit": "6dcb7d2 (fast-forward)",
    "build": {
     "model": "claude-opus-5-5",
-    "fresh_input": null,
-    "cache_writes": null,
-    "cache_reads": null,
-    "output": null,
+    "fresh_input": 110,
+    "cache_writes": 73467,
+    "cache_reads": 19880814,
+    "output": 63536,
     "codex_review_tokens": 187308
    },
    "notes": "Commits 400e680, 29ae0c3, ef8e8a6, 483ccef. Review 1: P0 fixed (target_effect was rendered after the update lists); P2 fixed (bulb colour always counts as manual). Two P1s showed that stateless manual-off detection cannot tell who switched the lights off, so the D20 fallback applies: Martin chose one input_boolean per room (auto_off_helper). Review 2 of the helper: P1 fixed (helper cleared only after the light calls). P1 fixed (a light change more than 30 s after our off counts as manual, which needs no self-trigger). P1 declined: override resume re-lights an occupied dark room even after a manual off, by design and documented. P2 kept: the helper is set before light.turn_off, so a failed call leaves the helper on and the next update resets it. Decided by orchestrator: tolerance 5 % brightness / 150 K; the night dim level counts as ours; a colour mode counts as manual; profile starts at 06:00 and the 4 profile times re-apply to every lit light. Deploy prerequisite: create input_boolean.living_room_lights_auto_off in HA. Note: during this job another process edited bedroom_precool.yaml, the LG deploy JSON and 2 precool/LG tests in this checkout; those are not part of J4 (one accidental staging was undone). Lighting tests 298+ passed. Added on 2026-11-27 at Martin's request (movie and dinner-party mode): the override is wired to input_boolean.living_room_manual_mode, with auto-resume once both sensors have been clear for override_timeout = 30 min (FP300 ignored in the night window). Commit 5b16810. Codex review 3: no findings. Deploy prerequisite: create input_boolean.living_room_manual_mode too.",
@@ -167,10 +187,10 @@
    "merge_commit": "f53deea",
    "build": {
     "model": "claude-opus-5-5",
-    "fresh_input": null,
-    "cache_writes": null,
-    "cache_reads": null,
-    "output": null,
+    "fresh_input": 46,
+    "cache_writes": 43448,
+    "cache_reads": 9424086,
+    "output": 32570,
     "codex_review_tokens": 77772
    },
    "notes": "Commit abe3a84. Codex: no P0/P1. P2 kept: (a) an active override suppresses the dead-sensor notification, which also stops the run; (b) a sensor that is already unavailable at start/reload gets no notification until it changes, because the hourly backstop covers missing entities only. Stages now come from how long the room has been empty, which removes the 2000 K guard bug. Lux uses template triggers because the sensor is optional; the hall is set to 220/150 lx and 10/5 min. lux_off_duration is now wired. Per-room helpers: input_boolean.kitchen_lights_auto_off, front_hall_lights_auto_off, toilet_lights_auto_off, attic_lights_auto_off. The drift test pins identical mode/kelvin/brightness formulas across both blueprints. Full suite 1172 passed, plus the 2 old precool failures. Merge, creating the helpers and the deploy wait for Martin's OK.",
@@ -194,5 +214,14 @@
    "what": "The 2 test_bedroom_precool_structure failures predate this RFC (precool alias/version pins); they belong to the precool work, not lighting."
   }
  ],
- "closed": "2026-11-27: S0 and J1-J5 merged to local main and deployed; nothing pushed."
+ "closed": "2026-11-27: S0 and J1-J5 merged to local main and deployed; nothing pushed.",
+ "build_after_j5": {
+  "model": "claude-opus-5-5",
+  "fresh_input": 18,
+  "cache_writes": 492788,
+  "cache_reads": 2454793,
+  "output": 3570,
+  "scope": "push, goal check, FP300 pairing check and this ledger fill (up to the token count)"
+ },
+ "build_method": "Summed from this session's transcript usage (one count per assistant message id), split by git commit time: S0 up to 616eda7, then up to each job's deploy-ledger commit (d99c4ae, e79cd30, 49b9d31, bfd9224, 2893c64). The effort level is not in the logs."
 }

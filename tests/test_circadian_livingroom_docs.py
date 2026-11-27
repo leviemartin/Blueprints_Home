@@ -204,11 +204,12 @@ def test_dog_stay_on_note():
 
 
 def test_fp300_setup_documented():
+    """The FP300 is paired over Matter since 22 Nov 2026 (checked in the HA device registry)."""
     for text in _docs():
-        for phrase in ("Zigbee2MQTT", "mmWave", "PIR",
-                       "absence_delay_timer", "60 s"):
+        for phrase in ("Matter", "mmWave", "PIR", "Hold time", "10 s", "1 min 10 s"):
             assert phrase in text
-        assert _has_min(text, 2)
+        assert "Zigbee2MQTT" not in text
+        assert "absence_delay_timer" not in text
 
 
 def test_lux_defaults_and_per_instance():

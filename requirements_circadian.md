@@ -33,7 +33,7 @@
 *   **Lights:** 
     *   **Philips Hue Bulbs:** Ambient/Color bulbs for general lighting.
     *   **Philips Hue Infuse:** Ceiling lights (Main and Backlight entities supported).
-*   **Presence:** two occupancy binary_sensors: Aqara FP2 (`presence_fp2`) and Aqara FP300 on the couch (`presence_fp300`, via Zigbee2MQTT).
+*   **Presence:** two occupancy binary_sensors: Aqara FP2 (`presence_fp2`) and Aqara FP300 on the couch (`presence_fp300`, paired over Matter).
 *   **Illuminance:** Aqara FP2 only (sensor.lux); FP300 lux is not read.
 *   **Notifications:** optional `notify.*` services (`notify_targets`) for the presence-sensor offline push.
 *   **Sun:** Home Assistant `sun.sun` entity.
@@ -136,10 +136,9 @@ All blueprint inputs of v3.3.0, in blueprint order. `required` means the input h
 *   **Orientation:** Facing the center of the room, not directly at the window or the lights it controls.
 
 ### 6.1. Aqara FP300 (couch) setup
-*   Paired via Zigbee2MQTT, set by hand (the blueprint writes no device settings).
-*   Presence source: mmWave + PIR.
-*   `absence_delay_timer`: 60 s.
-*   At night about 2 min from the last motion to lights off (60 s plus the 1 min `late_night_timeout`), when the FP2 is already clear.
+*   Paired over Matter since 22 Nov 2026 (the blueprint writes no device settings). Before that it came in through the Aqara hub via HomeKit (`binary_sensor.living_room_main_fp300_couch_occupancy_sensor`, now gone).
+*   Matter exposes one occupancy setting: Hold time, currently 10 s. The mmWave/PIR detection mode is not exposed; the device default (mmWave + PIR) is used.
+*   In the late-night window about 1 min 10 s from the last motion to lights off (10 s hold time plus the 1 min `late_night_timeout`), when the FP2 is already clear; inside the night window the FP300 is ignored.
 *   FP300 lux is not read.
 
 ## 7. Variables
